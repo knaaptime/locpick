@@ -1,0 +1,36 @@
+name: test
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  # core
+  - numpy
+  - pandas
+  - scipy
+  - formulaic>=0.5
+  - numba>=0.59
+  - xarray
+  # optional (jax)
+  - jax>=0.4
+  - jaxlib>=0.4
+  # optional (spatial)
+  - libpysal>=4.0
+  - geopandas>=0.13
+  - scikit-learn>=1.2
+  # testing
+  - codecov
+  - coverage
+  - pytest>=7
+  - pytest-cov
+  - pytest-xdist
+  # docs
+  - numpydoc
+  - nbsphinx
+  - myst-parser
+  - sphinx>=7
+  - sphinx-autodoc2
+  - sphinxcontrib-bibtex
+  - sphinx-copybutton
+  - sphinx-immaterial
+  - myst-nb
+  - watermark

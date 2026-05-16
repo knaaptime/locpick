@@ -1,0 +1,46 @@
+name: locpick
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.12
+  # core scientific stack
+  - numpy>=1.23
+  - pandas>=1.5
+  - scipy>=1.9
+  - formulaic>=0.5
+  - numba>=0.59
+  - xarray>=2022.06
+  # optional (jax)
+  - jax>=0.4
+  - jaxlib>=0.4
+  - optimistix
+  # optional (spatial)
+  - libpysal>=4.0
+  - geopandas>=0.13
+  - scikit-learn>=1.2
+  # development & testing
+  - pytest>=7
+  - pytest-cov
+  - pytest-xdist
+  - coverage
+  - codecov
+  - ruff
+  - pre-commit
+  # docs
+  - numpydoc
+  - nbsphinx
+  - myst-parser
+  - myst-nb
+  - sphinx>=7
+  - sphinx-autodoc2
+  - sphinxcontrib-bibtex
+  - sphinx-copybutton
+  - sphinx-immaterial
+  - watermark
+  # notebooks & exploration
+  - jupyterlab
+  - matplotlib
+  - pip
+  - pip:
+      - -e .[dev]

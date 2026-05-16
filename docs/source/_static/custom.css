@@ -1,0 +1,52 @@
+.logo-frontpage {
+    margin-bottom: 30px;
+}
+
+:root,
+[data-md-color-scheme="default"] {
+  --dataframe-text-color: inherit;
+  --dataframe-border-color: rgba(0, 0, 0, 0.18);
+  --dataframe-row-odd-bg: rgba(0, 0, 0, 0.04);
+  --dataframe-row-hover-bg: rgba(66, 165, 245, 0.16);
+}
+
+[data-md-color-scheme="slate"] {
+  --dataframe-text-color: inherit;
+  --dataframe-border-color: rgba(255, 255, 255, 0.18);
+  --dataframe-row-odd-bg: rgba(255, 255, 255, 0.05);
+  --dataframe-row-hover-bg: rgba(144, 202, 249, 0.16);
+}
+
+div.cell_output .output.text_html {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+div.cell_output .output.text_html > div {
+  min-width: max-content;
+}
+
+div.cell_output table.dataframe {
+  display: table;
+  border-collapse: collapse;
+  border: 1px solid var(--dataframe-border-color);
+  font-size: 0.85em;
+}
+
+div.cell_output table.dataframe th,
+div.cell_output table.dataframe td {
+  padding: 4px 8px;
+  border: 1px solid var(--dataframe-border-color);
+}
+
+div.cell_output table.dataframe thead {
+  border-bottom: 2px solid var(--dataframe-border-color);
+}
+
+div.cell_output table.dataframe tbody tr:nth-child(odd) {
+  background-color: var(--dataframe-row-odd-bg);
+}
+
+div.cell_output table.dataframe tbody tr:hover {
+  background-color: var(--dataframe-row-hover-bg);
+}

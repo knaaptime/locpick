@@ -1,0 +1,8 @@
+# .coveragerc
+[run]
+source = locpick
+concurrency = multiprocessing
+parallel = true
+omit =
+    tests/*
+    */tests/*

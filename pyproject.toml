@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "locpick"
+dynamic = ["version"]
+description = "Modern location and destination choice modeling"
+readme = {file = "README.md", content-type = "text/markdown"}
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "OTURNS"}
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy >= 1.23",
+    "pandas >= 1.5",
+    "xarray >= 2022.06",
+    "formulaic >= 0.5",
+    "scipy >= 1.9",
+    "numba >= 0.59",
+    "lazy_loader >= 0.4",
+]
+
+[project.optional-dependencies]
+jax = [
+    "jax >= 0.4",
+    "jaxlib >= 0.4",
+    "optimistix >= 0.1",
+]
+optax = [
+    "optax >= 0.1",
+]
+spatial = [
+    "libpysal >= 4.0",
+    "geopandas >= 0.13",
+    "scikit-learn >= 1.2",
+]
+test = [
+    "coverage",
+    "pytest >= 7",
+    "pytest-cov",
+    "pytest-xdist",
+    "formulaic >= 0.5",
+]
+docs = [
+    "numpydoc",
+    "nbsphinx",
+    "myst-parser",
+    "myst-nb",
+    "sphinx >= 7",
+    "sphinx-autodoc2",
+    "sphinxcontrib-bibtex",
+    "sphinx-copybutton",
+    "sphinx-immaterial",
+    "watermark",
+]
+dev = [
+    "locpick[test]",
+    "locpick[jax]",
+    "locpick[optax]",
+    "locpick[docs]",
+    "ruff",
+    "ipykernel",
+    "pre-commit",
+]
+
+[project.urls]
+Homepage = "https://oturns.github.io/locpick"
+Documentation = "https://oturns.github.io/locpick"
+Source = "https://github.com/oturns/locpick"
+Tracker = "https://github.com/oturns/locpick/issues"
+Changelog = "https://github.com/oturns/locpick/releases"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["locpick*"]
+
+[tool.setuptools.package-data]
+locpick = ["*.pyi", "py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

@@ -1,0 +1,23 @@
+name: test
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  # core
+  - numpy>=1.23
+  - pandas>=1.5
+  - scipy>=1.9
+  - formulaic>=0.5
+  - numba>=0.59
+  - xarray>=2022.06
+  # optional (spatial)
+  - libpysal>=4.0
+  - geopandas>=0.13
+  - scikit-learn>=1.2
+  # testing
+  - codecov
+  - coverage
+  - pytest>=7
+  - pytest-cov
+  - pytest-xdist
+  - twine
