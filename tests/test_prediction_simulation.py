@@ -104,7 +104,7 @@ class TestSimulate:
         """simulate() should return a DataFrame with expected columns."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         simulated = model.simulate(ct, n_draws=1, seed=42)
 
@@ -117,7 +117,7 @@ class TestSimulate:
         """simulate() with n_draws > 1 should return n_obs * n_draws rows."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         n_draws = 5
         simulated = model.simulate(ct, n_draws=n_draws, seed=42)
@@ -129,7 +129,7 @@ class TestSimulate:
         """simulate() with same seed should produce identical results."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         sim1 = model.simulate(ct, n_draws=1, seed=123)
         sim2 = model.simulate(ct, n_draws=1, seed=123)
@@ -140,7 +140,7 @@ class TestSimulate:
         """simulate() with different seeds should produce different results."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         sim1 = model.simulate(ct, n_draws=1, seed=123)
         sim2 = model.simulate(ct, n_draws=1, seed=456)
@@ -152,7 +152,7 @@ class TestSimulate:
         """Simulated choice probabilities should be valid (0, 1]."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         simulated = model.simulate(ct, n_draws=1, seed=42)
 
@@ -163,7 +163,7 @@ class TestSimulate:
         """Simulated choices should be valid alternative IDs."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         simulated = model.simulate(ct, n_draws=1, seed=42)
 
@@ -184,7 +184,7 @@ class TestPredictionNewData:
         """Prediction on new choosers should produce valid probabilities."""
         ct, _, _ = _make_simple_data(n_obs=200)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         # Create new choosers
         rng = np.random.default_rng(99)
@@ -220,7 +220,7 @@ class TestPredictionNewData:
         """Prediction with sampled choice sets should use inclusion_probs."""
         ct, _, _ = _make_sampled_data(n_obs=200, n_alts=20, sample_size=5)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         # Probabilities should be valid
         probs = model.probabilities(ct)
@@ -304,7 +304,7 @@ class TestUtilitiesSamplingCorrection:
         """utilities() should include log(inclusion_probs) when present."""
         ct, _, _ = _make_sampled_data(n_obs=200, n_alts=20, sample_size=5)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         utilities = model.utilities(ct)
 
@@ -315,7 +315,7 @@ class TestUtilitiesSamplingCorrection:
         """utilities() should work without sampling correction."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         utilities = model.utilities(ct)
 

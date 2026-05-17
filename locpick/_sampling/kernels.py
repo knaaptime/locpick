@@ -43,9 +43,7 @@ except ImportError:
 if HAS_NUMBA:
 
     @njit(cache=True)
-    def _sample_unweighted_without_replacement_exclusion(
-        alt_ids, excluded_alt_ids, sample_size
-    ):
+    def _sample_unweighted_without_replacement_exclusion(alt_ids, excluded_alt_ids, sample_size):
         """Sample alternatives without replacement for each observation.
 
         Parameters
@@ -187,9 +185,7 @@ if HAS_NUMBA:
 
 else:
 
-    def _sample_unweighted_without_replacement_exclusion(
-        alt_ids, excluded_alt_ids, sample_size
-    ):
+    def _sample_unweighted_without_replacement_exclusion(alt_ids, excluded_alt_ids, sample_size):
         """Pure-Python fallback for unweighted sampling with exclusion."""
         n_obs = excluded_alt_ids.shape[0]
         out = np.empty(n_obs * sample_size, dtype=np.int64)

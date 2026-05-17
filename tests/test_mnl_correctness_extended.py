@@ -107,7 +107,7 @@ class TestProbabilityComputation:
         """Probabilities for each observation should sum to 1."""
         ct, _, _, _ = _make_simple_dataset(seed=102)
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(ct.n_observations, ct.n_alternatives)
@@ -118,7 +118,7 @@ class TestProbabilityComputation:
         """All probabilities should be non-negative."""
         ct, _, _, _ = _make_simple_dataset(seed=103)
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         assert (probs >= -1e-15).all()
@@ -127,7 +127,7 @@ class TestProbabilityComputation:
         """Probability of the chosen alternative should be positive for each obs."""
         ct, _, _, _ = _make_simple_dataset(seed=104)
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         arrays = ct.to_arrays(formula="obsval + altval - 1")
         probs = model.probabilities(ct)
@@ -435,7 +435,7 @@ class TestNumericalStability:
         )
 
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(n_obs, n_alts)
@@ -477,7 +477,7 @@ class TestNumericalStability:
         )
 
         model = MultinomialLogit(ct, formula="altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(n_obs, n_alts)
@@ -498,7 +498,7 @@ class TestPrediction:
         """Prediction on estimation data should match fitted probabilities."""
         ct, _, _, _ = _make_simple_dataset(seed=601)
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         assert probs.shape == (ct.n_observations, ct.n_alternatives)
@@ -534,7 +534,7 @@ class TestPrediction:
         )
 
         model = MultinomialLogit(ct_train, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         # New data (different choosers, same alternatives)
         n_obs_new = 50
@@ -601,7 +601,7 @@ class TestPrediction:
         )
 
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(n_obs, n_alts)
@@ -643,7 +643,7 @@ class TestPrediction:
         )
 
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         # Utilities should include sampling correction
         utilities = model.utilities(ct)

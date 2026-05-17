@@ -455,9 +455,7 @@ def simulate_nested_logit(
     choosers["choice"] = choices
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(
-        choosers, alternatives, choosers["choice"], interactions
-    )
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
 
     # Include interaction params in true_params
     true_params = dict(alt_params)
@@ -581,9 +579,7 @@ def simulate_scl(
     choosers["choice"] = choices
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(
-        choosers, alternatives, choosers["choice"], interactions
-    )
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
 
     # Include interaction param in true_params
     true_params = dict(alt_params)
@@ -711,9 +707,7 @@ def simulate_mixed_logit(
     random_params_dict = {col: dist for col, (dist, _, _) in random_params.items()}
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(
-        choosers, alternatives, choosers["choice"], interactions
-    )
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
 
     return MixedLogitDataset(
         choosers=choosers,
@@ -850,9 +844,7 @@ def simulate_mscl(
     random_params_dict = {col: dist for col, (dist, _, _) in random_params.items()}
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(
-        choosers, alternatives, choosers["choice"], interactions
-    )
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
 
     return MSCLDataset(
         choosers=choosers,

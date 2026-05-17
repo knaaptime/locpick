@@ -12,11 +12,11 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
 from locpick.results.fit_result import FitResult
-from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.spec import ModelSpec
 
 
@@ -55,7 +55,7 @@ class MultinomialLogit(BaseChoiceModel):
     - ModelSpec-based formula/scoped-term specification
     - EstimationProblem-based specification (via problem parameter)
     - JAX-accelerated log-likelihood and gradient computation
-    - Multiple solver backends (L-BFGS-B, Optimistix)
+    - Multiple solver backends (L-BFGS-B, Optax)
     - Weighted estimation
     - Alternative availability constraints
 
@@ -232,13 +232,12 @@ class MultinomialLogit(BaseChoiceModel):
         # Systematic utility with sampling correction
         utilities = (dm @ beta).reshape(n_obs, n_alts)
         from locpick._sampling.correction import apply_sampling_correction
+
         utilities = apply_sampling_correction(utilities, arrays)
 
         # Availability
         if arrays.available is not None:
-            available = np.asarray(arrays.available, dtype=np.float64).reshape(
-                n_obs, n_alts
-            )
+            available = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, n_alts)
         else:
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
@@ -348,12 +347,14 @@ class MultinomialLogit(BaseChoiceModel):
         # Draw one uniform per observation per draw
         uniform_draws = rng.random((n_draws, n_obs))  # (n_draws, n_obs)
         # Find first index where cumulative_prob > uniform
-        chosen_indices = np.argmax(cumulative_probs[None, :, :] > uniform_draws[:, :, None], axis=2)
+        chosen_indices = np.argmax(
+            cumulative_probs[None, :, :] > uniform_draws[:, :, None], axis=2
+        )
         # Handle edge case where uniform == 1.0 (shouldn't happen with random(), but safe)
         chosen_indices = np.clip(chosen_indices, 0, n_alts - 1)
 
         chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]  # (n_draws, n_obs)
-        chosen_probs = probs[np.arange(n_obs), chosen_indices]   # (n_draws, n_obs)
+        chosen_probs = probs[np.arange(n_obs), chosen_indices]  # (n_draws, n_obs)
 
         # Build results DataFrame
         results = []
@@ -401,12 +402,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -452,12 +452,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -503,12 +502,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -552,12 +550,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -837,7 +834,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
+        if (
+            self._result is not None
+            and self._result.solver_result
+            and "scipy_result" in self._result.solver_result
+        ):
             scipy_result = self._result.solver_result["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
@@ -850,7 +851,11 @@ class MultinomialLogit(BaseChoiceModel):
                 except Exception:
                     pass
 
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
+        if (
+            self._result is not None
+            and self._result.std_errors is not None
+            and not self._result.std_errors.isna().all()
+        ):
             variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
@@ -951,6 +956,7 @@ class MultinomialLogit(BaseChoiceModel):
             )
 
         from locpick._jax.objective import Objective
+
         return Objective(fn=log_likelihood, grad=gradient)
 
     def _build_fit_result(self, solver_result: SolverResult, arrays: ChoiceArrays) -> FitResult:

@@ -95,15 +95,19 @@ _SOLVERS: dict[str, type] = {}
 
 def _register_builtins() -> None:
     """Register built-in solvers."""
+    from .bhhh import BHHHSolver
     from .lbfgs import LBFGSSolver
+    from .trust_ncg import TrustKrylovSolver, TrustNCGSolver
 
     _SOLVERS.setdefault("lbfgs", LBFGSSolver)
+    _SOLVERS.setdefault("bhhh", BHHHSolver)
+    _SOLVERS.setdefault("trust-ncg", TrustNCGSolver)
+    _SOLVERS.setdefault("trust-krylov", TrustKrylovSolver)
 
-    # Optimistix (optional — requires optimistix)
     try:
-        from .optimistix import OptimistixSolver
+        from .optimagic import OptimagicSolver
 
-        _SOLVERS.setdefault("optimistix", OptimistixSolver)
+        _SOLVERS.setdefault("optimagic", OptimagicSolver)
     except ImportError:
         pass
 

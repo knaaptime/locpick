@@ -8,12 +8,13 @@ passing ``log_likelihood_fn`` and ``gradient_fn`` with ``.jax_fn`` attributes.
 Solvers negotiate with the ``Objective`` to get the interface they need:
 
 - :class:`LBFGSSolver` calls ``fn`` and ``grad`` (numpy ↔ python)
-- :class:`OptimistixSolver` calls ``jax_fn`` and ``jax_grad`` directly
+- JAX-native solvers (e.g. :class:`OptaxSolver`) call ``jax_fn`` and
+  ``jax_grad`` directly
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
@@ -62,6 +63,7 @@ class Objective:
     grad: Callable
     jax_fn: Optional[Callable] = None
     jax_grad: Optional[Callable] = None
+    loglike_contribs_jax: Optional[Callable] = None
     transform: Optional[ParamTransform] = None
     param_names: Optional[list[str]] = None
     bounds: Optional[list[tuple[float, float]]] = None
@@ -79,7 +81,7 @@ class Objective:
         return -self.grad(x)
 
     def neg_jax_fn(self, params, args=None):
-        """Negative log-likelihood in JAX (for Optimistix minimization)."""
+        """Negative log-likelihood in JAX (for minimization-style solvers)."""
         return -self.jax_fn(params)
 
     def hessian(self, x: np.ndarray) -> np.ndarray:
@@ -105,12 +107,83 @@ class Objective:
             # Finite-difference Hessian
             return self._finite_diff_hessian(x)
 
+    def hvp(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
+        """Compute the Hessian-vector product :math:`H(x)\\,v`.
+
+        Uses forward-over-reverse autodiff (``jax.jvp`` of ``jax.grad``)
+        when JAX-native functions are available, avoiding materialisation
+        of the full :math:`(n\\times n)` Hessian.  Falls back to a
+        finite-difference of the gradient otherwise.
+
+        The first JAX call jit-compiles and caches the HVP closure on
+        the instance so subsequent calls have no Python overhead.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            Parameter vector (natural scale).
+        v : np.ndarray
+            Direction vector of the same shape as ``x``.
+
+        Returns
+        -------
+        np.ndarray
+            :math:`H(x)\\,v`, same shape as ``x``.
+        """
+        if self.jax_fn is not None and _JAX_AVAILABLE:
+            cached = self.__dict__.get("_hvp_fn")
+            if cached is None:
+                grad_fn = jax.grad(self.jax_fn)
+
+                @jax.jit
+                def _hvp(xv, vv):
+                    return jax.jvp(grad_fn, (xv,), (vv,))[1]
+
+                cached = _hvp
+                self.__dict__["_hvp_fn"] = cached
+            xj = jnp.asarray(x, dtype=jnp.float64)
+            vj = jnp.asarray(v, dtype=jnp.float64)
+            return np.asarray(cached(xj, vj))
+        # Finite-difference fallback: (g(x + h v) - g(x - h v)) / (2 h)
+        h = 1e-5
+        v = np.asarray(v, dtype=np.float64)
+        return (self.grad(x + h * v) - self.grad(x - h * v)) / (2.0 * h)
+
+    def score_contribs(self, x: np.ndarray) -> np.ndarray:
+        """Per-observation score matrix :math:`G` of shape ``(n_obs, n_params)``.
+
+        Each row :math:`g_i = \\nabla_\\theta \\log L_i(\\theta)` is the
+        gradient of the log-likelihood contribution from observation ``i``.
+        Computed via ``jax.jacrev`` of :attr:`loglike_contribs_jax`, which
+        must be provided when the Objective is constructed (see
+        :meth:`from_jax`).
+
+        Used by :class:`locpick._solvers.bhhh.BHHHSolver` to assemble the
+        outer-product-of-gradients Hessian approximation
+        :math:`B = G^\\top G`.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``loglike_contribs_jax`` is not available.
+        """
+        if self.loglike_contribs_jax is None or not _JAX_AVAILABLE:
+            raise NotImplementedError(
+                "score_contribs requires loglike_contribs_jax; this Objective "
+                "was built without per-observation log-likelihood support."
+            )
+        cached = self.__dict__.get("_score_contribs_fn")
+        if cached is None:
+            cached = jax.jit(jax.jacrev(self.loglike_contribs_jax))
+            self.__dict__["_score_contribs_fn"] = cached
+        return np.asarray(cached(jnp.asarray(x, dtype=jnp.float64)))
+
     def _finite_diff_hessian(self, x: np.ndarray) -> np.ndarray:
         """Compute Hessian via central finite differences."""
         n = len(x)
         h = 1e-5
         hess = np.zeros((n, n))
-        f0 = self.fn(x)
+        self.fn(x)
         for i in range(n):
             for j in range(i, n):
                 x_pp = x.copy()
@@ -125,8 +198,9 @@ class Objective:
                 x_mp[j] += h
                 x_mm[i] -= h
                 x_mm[j] -= h
-                hess[i, j] = (self.fn(x_pp) - self.fn(x_pm)
-                              - self.fn(x_mp) + self.fn(x_mm)) / (4 * h * h)
+                hess[i, j] = (self.fn(x_pp) - self.fn(x_pm) - self.fn(x_mp) + self.fn(x_mm)) / (
+                    4 * h * h
+                )
                 hess[j, i] = hess[i, j]
         return hess
 
@@ -142,6 +216,7 @@ class Objective:
         param_names: Optional[list[str]] = None,
         transform: Optional[ParamTransform] = None,
         bounds: Optional[list[tuple[float, float]]] = None,
+        loglike_contribs_fn: Optional[Callable] = None,
     ) -> "Objective":
         """Create an Objective from JIT-compiled JAX functions.
 
@@ -182,6 +257,7 @@ class Objective:
             grad=gradient,
             jax_fn=ll_fn,
             jax_grad=grad_fn,
+            loglike_contribs_jax=loglike_contribs_fn,
             transform=transform,
             param_names=param_names,
             bounds=bounds,

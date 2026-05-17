@@ -15,26 +15,23 @@ The model classes call these builders instead of building closures inline.
 
 from __future__ import annotations
 
-import numpy as np
-
 from locpick._compat import _JAX_AVAILABLE
-from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
+from locpick._jax.data import ChoiceDataJAX
 
 if _JAX_AVAILABLE:
     import jax
     import jax.numpy as jnp
 from locpick._jax.kernels import (
-    scl_log_probs,
+    compute_ll,
+    compute_ll_contribs,
+    compute_utilities,
+    mixed_logit_ll,
     mnl_log_probs,
     nested_log_probs,
-    mixed_logit_ll,
-    compute_ll,
-    compute_utilities,
-    _NEG_INF,
+    scl_log_probs,
 )
 from locpick._jax.objective import Objective
-from locpick._jax.transforms import ParamTransform, Sigmoid, Identity
-
+from locpick._jax.transforms import Identity, ParamTransform, Sigmoid
 
 # ---------------------------------------------------------------------------
 # MNL objective
@@ -65,6 +62,11 @@ def build_mnl_objective(arrays) -> Objective:
         log_probs = mnl_log_probs(V, data.available, inclusion_probs=data.inclusion_probs)
         return compute_ll(log_probs, data.chosen, data.weights)
 
+    def _ll_contribs_jax(beta):
+        V = compute_utilities(data.design_matrix, beta, data.n_obs, data.n_alts)
+        log_probs = mnl_log_probs(V, data.available, inclusion_probs=data.inclusion_probs)
+        return compute_ll_contribs(log_probs, data.chosen, data.weights)
+
     _ll_jit = jax.jit(_ll_jax)
     _grad_jit = jax.jit(jax.grad(_ll_jax))
 
@@ -72,6 +74,7 @@ def build_mnl_objective(arrays) -> Objective:
         ll_fn=_ll_jit,
         grad_fn=_grad_jit,
         param_names=list(arrays.param_names),
+        loglike_contribs_fn=_ll_contribs_jax,
     )
 
 
@@ -113,12 +116,29 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
         rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))  # sigmoid transform
 
         V = compute_utilities(
-            data.design_matrix, beta, data.n_obs, data.n_alts,
+            data.design_matrix,
+            beta,
+            data.n_obs,
+            data.n_alts,
             inclusion_probs=data.inclusion_probs,
             available=data.available,
         )
         log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
         return compute_ll(log_probs, data.chosen, data.weights)
+
+    def _ll_contribs_jax(params):
+        beta = params[:k]
+        rho = 1.0 / (1.0 + jnp.exp(-params[k]))
+        V = compute_utilities(
+            data.design_matrix,
+            beta,
+            data.n_obs,
+            data.n_alts,
+            inclusion_probs=data.inclusion_probs,
+            available=data.available,
+        )
+        log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
+        return compute_ll_contribs(log_probs, data.chosen, data.weights)
 
     _ll_jit = jax.jit(_ll_jax)
     _grad_jit = jax.jit(jax.grad(_ll_jax))
@@ -131,6 +151,7 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
         grad_fn=_grad_jit,
         param_names=param_names,
         transform=transform,
+        loglike_contribs_fn=_ll_contribs_jax,
     )
 
 
@@ -218,7 +239,7 @@ def build_mscl_objective(
 
             # Vectorised random coefficient generation — no Python loop
             # means: (k_random,), spreads: (k_random,), z_r: (n_obs, k_random)
-            means = beta_random_means[None, :]   # (1, k_random)
+            means = beta_random_means[None, :]  # (1, k_random)
             spreads = beta_random_spreads[None, :]  # (1, k_random)
 
             # Normal: β = μ + σ * z
@@ -231,7 +252,10 @@ def build_mscl_objective(
             # different inverse-CDF (piecewise sqrt, not linear).
             t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
             d = 0.3989422804014327
-            poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+            poly = t * (
+                0.319381530
+                + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+            )
             phi_z = jnp.where(
                 z_r >= 0,
                 1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
@@ -251,14 +275,17 @@ def build_mscl_objective(
             # dist_codes: (k_random,) → broadcast against (n_obs, k_random)
             dist = data.dist_codes[None, :]  # (1, k_random)
             beta_random_r = jnp.where(
-                dist == 0, beta_normal,
-                jnp.where(dist == 1, beta_lognormal,
-                    jnp.where(dist == 2, beta_triangular, beta_uniform)),
+                dist == 0,
+                beta_normal,
+                jnp.where(
+                    dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+                ),
             )  # (n_obs, k_random)
 
             # Random utility component
             v_random = jnp.sum(
-                data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
+                data.dm_random.reshape(data.n_obs, data.n_alts, k_random)
+                * beta_random_r[:, None, :],
                 axis=2,
             )
 
@@ -284,8 +311,11 @@ def build_mscl_objective(
 
     # Parameter names
     param_names_list = list(arrays.param_names)
-    fixed_param_names = [name for name in param_names_list if name not in
-                        [param_names_list[i] for i in random_col_indices]]
+    fixed_param_names = [
+        name
+        for name in param_names_list
+        if name not in [param_names_list[i] for i in random_col_indices]
+    ]
     random_param_names = [param_names_list[i] for i in random_col_indices]
     display_param_names = (
         fixed_param_names
@@ -340,7 +370,10 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
         lambdas = 1.0 / (1.0 + jnp.exp(-alpha))  # sigmoid transform
 
         V = compute_utilities(
-            data.design_matrix, beta, data.n_obs, data.n_alts,
+            data.design_matrix,
+            beta,
+            data.n_obs,
+            data.n_alts,
             inclusion_probs=data.inclusion_probs,
             available=data.available,
         )
@@ -450,8 +483,7 @@ def build_mixed_logit_objective(
     # Parameter names
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
-        name for i, name in enumerate(param_names_list)
-        if i not in random_col_indices
+        name for i, name in enumerate(param_names_list) if i not in random_col_indices
     ]
     random_param_names = [param_names_list[i] for i in random_col_indices]
     display_param_names = (

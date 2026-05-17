@@ -12,7 +12,6 @@ because MLE estimates have sampling variability.
 """
 
 import numpy.testing as npt
-import pytest
 
 from locpick import MultinomialLogit
 from locpick.dgp import (
@@ -26,7 +25,6 @@ from locpick.models.mixed import MixedLogit, ParamDistribution
 from locpick.models.mscl import MixedSpatiallyCorrelatedLogit
 from locpick.models.nested import NestedLogit
 from locpick.models.scl import SpatiallyCorrelatedLogit
-
 
 # ---------------------------------------------------------------------------
 # MNL parameter recovery

@@ -8,10 +8,10 @@ import pytest
 from locpick import ChoiceTable, MultinomialLogit
 from locpick.results.diagnostics import FitDiagnostics
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_simple_dataset(n_obs=200, n_alts=4, seed=42):
     """Create a simple choice dataset for testing."""
@@ -46,6 +46,7 @@ def _make_simple_dataset(n_obs=200, n_alts=4, seed=42):
 # Marginal Effects
 # ---------------------------------------------------------------------------
 
+
 class TestMarginalEffects:
     """Tests for marginal effect computation on MNL."""
 
@@ -53,7 +54,7 @@ class TestMarginalEffects:
         """Marginal effects should have same length as observations * alternatives."""
         ct, _, _, _ = _make_simple_dataset(n_obs=50, n_alts=5)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         me = model.marginal_effect(variable="cost")
         assert len(me) == ct.n_observations * ct.n_alternatives
@@ -76,7 +77,7 @@ class TestMarginalEffects:
         """Cross ME should have opposite sign to direct ME."""
         ct, _, _, _ = _make_simple_dataset(n_obs=100, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         me = model.marginal_effect(variable="cost")
         cross_me = model.cross_marginal_effect(variable="cost")
@@ -88,7 +89,7 @@ class TestMarginalEffects:
         """Elasticity = ME * x (for direct effects)."""
         ct, _, _, _ = _make_simple_dataset(n_obs=50, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         me = model.marginal_effect(variable="cost")
         elast = model.elasticity(variable="cost")
@@ -104,7 +105,7 @@ class TestMarginalEffects:
         """ME should work on out-of-sample data."""
         ct, _, _, _ = _make_simple_dataset(n_obs=100, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model.fit()
 
         # New data
         rng = np.random.default_rng(99)
@@ -121,7 +122,8 @@ class TestMarginalEffects:
             index=pd.Index(np.arange(4), name="aid"),
         )
         ct_new = ChoiceTable.from_tables(
-            choosers_new, alternatives_new,
+            choosers_new,
+            alternatives_new,
             chosen_alternatives=pd.Series(rng.choice(4, size=20), index=choosers_new.index),
         )
 
@@ -133,6 +135,7 @@ class TestMarginalEffects:
 # ---------------------------------------------------------------------------
 # WTP / VOT
 # ---------------------------------------------------------------------------
+
 
 class TestWTP:
     """Tests for willingness-to-pay computation."""

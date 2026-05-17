@@ -59,9 +59,7 @@ class ModelSpec:
 
     def __post_init__(self):
         if self.utility is not None and (self.formula is not None or self.scoped_terms):
-            raise ValueError(
-                "ModelSpec accepts either utility or formula/scoped_terms, not both."
-            )
+            raise ValueError("ModelSpec accepts either utility or formula/scoped_terms, not both.")
         self.interactions = tuple(self.interactions or ())
         self.scoped_terms = tuple(self.scoped_terms or ())
 
@@ -290,9 +288,7 @@ class ModelSpec:
                     }
                 )
             else:
-                raise TypeError(
-                    "Each utility term must use ParamRef or numeric coefficients."
-                )
+                raise TypeError("Each utility term must use ParamRef or numeric coefficients.")
 
         return specs
 

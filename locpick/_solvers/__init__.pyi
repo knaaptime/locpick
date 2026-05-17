@@ -1,21 +1,29 @@
+from . import bhhh as bhhh
 from . import lbfgs as lbfgs
 from . import optax as optax
-from . import optimistix as optimistix
+from . import optimagic as optimagic
 from . import protocol as protocol
+from . import trust_ncg as trust_ncg
+from .bhhh import (
+    BHHHSolver as BHHHSolver,
+)
 from .lbfgs import (
     LBFGSSolver as LBFGSSolver,
 )
 from .optax import (
     OptaxSolver as OptaxSolver,
 )
-from .optimistix import (
-    OptimistixSolver as OptimistixSolver,
+from .optimagic import (
+    OptimagicSolver as OptimagicSolver,
 )
 from .protocol import (
     Solver as Solver,
 )
 from .protocol import (
     SolverResult as SolverResult,
+)
+from .protocol import (
+    get_default_solver as get_default_solver,
 )
 from .protocol import (
     get_solver as get_solver,
@@ -25,4 +33,10 @@ from .protocol import (
 )
 from .protocol import (
     register_solver as register_solver,
+)
+from .trust_ncg import (
+    TrustKrylovSolver as TrustKrylovSolver,
+)
+from .trust_ncg import (
+    TrustNCGSolver as TrustNCGSolver,
 )

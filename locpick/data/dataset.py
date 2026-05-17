@@ -45,17 +45,13 @@ def _resolve_interaction(
         present in that observation's alternative set.
     """
     if not isinstance(series.index, pd.MultiIndex) or series.index.nlevels != 2:
-        raise ValueError(
-            "Interaction series must have a MultiIndex with levels (obs_id, alt_id)."
-        )
+        raise ValueError("Interaction series must have a MultiIndex with levels (obs_id, alt_id).")
 
     n_obs, n_alts = alt_ids_matrix.shape
     values = np.full((n_obs, n_alts), np.nan, dtype=np.float64)
 
     obs_to_row = {obs_id: i for i, obs_id in enumerate(obs_ids)}
-    obs_alt_sets = {
-        obs_id: set(alt_ids_matrix[i, :].tolist()) for i, obs_id in enumerate(obs_ids)
-    }
+    obs_alt_sets = {obs_id: set(alt_ids_matrix[i, :].tolist()) for i, obs_id in enumerate(obs_ids)}
 
     obs_level = series.index.get_level_values(0)
     for obs_id in np.unique(obs_level):
@@ -63,9 +59,7 @@ def _resolve_interaction(
             continue
         provided_alts = set(series.xs(obs_id, level=0).index.tolist())
         if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-            raise KeyError(
-                f"Interaction contains no alt_ids present for obs_id {obs_id!r}."
-            )
+            raise KeyError(f"Interaction contains no alt_ids present for obs_id {obs_id!r}.")
 
     for (obs_id, alt_id), value in series.items():
         row = obs_to_row.get(obs_id)
@@ -93,9 +87,7 @@ def build_choice_dataset_from_long(
 ) -> xr.Dataset:
     """Build a canonical choice Dataset from long-format data."""
     if obs_id_col not in df.columns or alt_id_col not in df.columns:
-        raise ValueError(
-            f"DataFrame must contain '{obs_id_col}' and '{alt_id_col}' columns."
-        )
+        raise ValueError(f"DataFrame must contain '{obs_id_col}' and '{alt_id_col}' columns.")
 
     if (not allow_duplicate_pairs) and df.duplicated([obs_id_col, alt_id_col]).any():
         raise ValueError("Duplicate (obs_id, alt_id) pairs are not allowed.")
@@ -124,7 +116,7 @@ def build_choice_dataset_from_long(
                 "number of alternatives."
             )
 
-    n_obs = len(grouped)
+    len(grouped)
     n_alts = first_len
 
     alt_ids_matrix = np.stack([g[alt_id_col].to_numpy() for _, g in grouped], axis=0)
@@ -163,39 +155,75 @@ def build_choice_dataset(
     obs_id_name: str = "obs_id",
     alt_id_name: str = "alt_id",
 ) -> xr.Dataset:
-    """Build a canonical choice Dataset from structured table inputs."""
+    """Build a canonical choice Dataset directly from matrix inputs.
+
+    Avoids the long-format round trip: chooser features are stored as 1-D
+    arrays over ``obs_id``, and alternative features are stored as 1-D over
+    ``alt_pos`` when the alt_ids matrix is constant per row (census case)
+    or as 2-D ``(obs_id, alt_pos)`` matrices when alternatives were sampled.
+    """
+    obs_ids = np.asarray(obs_ids)
+    alt_ids_matrix = np.asarray(alt_ids_matrix)
     n_obs, n_alts = alt_ids_matrix.shape
 
-    base = pd.DataFrame(
-        {
-            obs_id_name: np.repeat(obs_ids, n_alts),
-            alt_id_name: alt_ids_matrix.reshape(-1),
-        }
-    )
+    data_vars: dict[str, tuple] = {
+        "alt_id_values": (("obs_id", "alt_pos"), alt_ids_matrix),
+    }
 
-    chooser = chooser_df.copy()
-    if chooser.index.name != obs_id_name:
-        chooser.index.name = obs_id_name
-    base = base.join(chooser, how="left", on=obs_id_name)
+    # Chooser features → 1-D over obs_id (broadcast at materialization).
+    if len(chooser_df.columns):
+        chooser_aligned = (
+            chooser_df
+            if chooser_df.index.equals(pd.Index(obs_ids))
+            else chooser_df.reindex(obs_ids)
+        )
+        for col in chooser_aligned.columns:
+            data_vars[col] = (("obs_id",), chooser_aligned[col].to_numpy())
 
-    alt = alt_df.copy()
-    if alt.index.name != alt_id_name:
-        alt.index.name = alt_id_name
-    base = base.join(alt, how="left", on=alt_id_name)
+    # Alternative features.
+    if len(alt_df.columns):
+        alt_index = alt_df.index
+        # Census fast path: every row of alt_ids_matrix is the canonical
+        # ordering. Detect cheaply via shape + first-row equality.
+        is_census = (
+            sample_size is None
+            and n_alts == len(alt_index)
+            and np.array_equal(alt_ids_matrix[0], alt_index.to_numpy())
+            and (n_obs <= 1 or np.array_equal(alt_ids_matrix[-1], alt_index.to_numpy()))
+        )
+        if is_census:
+            for col in alt_df.columns:
+                data_vars[col] = (("alt_pos",), alt_df[col].to_numpy())
+        else:
+            flat_ids = alt_ids_matrix.reshape(-1)
+            alt_aligned = alt_df.reindex(flat_ids)
+            for col in alt_df.columns:
+                mat = alt_aligned[col].to_numpy().reshape(n_obs, n_alts)
+                data_vars[col] = (("obs_id", "alt_pos"), mat)
 
     if chosen_arr is not None:
-        base["chosen"] = np.asarray(chosen_arr).reshape(-1)
+        data_vars["chosen"] = (
+            ("obs_id", "alt_pos"),
+            np.asarray(chosen_arr).reshape(n_obs, n_alts),
+        )
     if available_arr is not None:
-        base["available"] = np.asarray(available_arr).reshape(-1)
+        data_vars["available"] = (
+            ("obs_id", "alt_pos"),
+            np.asarray(available_arr).reshape(n_obs, n_alts),
+        )
 
-    ds = build_choice_dataset_from_long(
-        base,
-        obs_id_col=obs_id_name,
-        alt_id_col=alt_id_name,
-        choice_col="chosen" if chosen_arr is not None else None,
-        available_col="available" if available_arr is not None else None,
-        sample_size=sample_size,
-        allow_duplicate_pairs=True,
+    ds = xr.Dataset(
+        data_vars=data_vars,
+        coords={"obs_id": obs_ids, "alt_pos": np.arange(n_alts)},
+    )
+    ds.attrs.update(
+        {
+            "obs_id_col": obs_id_name,
+            "alt_id_col": alt_id_name,
+            "choice_col": "chosen" if chosen_arr is not None else None,
+            "available_col": "available" if available_arr is not None else None,
+            "sample_size": sample_size,
+        }
     )
 
     if interaction_data:

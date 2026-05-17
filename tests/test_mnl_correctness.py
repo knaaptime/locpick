@@ -103,7 +103,7 @@ class TestAvailability:
         """Unavailable alternatives should have zero probability."""
         ct, _, _, _, avail_arr = _make_dataset_with_availability()
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(ct.n_observations, ct.n_alternatives)
@@ -118,7 +118,7 @@ class TestAvailability:
         """Probabilities of available alternatives should sum to 1."""
         ct, _, _, _, avail_arr = _make_dataset_with_availability()
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(ct.n_observations, ct.n_alternatives)
@@ -135,7 +135,7 @@ class TestAvailability:
         """When no availability is specified, all alternatives should be available."""
         ct, _, _, _ = _make_simple_dataset()
         model = MultinomialLogit(ct, formula="obsval + altval - 1")
-        result = model.fit()
+        model.fit()
 
         probs = model.probabilities(ct)
         probs_2d = probs.reshape(ct.n_observations, ct.n_alternatives)

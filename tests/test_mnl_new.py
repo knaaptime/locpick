@@ -57,7 +57,7 @@ def test_mnl_prediction(obs, alts):
     """
     ct = ChoiceTable.from_tables(obs, alts, chosen_alternatives="choice", sample_size=5)
     m = MultinomialLogit(ct, formula="obsval + altval - 1")
-    results = m.fit()
+    m.fit()
 
     probs = m.probabilities(ct)
     prob_sums = probs.sum(axis=1)

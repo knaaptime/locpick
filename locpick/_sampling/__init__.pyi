@@ -3,10 +3,14 @@ from . import inclusion as inclusion
 from . import kernels as kernels
 from .correction import (
     apply_sampling_correction as apply_sampling_correction,
+)
+from .correction import (
     get_sampling_correction as get_sampling_correction,
 )
 from .inclusion import (
     compute_inclusion_probs as compute_inclusion_probs,
+)
+from .inclusion import (
     validate_inclusion_probs as validate_inclusion_probs,
 )
 from .kernels import (

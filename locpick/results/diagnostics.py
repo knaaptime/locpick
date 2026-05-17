@@ -116,7 +116,9 @@ class FitDiagnostics:
             "Rho-squared": result.rho_squared,
             "Adjusted rho-squared": result.rho_bar_squared,
         }
-        return pd.DataFrame({"statistic": list(stats_map.keys()), "value": list(stats_map.values())})
+        return pd.DataFrame(
+            {"statistic": list(stats_map.keys()), "value": list(stats_map.values())}
+        )
 
     @staticmethod
     def summary(result: "FitResult", format: str = "text") -> str:
@@ -260,7 +262,11 @@ class FitDiagnostics:
         var_den = cov[den_idx, den_idx]
         cov_num_den = cov[num_idx, den_idx]
 
-        var_wtp = var_num / beta_den**2 + beta_num**2 * var_den / beta_den**4 - 2 * beta_num * cov_num_den / beta_den**3
+        var_wtp = (
+            var_num / beta_den**2
+            + beta_num**2 * var_den / beta_den**4
+            - 2 * beta_num * cov_num_den / beta_den**3
+        )
         se_wtp = np.sqrt(max(var_wtp, 0.0))
         t_stat = wtp_point / se_wtp if se_wtp > 0 else np.inf
         p_value = 2 * (1 - norm_dist.cdf(abs(t_stat)))

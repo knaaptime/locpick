@@ -14,17 +14,15 @@ import pytest
 
 from locpick import MultinomialLogit, NestedLogit
 from locpick.dgp import (
+    simulate_mixed_logit,
     simulate_mnl,
+    simulate_mscl,
     simulate_nested_logit,
     simulate_scl,
-    simulate_mixed_logit,
-    simulate_mscl,
 )
 from locpick.models.mixed import MixedLogit, ParamDistribution
-from locpick.models.nested import NestingTree, NestSpec
-from locpick.models.scl import SpatiallyCorrelatedLogit
 from locpick.models.mscl import MixedSpatiallyCorrelatedLogit
-
+from locpick.models.scl import SpatiallyCorrelatedLogit
 
 # ---------------------------------------------------------------------------
 # MNL Tests
@@ -442,14 +440,14 @@ class TestCacheInvalidation:
     def test_mnl_cache_cleared_on_reestimate(self):
         dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
         model = MultinomialLogit(dataset.choice_table, formula="alt_feature + obs_x_alt")
-        result = model.fit()
+        model.fit()
 
         # Populate caches
         V1 = model.utilities()
-        cov1 = model.covariance_bhhh()
+        model.covariance_bhhh()
 
         # Re-estimate
-        result2 = model.fit()
+        model.fit()
 
         # Caches should have been cleared
         assert model._utilities_cache is None
@@ -457,7 +455,7 @@ class TestCacheInvalidation:
 
         # New values should be computed fresh
         V2 = model.utilities()
-        cov2 = model.covariance_bhhh()
+        model.covariance_bhhh()
         # Values should be the same (same data, same model)
         npt.assert_array_almost_equal(V1, V2)
 
@@ -468,13 +466,13 @@ class TestCacheInvalidation:
             formula="cost + time + income_x_cost + income_x_time",
             nests=dataset.nests,
         )
-        result = model.fit()
+        model.fit()
 
         # Populate caches
         V1 = model.utilities()
 
         # Re-estimate
-        result2 = model.fit()
+        model.fit()
 
         # Caches should have been cleared
         assert model._utilities_cache is None

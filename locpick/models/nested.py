@@ -39,12 +39,12 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._jax.objective import Objective
+from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
 from locpick.results.fit_result import FitResult
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
@@ -257,6 +257,7 @@ def _nested_logit_probs_numpy(
         avail = np.ones((n_obs, n_alts), dtype=np.float64)
 
     from locpick._kernels.constants import NEG_INF
+
     utilities = np.where(avail > 0, utilities, NEG_INF)
 
     # Step 4: scaled utilities V_ij / lambda_m
@@ -821,7 +822,11 @@ class NestedLogit(BaseChoiceModel):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
+        if (
+            self._result is not None
+            and self._result.solver_result
+            and "scipy_result" in self._result.solver_result
+        ):
             scipy_result = self._result.solver_result["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
@@ -834,7 +839,11 @@ class NestedLogit(BaseChoiceModel):
                 except Exception:
                     pass
 
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
+        if (
+            self._result is not None
+            and self._result.std_errors is not None
+            and not self._result.std_errors.isna().all()
+        ):
             variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
@@ -877,7 +886,7 @@ class NestedLogit(BaseChoiceModel):
 
         # Base probabilities and per-observation LL
         probs_base = self.probabilities(data=None, beta=beta_hat, alpha=alpha_hat)
-        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1005,9 +1014,7 @@ class NestedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array(
-                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
-            )
+            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1051,12 +1058,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1099,12 +1105,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1151,12 +1156,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1200,12 +1204,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )

@@ -52,13 +52,13 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._jax.objective import Objective
+from locpick._kernels.constants import NEG_INF
+from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
 from locpick.results.fit_result import FitResult
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult, get_solver
-from locpick._kernels.constants import NEG_INF
 from locpick.spec import ModelSpec, ParamRef
 
 # ---------------------------------------------------------------------------
@@ -213,6 +213,115 @@ def generate_random_draws(
     """
     rng = np.random.default_rng(seed)
     return rng.standard_normal((n_obs, n_draws, n_random_params))
+
+
+def generate_qmc_draws(
+    n_obs: int,
+    n_draws: int,
+    n_random_params: int,
+    seed: int = 42,
+    engine: str = "sobol",
+) -> np.ndarray:
+    """Generate scrambled quasi-Monte Carlo standard normal draws.
+
+    Uses :mod:`scipy.stats.qmc` with scrambling enabled and transforms
+    the resulting low-discrepancy uniform points to standard normal via
+    the inverse CDF (``norm.ppf``).
+
+    Scrambled QMC sequences give unbiased Monte Carlo estimates with
+    variance that decreases faster than IID sampling (often closer to
+    :math:`O(N^{-1+\\epsilon})` instead of :math:`O(N^{-1/2})`), so
+    fewer draws are typically required to reach the same simulation
+    error compared with plain pseudo-random or unscrambled Halton draws.
+
+    Parameters
+    ----------
+    n_obs : int
+        Number of observations (decision-makers).
+    n_draws : int
+        Number of draws per observation per random parameter.
+    n_random_params : int
+        Number of random parameters (dimensionality of the QMC engine).
+    seed : int
+        Seed for the QMC scrambling RNG (reproducibility).
+    engine : {"sobol", "halton"}
+        Which scrambled QMC engine to use. Sobol is the default; Halton
+        is provided as a fallback for very high dimensions where Sobol's
+        2-adic structure can degrade.
+
+    Returns
+    -------
+    np.ndarray, shape (n_obs, n_draws, n_random_params)
+        Standard normal draws derived from a scrambled QMC sequence.
+    """
+    from scipy.stats import norm, qmc
+
+    n_points = int(n_obs) * int(n_draws)
+    engine_name = engine.lower()
+    if engine_name == "sobol":
+        sampler = qmc.Sobol(d=n_random_params, scramble=True, seed=seed)
+    elif engine_name == "halton":
+        sampler = qmc.Halton(d=n_random_params, scramble=True, seed=seed)
+    else:
+        raise ValueError(f"Unknown QMC engine {engine!r}; expected 'sobol' or 'halton'.")
+
+    # Sobol's balance properties are optimal at power-of-two sample sizes,
+    # but we want arbitrary N. Suppress the related warning while still
+    # benefiting from scrambling.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*balance properties of Sobol.*",
+            category=UserWarning,
+        )
+        u = sampler.random(n_points)  # shape (n_points, n_random_params)
+
+    # Avoid exact 0/1 (inverse-normal would be -inf/+inf). Clip to the
+    # smallest representable interior interval.
+    eps = np.finfo(np.float64).eps
+    u = np.clip(u, eps, 1.0 - eps)
+
+    z = norm.ppf(u)  # standard normal
+    return z.reshape(n_obs, n_draws, n_random_params).astype(np.float64)
+
+
+# Supported draw-type strings.  ``"qmc"`` is an alias for ``"sobol"``.
+_VALID_DRAW_TYPES = frozenset({"halton", "random", "qmc", "sobol", "scrambled_halton"})
+
+
+def _resolve_draws(
+    draw_type: str,
+    n_obs: int,
+    n_draws: int,
+    n_random_params: int,
+    seed: int = 42,
+) -> np.ndarray:
+    """Dispatch to the requested draw generator.
+
+    Single source of truth for ``draw_type`` resolution so the MNL/MSCL
+    fit and prediction paths stay in sync.  Recognised values:
+
+    - ``"halton"`` — legacy shuffled-Halton (back-compat default).
+    - ``"random"`` — IID pseudo-random standard normals.
+    - ``"qmc"`` / ``"sobol"`` — scrambled Sobol via
+      :func:`generate_qmc_draws`.
+    - ``"scrambled_halton"`` — scrambled Halton via
+      :func:`generate_qmc_draws`.
+    """
+    dt = draw_type.lower()
+    if dt == "halton":
+        return generate_halton_draws(n_obs, n_draws, n_random_params, seed=seed)
+    if dt == "random":
+        return generate_random_draws(n_obs, n_draws, n_random_params, seed=seed)
+    if dt in ("qmc", "sobol"):
+        return generate_qmc_draws(n_obs, n_draws, n_random_params, seed=seed, engine="sobol")
+    if dt == "scrambled_halton":
+        return generate_qmc_draws(n_obs, n_draws, n_random_params, seed=seed, engine="halton")
+    raise ValueError(
+        f"Unknown draw_type {draw_type!r}; expected one of {sorted(_VALID_DRAW_TYPES)}."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +764,10 @@ class MixedLogit(BaseChoiceModel):
     n_draws : int
         Number of draws for simulated maximum likelihood. Default 100.
     draw_type : str
-        Type of draws: ``"halton"`` (default) or ``"random"``.
+        Type of draws: ``"halton"`` (default, legacy shuffled Halton),
+        ``"random"``, ``"qmc"``/``"sobol"`` (scrambled Sobol), or
+        ``"scrambled_halton"``.  Scrambled QMC variants typically reach
+        the same simulation accuracy with substantially fewer draws.
     seed : int
         Random seed for draw generation. Default 42.
     weights : str or np.ndarray, optional
@@ -858,20 +970,13 @@ class MixedLogit(BaseChoiceModel):
         k_fixed = len(param_names) - len(random_param_names)
         k_random = len(random_param_names)
 
-        if self._draw_type == "halton":
-            self._draws = generate_halton_draws(
-                arrays.n_obs,
-                self._n_draws,
-                k_random,
-                seed=self._seed,
-            )
-        else:
-            self._draws = generate_random_draws(
-                arrays.n_obs,
-                self._n_draws,
-                k_random,
-                seed=self._seed,
-            )
+        self._draws = _resolve_draws(
+            self._draw_type,
+            arrays.n_obs,
+            self._n_draws,
+            k_random,
+            seed=self._seed,
+        )
 
         backend = (self._backend or os.environ.get("CHOICEMODELS_MIXED_BACKEND", "")).lower()
         if backend != "numpy":
@@ -1102,7 +1207,11 @@ class MixedLogit(BaseChoiceModel):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
+        if (
+            self._result is not None
+            and self._result.solver_result
+            and "scipy_result" in self._result.solver_result
+        ):
             scipy_result = self._result.solver_result["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
@@ -1115,7 +1224,11 @@ class MixedLogit(BaseChoiceModel):
                 except Exception:
                     pass
 
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
+        if (
+            self._result is not None
+            and self._result.std_errors is not None
+            and not self._result.std_errors.isna().all()
+        ):
             variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
@@ -1169,7 +1282,7 @@ class MixedLogit(BaseChoiceModel):
             beta_random_means=beta_random_means_hat,
             beta_random_spreads=beta_random_spreads_hat,
         )
-        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1187,10 +1300,16 @@ class MixedLogit(BaseChoiceModel):
             brs_minus = params_minus[k_fixed + k_random :]
 
             probs_plus = self.probabilities(
-                data=None, beta_fixed=bf_plus, beta_random_means=brm_plus, beta_random_spreads=brs_plus
+                data=None,
+                beta_fixed=bf_plus,
+                beta_random_means=brm_plus,
+                beta_random_spreads=brs_plus,
             )
             probs_minus = self.probabilities(
-                data=None, beta_fixed=bf_minus, beta_random_means=brm_minus, beta_random_spreads=brs_minus
+                data=None,
+                beta_fixed=bf_minus,
+                beta_random_means=brm_minus,
+                beta_random_spreads=brs_minus,
             )
 
             ll_plus = np.log(np.maximum(np.sum(probs_plus * chosen, axis=1), 1e-30))
@@ -1327,9 +1446,7 @@ class MixedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array(
-                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
-            )
+            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1373,12 +1490,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1420,12 +1536,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1475,12 +1590,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1490,7 +1604,9 @@ class MixedLogit(BaseChoiceModel):
         df = ct.to_frame()
         x = df[variable].values
         # For random parameters, use the mean coefficient
-        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
+        beta = self._result.coefficients.get(
+            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
+        )
 
         elasticities = (1 - probs.ravel()) * beta * x
 
@@ -1528,19 +1644,20 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
             ct = data
 
         probs = self.probabilities(data=data if data is not None else None)
-        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
+        beta = self._result.coefficients.get(
+            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
+        )
         df = ct.to_frame()
         x = df[variable].values
 
@@ -1789,20 +1906,13 @@ class MixedLogit(BaseChoiceModel):
 
         # Regenerate draws for prediction data
         if self._draws is not None and self._draws.shape[0] != arrays.n_obs:
-            if self._draw_type == "halton":
-                draws = generate_halton_draws(
-                    arrays.n_obs,
-                    self._n_draws,
-                    k_random,
-                    seed=self._seed + 1,
-                )
-            else:
-                draws = generate_random_draws(
-                    arrays.n_obs,
-                    self._n_draws,
-                    k_random,
-                    seed=self._seed + 1,
-                )
+            draws = _resolve_draws(
+                self._draw_type,
+                arrays.n_obs,
+                self._n_draws,
+                k_random,
+                seed=self._seed + 1,
+            )
         else:
             draws = self._draws
 

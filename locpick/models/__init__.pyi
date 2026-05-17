@@ -16,6 +16,9 @@ from .mixed import (
     generate_halton_draws as generate_halton_draws,
 )
 from .mixed import (
+    generate_qmc_draws as generate_qmc_draws,
+)
+from .mixed import (
     generate_random_draws as generate_random_draws,
 )
 from .mnl import (
@@ -40,10 +43,10 @@ from .nested import (
     naturalize_nest_params as naturalize_nest_params,
 )
 from .scl import (
-    SpatiallyCorrelatedLogit as SpatiallyCorrelatedLogit,
+    EdgeStructure as EdgeStructure,
 )
 from .scl import (
-    EdgeStructure as EdgeStructure,
+    SpatiallyCorrelatedLogit as SpatiallyCorrelatedLogit,
 )
 from .scl import (
     naturalize_rho as naturalize_rho,

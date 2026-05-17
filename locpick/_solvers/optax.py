@@ -138,11 +138,10 @@ class OptaxSolver:
         SolverResult
         """
         if fixed_mask is not None and np.any(fixed_mask):
-            raise NotImplementedError(
-                "OptaxSolver does not yet support fixed parameters."
-            )
+            raise NotImplementedError("OptaxSolver does not yet support fixed parameters.")
 
         from locpick._jax.objective import Objective
+
         if not isinstance(objective, Objective):
             raise TypeError("OptaxSolver.solve expects an Objective instance.")
 
@@ -198,9 +197,7 @@ class OptaxSolver:
                 perturbation = jax.random.normal(subkey, shape=x0.shape) * self.start_scale
                 x0_i = jnp.array(x0, dtype=jnp.float64) + perturbation
 
-                params_i, n_iter_i, _ = self._run_single(
-                    neg_grad_fn, ll_fn, optimizer, x0_i
-                )
+                params_i, n_iter_i, _ = self._run_single(neg_grad_fn, ll_fn, optimizer, x0_i)
                 total_iter += n_iter_i
 
                 ll_i = float(ll_fn(params_i))

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from locpick.results.diagnostics import FitDiagnostics
@@ -134,7 +133,7 @@ def format_side_by_side(
         Side-by-side comparison table.
     """
     if labels is None:
-        labels = [f"Model {i+1}" for i in range(len(results))]
+        labels = [f"Model {i + 1}" for i in range(len(results))]
 
     if format == "html":
         return _format_side_by_side_html(results, labels)
@@ -198,8 +197,12 @@ def _format_coefficient_latex(tidy: pd.DataFrame, significance_codes: bool) -> s
     if significance_codes:
         header += " & "
     header += " \\\\"
-    lines = ["\\begin{tabular}{lcccc" + ("c" if significance_codes else "") + "}",
-             "\\hline", header, "\\hline"]
+    lines = [
+        "\\begin{tabular}{lcccc" + ("c" if significance_codes else "") + "}",
+        "\\hline",
+        header,
+        "\\hline",
+    ]
 
     for name, row in tidy.iterrows():
         line = (
@@ -215,9 +218,7 @@ def _format_coefficient_latex(tidy: pd.DataFrame, significance_codes: bool) -> s
     return "\n".join(lines)
 
 
-def _format_side_by_side_text(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_text(results: list, labels: list[str]) -> str:
     # Collect all parameter names
     all_params = []
     for r in results:
@@ -225,7 +226,7 @@ def _format_side_by_side_text(
             if p not in all_params:
                 all_params.append(p)
 
-    n_models = len(results)
+    len(results)
     col_width = 12
     header = f"{'Parameter':<20}" + "".join(f" {l:>{col_width}}" for l in labels)
     lines = [header, "-" * len(header)]
@@ -258,9 +259,7 @@ def _format_side_by_side_text(
     return "\n".join(lines)
 
 
-def _format_side_by_side_html(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_html(results: list, labels: list[str]) -> str:
     all_params = []
     for r in results:
         for p in r.coefficients.index:
@@ -282,16 +281,14 @@ def _format_side_by_side_html(
     return f"<table>\n{header}\n" + "\n".join(rows) + "\n</table>"
 
 
-def _format_side_by_side_latex(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_latex(results: list, labels: list[str]) -> str:
     all_params = []
     for r in results:
         for p in r.coefficients.index:
             if p not in all_params:
                 all_params.append(p)
 
-    n_cols = 1 + len(results)
+    1 + len(results)
     col_spec = "l" + "r" * len(results)
     header = "Parameter & " + " & ".join(labels) + " \\\\"
     lines = [f"\\begin{{tabular}}{{{col_spec}}}", "\\hline", header, "\\hline"]

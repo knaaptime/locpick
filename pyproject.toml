@@ -37,10 +37,12 @@ dependencies = [
 jax = [
     "jax >= 0.4",
     "jaxlib >= 0.4",
-    "optimistix >= 0.1",
 ]
 optax = [
     "optax >= 0.1",
+]
+optimagic = [
+    "optimagic >= 0.5",
 ]
 spatial = [
     "libpysal >= 4.0",
@@ -70,6 +72,7 @@ dev = [
     "locpick[test]",
     "locpick[jax]",
     "locpick[optax]",
+    "locpick[optimagic]",
     "locpick[docs]",
     "ruff",
     "ipykernel",
