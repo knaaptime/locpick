@@ -65,7 +65,7 @@ class TestObservationScores:
         """Observation scores should have shape (n_obs, n_params)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -76,7 +76,7 @@ class TestObservationScores:
         """Sum of observation scores should equal the full gradient."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -89,7 +89,7 @@ class TestObservationScores:
         """All observation scores should be finite."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -109,7 +109,7 @@ class TestBHHHCovariance:
         """BHHH covariance should be (n_params, n_params)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_bhhh(ct)
 
@@ -119,7 +119,7 @@ class TestBHHHCovariance:
         """BHHH covariance diagonal should be positive (variances)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_bhhh(ct)
 
@@ -129,7 +129,7 @@ class TestBHHHCovariance:
         """BHHH covariance should be symmetric."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_bhhh(ct)
 
@@ -139,7 +139,7 @@ class TestBHHHCovariance:
         """BHHH standard errors should be positive and finite."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         se = model.std_errors_bhhh(ct)
 
@@ -161,7 +161,7 @@ class TestRobustCovariance:
         """Robust covariance should be (n_params, n_params)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -171,7 +171,7 @@ class TestRobustCovariance:
         """Robust covariance diagonal should be positive (variances)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -181,7 +181,7 @@ class TestRobustCovariance:
         """Robust covariance should be approximately symmetric."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -191,7 +191,7 @@ class TestRobustCovariance:
         """Robust standard errors should be positive and finite."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         se = model.std_errors_robust(ct)
 
@@ -213,7 +213,7 @@ class TestClusteredCovariance:
         """Cluster-robust covariance should be (n_params, n_params)."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         # Create cluster groups
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
@@ -226,7 +226,7 @@ class TestClusteredCovariance:
         """Cluster-robust covariance diagonal should be positive."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
 
@@ -238,7 +238,7 @@ class TestClusteredCovariance:
         """Cluster-robust standard errors should be positive and finite."""
         ct, _, _ = _make_simple_data()
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
 

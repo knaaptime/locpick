@@ -2,6 +2,7 @@ from . import bhhh as bhhh
 from . import lbfgs as lbfgs
 from . import optax as optax
 from . import optimagic as optimagic
+from . import optimistix as optimistix
 from . import protocol as protocol
 from . import trust_ncg as trust_ncg
 from .bhhh import (
@@ -15,6 +16,9 @@ from .optax import (
 )
 from .optimagic import (
     OptimagicSolver as OptimagicSolver,
+)
+from .optimistix import (
+    OptimistixSolver as OptimistixSolver,
 )
 from .protocol import (
     Solver as Solver,

@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
-
 from locpick._compat import _JAX_AVAILABLE
 
 if _JAX_AVAILABLE:
@@ -105,10 +104,7 @@ class ChoiceArrays:
         if self.available is not None and np.shape(self.available) != (self.n_obs, self.n_alts):
             raise ValueError("available must have shape (n_obs, n_alts).")
 
-        if self.inclusion_probs is not None and np.shape(self.inclusion_probs) != (
-            self.n_obs,
-            self.n_alts,
-        ):
+        if self.inclusion_probs is not None and np.shape(self.inclusion_probs) != (self.n_obs, self.n_alts):
             raise ValueError("inclusion_probs must have shape (n_obs, n_alts).")
 
     @property
@@ -132,10 +128,11 @@ class ChoiceArrays:
             param_names=list(self.param_names),
             obs_ids=np.asarray(self.obs_ids) if self.obs_ids is not None else None,
             alt_ids=np.asarray(self.alt_ids) if self.alt_ids is not None else None,
-            inclusion_probs=np.asarray(self.inclusion_probs)
-            if self.inclusion_probs is not None
-            else None,
+            inclusion_probs=np.asarray(self.inclusion_probs) if self.inclusion_probs is not None else None,
         )
 
     def __repr__(self) -> str:
-        return f"ChoiceArrays(n_obs={self.n_obs}, n_alts={self.n_alts}, n_params={self.n_params})"
+        return (
+            f"ChoiceArrays(n_obs={self.n_obs}, n_alts={self.n_alts}, "
+            f"n_params={self.n_params})"
+        )

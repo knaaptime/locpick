@@ -12,12 +12,12 @@ from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
 
-from locpick._jax.objective import Objective
-from locpick._solvers.protocol import SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.choicetable import ChoiceTable
 from locpick.data.problem import EstimationProblem
 from locpick.results.fit_result import FitResult
+from locpick._jax.objective import Objective
+from locpick._solvers.protocol import SolverResult, get_solver
 
 
 @runtime_checkable
@@ -126,6 +126,7 @@ class BaseChoiceModel(ABC):
         arrays = self._get_arrays()
         self._arrays = arrays
         objective = self._build_objective(arrays)
+        self._objective = objective
         x0, param_names, bounds, fixed_mask = self._get_solver_inputs(arrays)
 
         solver_result = self._solver.solve(

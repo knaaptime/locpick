@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from locpick import ChoiceTable, ModelSpec
-from locpick.spec import P, ScopedTerm, X
+from locpick.spec import P, X, ScopedTerm
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -218,9 +218,9 @@ def test_modelspec_utility_path_supported_for_advanced_specs():
     from locpick.data import EstimationProblem
 
     choosers, alternatives, chosen = _make_toy_data()
-    utility = P("beta_cost", null_value=-0.5, bounds=(-5.0, 0.0), holdfast=True) * X("cost") + P(
-        "beta_time"
-    ) * X("time")
+    utility = P("beta_cost", null_value=-0.5, bounds=(-5.0, 0.0), holdfast=True) * X(
+        "cost"
+    ) + P("beta_time") * X("time")
 
     spec = ModelSpec(utility=utility)
     ct = ChoiceTable.from_tables(

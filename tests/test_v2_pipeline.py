@@ -8,7 +8,6 @@ import pandas as pd
 
 from locpick import (
     ChoiceTable,
-    FitDiagnostics,
     FitResult,
     ModelSpec,
     MultinomialLogit,
@@ -55,11 +54,11 @@ def test_multinomiallogit_estimation():
     assert result.coefficients.shape[0] == 2
     assert np.isfinite(result.log_likelihood)
     # Check reporting
-    txt = FitDiagnostics.summary(result)
+    txt = result.summary()
     assert "Log-likelihood" in txt
-    html = FitDiagnostics.to_html(result)
+    html = result.to_html()
     assert "<table" in html
-    latex = FitDiagnostics.to_latex(result)
+    latex = result.to_latex()
     assert "\\begin{tabular}" in latex
 
 

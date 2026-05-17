@@ -29,21 +29,25 @@ import numpy as np
 import pandas as pd
 from scipy.special import logsumexp
 
-from locpick._compat import _JAX_AVAILABLE, _NUMBA_AVAILABLE, _NUMBA_PARALLEL
-from locpick._jax.objective import Objective
-from locpick._kernels.constants import NEG_INF
-from locpick._sampling.correction import get_sampling_correction
-from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
-from locpick.models.mixed import ParamDistribution
+from locpick.models.mixed import (
+    ParamDistribution,
+    generate_halton_draws,
+    generate_random_draws,
+)
+from locpick._compat import _JAX_AVAILABLE, _NUMBA_AVAILABLE, _NUMBA_PARALLEL
+from locpick._sampling.correction import get_sampling_correction
 from locpick.models.scl import (
     EdgeStructure,
     _resolve_spatial_graph,
     naturalize_rho,
 )
 from locpick.results.fit_result import FitResult
+from locpick._jax.objective import Objective
+from locpick._solvers import Solver, SolverResult, get_solver
+from locpick._kernels.constants import NEG_INF
 from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
@@ -119,14 +123,7 @@ if _NUMBA_AVAILABLE:
                         # Abramowitz & Stegun approximation of Phi(z)
                         t = 1.0 / (1.0 + 0.2316419 * abs(z))
                         d = 0.3989422804014327  # 1/sqrt(2*pi)
-                        poly = t * (
-                            0.319381530
-                            + t
-                            * (
-                                -0.356563782
-                                + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))
-                            )
-                        )
+                        poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
                         if z >= 0:
                             phi_z = 1.0 - d * np.exp(-0.5 * z * z) * poly
                         else:
@@ -154,19 +151,11 @@ if _NUMBA_AVAILABLE:
 
             # SCL log-probabilities for this draw (already parallel inside)
             log_probs = _scl_log_probs_numba_core(
-                V,
-                rho,
-                allocation,
-                avail,
-                edge_i,
-                edge_j,
-                alt_edge_starts,
-                alt_edge_counts,
-                alt_edge_indices,
-                alt_edge_is_first,
-                connected,
-                isolated,
-                n_edges,
+                V, rho, allocation, avail,
+                edge_i, edge_j,
+                alt_edge_starts, alt_edge_counts,
+                alt_edge_indices, alt_edge_is_first,
+                connected, isolated, n_edges,
             )
 
             # Chosen log-probability for this draw (parallel over obs)
@@ -249,7 +238,9 @@ def _mscl_simulated_ll_numba(
 
     # Encode distributions as int array for Numba
     dist_map = {"normal": 0, "lognormal": 1, "triangular": 2, "uniform": 3}
-    dist_codes = np.array([dist_map.get(d, 0) for d in random_distributions], dtype=np.int64)
+    dist_codes = np.array(
+        [dist_map.get(d, 0) for d in random_distributions], dtype=np.int64
+    )
 
     return _mscl_ll_numba_core(
         np.ascontiguousarray(v_fixed),
@@ -409,7 +400,6 @@ def _mscl_simulated_ll_numpy(
             beta_random_r[:, :, p] = np.exp(np.clip(mean_p + spread_p * z_p, -50, 50))
         elif random_distributions[p] in ("triangular", "uniform"):
             from scipy.stats import norm as norm_dist
-
             u = norm_dist.cdf(z_p)
             beta_random_r[:, :, p] = mean_p + spread_p * (2 * u - 1)
 
@@ -614,11 +604,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         Number of Halton draws for simulated maximum likelihood.
         Default 250.
     draw_type : str, optional
-        Type of draws: ``"halton"`` (default, legacy shuffled Halton),
-        ``"random"``, ``"qmc"``/``"sobol"`` (scrambled Sobol), or
-        ``"scrambled_halton"``.  The scrambled QMC variants typically
-        reach the same simulation accuracy with substantially fewer
-        draws.
+        Type of draws: ``"halton"`` (default) or ``"random"``.
     weights : str or array-like, optional
         Observation weights.
     availability : str or array-like, optional
@@ -630,7 +616,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
 
     Examples
     --------
-    >>> from locpick import ChoiceTable, FitDiagnostics, MixedSpatiallyCorrelatedLogit
+    >>> from locpick import ChoiceTable, MixedSpatiallyCorrelatedLogit
     >>> from locpick.models.mixed import ParamDistribution
     >>> from libpysal import graph
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=10)
@@ -643,7 +629,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
     ...     n_draws=250,
     ... )
     >>> result = model.fit()
-    >>> print(FitDiagnostics.summary(result))
+    >>> print(result.summary())
     """
 
     def __init__(
@@ -783,9 +769,10 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         k_total = arrays.design_matrix.shape[1]
 
         # Generate draws
-        from locpick.models.mixed import _resolve_draws
-
-        draws = _resolve_draws(self._draw_type, arrays.n_obs, self._n_draws, k_random, seed=42)
+        if self._draw_type == "halton":
+            draws = generate_halton_draws(arrays.n_obs, self._n_draws, k_random, seed=42)
+        else:
+            draws = generate_random_draws(arrays.n_obs, self._n_draws, k_random, seed=42)
 
         # Cache random structure for objective/prediction paths
         self._draws = draws
@@ -832,9 +819,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._allocation is None or self._edge_list is None:
             raise RuntimeError("Spatial graph must be resolved before building objective.")
         if not hasattr(self, "_random_col_indices"):
-            raise RuntimeError(
-                "Random parameter structure must be prepared before building objective."
-            )
+            raise RuntimeError("Random parameter structure must be prepared before building objective.")
 
         random_col_indices = self._random_col_indices
         random_distributions = self._random_distributions
@@ -974,11 +959,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        if (
-            self._result is not None
-            and self._result.solver_result
-            and "scipy_result" in self._result.solver_result
-        ):
+        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
             scipy_result = self._result.solver_result["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
@@ -991,11 +972,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
                 except Exception:
                     pass
 
-        if (
-            self._result is not None
-            and self._result.std_errors is not None
-            and not self._result.std_errors.isna().all()
-        ):
+        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
             variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
@@ -1046,13 +1023,10 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
 
         # Base probabilities and per-observation LL
         probs_base = self.probabilities(
-            data=None,
-            beta_fixed=bf_hat,
-            rho=rho_hat,
-            beta_random_means=brm_hat,
-            beta_random_spreads=brs_hat,
+            data=None, beta_fixed=bf_hat, rho=rho_hat,
+            beta_random_means=brm_hat, beta_random_spreads=brs_hat,
         )
-        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1072,18 +1046,12 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
             brs_minus = params_minus[k_fixed + 1 + k_random :]
 
             probs_plus = self.probabilities(
-                data=None,
-                beta_fixed=bf_plus,
-                rho=rho_plus,
-                beta_random_means=brm_plus,
-                beta_random_spreads=brs_plus,
+                data=None, beta_fixed=bf_plus, rho=rho_plus,
+                beta_random_means=brm_plus, beta_random_spreads=brs_plus,
             )
             probs_minus = self.probabilities(
-                data=None,
-                beta_fixed=bf_minus,
-                rho=rho_minus,
-                beta_random_means=brm_minus,
-                beta_random_spreads=brs_minus,
+                data=None, beta_fixed=bf_minus, rho=rho_minus,
+                beta_random_means=brm_minus, beta_random_spreads=brs_minus,
             )
 
             ll_plus = np.log(np.maximum(np.sum(probs_plus * chosen, axis=1), 1e-30))
@@ -1142,9 +1110,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
             beta_fixed = np.asarray(coeffs[:k_fixed], dtype=np.float64)
         if beta_random_means is None:
             coeffs = self._result.coefficients.values
-            beta_random_means = np.asarray(
-                coeffs[k_fixed + 1 : k_fixed + 1 + k_random], dtype=np.float64
-            )
+            beta_random_means = np.asarray(coeffs[k_fixed + 1 : k_fixed + 1 + k_random], dtype=np.float64)
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         n_obs = arrays.n_obs
@@ -1223,7 +1189,9 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+            chosen_indices = np.array(
+                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
+            )
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1267,11 +1235,12 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1313,11 +1282,12 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1367,11 +1337,12 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1381,9 +1352,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         df = ct.to_frame()
         x = df[variable].values
         # For random parameters, use the mean coefficient
-        beta = self._result.coefficients.get(
-            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
-        )
+        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
 
         elasticities = (1 - probs.ravel()) * beta * x
 
@@ -1421,20 +1390,19 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
             ct = data
 
         probs = self.probabilities(data=data if data is not None else None)
-        beta = self._result.coefficients.get(
-            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
-        )
+        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
         df = ct.to_frame()
         x = df[variable].values
 
@@ -1677,9 +1645,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         random_distributions = []
         for name, dist in self._random_params.items():
             random_col_indices.append(param_names.index(name))
-            random_distributions.append(
-                dist.distribution if hasattr(dist, "distribution") else dist
-            )
+            random_distributions.append(dist.distribution if hasattr(dist, 'distribution') else dist)
 
         k_total = arrays.design_matrix.shape[1]
         k_random = len(random_col_indices)
@@ -1706,48 +1672,36 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         inclusion_probs = get_sampling_correction(arrays)
 
         # Generate draws (same as estimation)
-        from locpick.models.mixed import _resolve_draws
+        from locpick.models.mixed import generate_halton_draws, generate_random_draws
 
-        draws = _resolve_draws(self._draw_type, n_obs, self._n_draws, k_random, seed=42)
+        if self._draw_type == "halton":
+            draws = generate_halton_draws(n_obs, self._n_draws, k_random)
+        else:
+            draws = generate_random_draws(n_obs, self._n_draws, k_random, seed=42)
 
         # Compute simulated probabilities
         alpha_rho = np.log(rho / (1.0 - rho)) if rho is not None else 0.0
 
         if self._edge_struct is not None and _NUMBA_AVAILABLE:
-            _mscl_simulated_ll_numba(
-                beta_fixed,
-                alpha_rho,
-                beta_random_means,
-                np.abs(beta_random_spreads),
-                random_distributions,
-                draws,
-                dm,
+            ll_per_draw = _mscl_simulated_ll_numba(
+                beta_fixed, alpha_rho,
+                beta_random_means, np.abs(beta_random_spreads),
+                random_distributions, draws, dm,
                 np.zeros((n_obs, n_alts)),  # chosen not needed for probs
-                self._edge_struct,
-                random_col_indices,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
+                self._edge_struct, random_col_indices,
+                n_obs, n_alts,
+                available=available, inclusion_probs=inclusion_probs,
                 weights=None,
             )
         else:
-            _mscl_simulated_ll_numpy(
-                beta_fixed,
-                alpha_rho,
-                beta_random_means,
-                np.abs(beta_random_spreads),
-                random_distributions,
-                draws,
-                dm,
+            ll_per_draw = _mscl_simulated_ll_numpy(
+                beta_fixed, alpha_rho,
+                beta_random_means, np.abs(beta_random_spreads),
+                random_distributions, draws, dm,
                 np.zeros((n_obs, n_alts)),  # chosen not needed for probs
-                self._allocation,
-                self._edge_list,
-                random_col_indices,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
+                self._allocation, self._edge_list, random_col_indices,
+                n_obs, n_alts,
+                available=available, inclusion_probs=inclusion_probs,
                 weights=None,
             )
 
@@ -1764,9 +1718,7 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
             V_fixed = np.zeros((n_obs, n_alts), dtype=np.float64)
 
         # Reshape random columns for vectorized computation
-        dm_random = dm[:, random_col_indices].reshape(
-            n_obs, n_alts, -1
-        )  # (n_obs, n_alts, k_random)
+        dm_random = dm[:, random_col_indices].reshape(n_obs, n_alts, -1)  # (n_obs, n_alts, k_random)
 
         for r in range(self._n_draws):
             # Per-draw random coefficients: (n_obs, k_random)
@@ -1776,21 +1728,16 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
             )
 
             # Per-observation random utility: V_random[i, j] = dm_random[i, j, :] @ beta_random_draws[i, :]
-            V_random = np.einsum("ijk,ik->ij", dm_random, beta_random_draws)
+            V_random = np.einsum('ijk,ik->ij', dm_random, beta_random_draws)
 
             V = V_fixed + V_random
             if inclusion_probs is not None:
                 V = V - np.log(np.maximum(inclusion_probs.reshape(n_obs, n_alts), 1e-300))
 
             log_probs = _mscl_log_probs_from_V_numpy(
-                V,
-                rho,
-                self._allocation,
-                self._edge_list,
-                n_obs,
-                n_alts,
-                np.ones((n_obs, n_alts))
-                if available is None
+                V, rho, self._allocation, self._edge_list,
+                n_obs, n_alts,
+                np.ones((n_obs, n_alts)) if available is None
                 else available.reshape(n_obs, n_alts),
             )
             probs += np.exp(log_probs)
@@ -1864,7 +1811,23 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
             except Exception:
                 std_errors = np.full(len(display_params), np.nan)
         else:
-            std_errors = np.full(len(display_params), np.nan)
+            # Compute Hessian lazily via objective if available
+            if hasattr(self, '_objective') and self._objective is not None:
+                try:
+                    hess = self._objective.hessian(all_params)
+                    se_all = np.sqrt(np.abs(np.diag(hess)))
+                    se_rho = rho * (1.0 - rho) * se_all[k_fixed]
+                    std_errors = np.concatenate(
+                        [
+                            se_all[:k_fixed],
+                            [se_rho],
+                            se_all[k_fixed + 1 :],
+                        ]
+                    )
+                except Exception:
+                    std_errors = np.full(len(display_params), np.nan)
+            else:
+                std_errors = np.full(len(display_params), np.nan)
 
         # T-values and p-values
         with np.errstate(divide="ignore", invalid="ignore"):

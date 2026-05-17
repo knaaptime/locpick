@@ -287,3 +287,22 @@ class TestSolverBoundsAndFixed:
         # Should converge within bounds
         assert -5.0 <= result.coefficients.iloc[0] <= 5.0
         assert -10.0 <= result.coefficients.iloc[1] <= 10.0
+
+    def test_fixed_parameter_with_optimistix(self):
+        """Optimistix should honor fixed_mask by holding fixed params at x0."""
+        pytest.importorskip("optimistix")
+
+        ct = make_choice_table()
+        problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
+        problem = EstimationProblem(
+            arrays=problem.arrays,
+            param_names=problem.param_names,
+            param_initial=[0.5, 0.0],
+            param_fixed=[True, False],
+        )
+
+        model = MultinomialLogit(data=ct, problem=problem, solver="optimistix")
+        result = model.fit()
+
+        assert abs(result.coefficients.iloc[0] - 0.5) < 1e-6
+        assert np.isfinite(result.coefficients.iloc[1])

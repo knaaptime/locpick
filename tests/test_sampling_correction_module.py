@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import numpy.testing as npt
 
-from locpick._sampling.correction import apply_sampling_correction, get_sampling_correction
 from locpick.data.arrays import ChoiceArrays
+from locpick._sampling.correction import apply_sampling_correction, get_sampling_correction
 
 
 class TestGetSamplingCorrection:

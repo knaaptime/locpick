@@ -7,7 +7,7 @@ was duplicated inside each model's ``_build_*_jax`` closure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -49,13 +49,6 @@ class EdgeDataJAX:
         Flat alt-edge table: edge index for each (alt, edge) pair.
     flat_is_first : jnp.ndarray or None
         Flat alt-edge table: whether the alt is the "first" node in the edge.
-    alloc_ij : jnp.ndarray, shape (n_edges,)
-        Precomputed ``allocation[edge_i, edge_j]`` gather, cached so the
-        spatial kernel does not redo the 2-D fancy index every call.
-    alloc_ji : jnp.ndarray, shape (n_edges,)
-        Precomputed ``allocation[edge_j, edge_i]`` gather.
-    isolated_mask : jnp.ndarray, shape (n_alts,)
-        Precomputed 0/1 mask marking isolated alternatives.
     """
 
     edge_i: "jnp.ndarray"
@@ -68,9 +61,6 @@ class EdgeDataJAX:
     flat_alt_idx: Optional["jnp.ndarray"] = None
     flat_edge_idx: Optional["jnp.ndarray"] = None
     flat_is_first: Optional["jnp.ndarray"] = None
-    alloc_ij: Optional["jnp.ndarray"] = None
-    alloc_ji: Optional["jnp.ndarray"] = None
-    isolated_mask: Optional["jnp.ndarray"] = None
 
     @classmethod
     def from_edge_structure(cls, edge_struct) -> "EdgeDataJAX":
@@ -110,20 +100,6 @@ class EdgeDataJAX:
                 _is_first_np[pos] = int(edge_struct.alt_edge_is_first[start + k])
                 pos += 1
 
-        # Cache parameter-independent spatial primitives so the SCL kernel
-        # does not recompute them inside every gradient call. These are pure
-        # functions of the topology (edges + allocation matrix + isolated
-        # set) and stay fixed for the lifetime of an EdgeDataJAX.
-        ei_np = np.asarray(edge_struct.edge_i, dtype=np.int64)
-        ej_np = np.asarray(edge_struct.edge_j, dtype=np.int64)
-        alloc_np = np.asarray(edge_struct.allocation, dtype=np.float64)
-        alloc_ij_np = alloc_np[ei_np, ej_np] if n_edges > 0 else np.empty(0, dtype=np.float64)
-        alloc_ji_np = alloc_np[ej_np, ei_np] if n_edges > 0 else np.empty(0, dtype=np.float64)
-
-        isolated_mask_np = np.zeros(n_alts, dtype=np.float64)
-        if n_isolated > 0:
-            isolated_mask_np[np.asarray(edge_struct.isolated, dtype=np.int64)] = 1.0
-
         return cls(
             edge_i=jnp.array(edge_struct.edge_i, dtype=jnp.int32),
             edge_j=jnp.array(edge_struct.edge_j, dtype=jnp.int32),
@@ -131,15 +107,10 @@ class EdgeDataJAX:
             n_edges=n_edges,
             n_alts=n_alts,
             isolated=jnp.array(edge_struct.isolated, dtype=jnp.int32) if n_isolated > 0 else None,
-            connected=jnp.array(edge_struct.connected, dtype=jnp.int32)
-            if n_connected > 0
-            else None,
+            connected=jnp.array(edge_struct.connected, dtype=jnp.int32) if n_connected > 0 else None,
             flat_alt_idx=jnp.array(_alt_idx_np, dtype=jnp.int32),
             flat_edge_idx=jnp.array(_edge_idx_np, dtype=jnp.int32),
             flat_is_first=jnp.array(_is_first_np, dtype=jnp.int32),
-            alloc_ij=jnp.array(alloc_ij_np, dtype=jnp.float64),
-            alloc_ji=jnp.array(alloc_ji_np, dtype=jnp.float64),
-            isolated_mask=jnp.array(isolated_mask_np, dtype=jnp.float64),
         )
 
 
@@ -199,14 +170,8 @@ class ChoiceDataJAX:
     dm_random: Optional["jnp.ndarray"] = None
 
     @classmethod
-    def from_arrays(
-        cls,
-        arrays,
-        edge_struct=None,
-        draws=None,
-        random_col_indices=None,
-        random_distributions=None,
-    ):
+    def from_arrays(cls, arrays, edge_struct=None, draws=None,
+                    random_col_indices=None, random_distributions=None):
         """Build from a :class:`~locpick.data.arrays.ChoiceArrays`.
 
         Parameters
@@ -270,8 +235,12 @@ class ChoiceDataJAX:
             fixed_col_indices = [i for i in all_col_indices if i not in random_col_indices]
 
             if fixed_col_indices:
-                dm_fixed = jnp.array(arrays.design_matrix[:, fixed_col_indices], dtype=jnp.float64)
-            dm_random = jnp.array(arrays.design_matrix[:, random_col_indices], dtype=jnp.float64)
+                dm_fixed = jnp.array(
+                    arrays.design_matrix[:, fixed_col_indices], dtype=jnp.float64
+                )
+            dm_random = jnp.array(
+                arrays.design_matrix[:, random_col_indices], dtype=jnp.float64
+            )
 
             # Encode distributions as int array
             dist_map = {"normal": 0, "lognormal": 1, "triangular": 2, "uniform": 3}

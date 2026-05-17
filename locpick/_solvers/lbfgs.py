@@ -47,7 +47,6 @@ class LBFGSSolver:
 
         # Objective-first contract: solver inputs are carried on Objective.
         from locpick._jax.objective import Objective
-
         if not isinstance(objective, Objective):
             raise TypeError("LBFGSSolver.solve expects an Objective instance.")
 

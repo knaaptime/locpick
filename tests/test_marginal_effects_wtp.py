@@ -6,12 +6,11 @@ import pandas as pd
 import pytest
 
 from locpick import ChoiceTable, MultinomialLogit
-from locpick.results.diagnostics import FitDiagnostics
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _make_simple_dataset(n_obs=200, n_alts=4, seed=42):
     """Create a simple choice dataset for testing."""
@@ -46,7 +45,6 @@ def _make_simple_dataset(n_obs=200, n_alts=4, seed=42):
 # Marginal Effects
 # ---------------------------------------------------------------------------
 
-
 class TestMarginalEffects:
     """Tests for marginal effect computation on MNL."""
 
@@ -54,7 +52,7 @@ class TestMarginalEffects:
         """Marginal effects should have same length as observations * alternatives."""
         ct, _, _, _ = _make_simple_dataset(n_obs=50, n_alts=5)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         me = model.marginal_effect(variable="cost")
         assert len(me) == ct.n_observations * ct.n_alternatives
@@ -77,7 +75,7 @@ class TestMarginalEffects:
         """Cross ME should have opposite sign to direct ME."""
         ct, _, _, _ = _make_simple_dataset(n_obs=100, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         me = model.marginal_effect(variable="cost")
         cross_me = model.cross_marginal_effect(variable="cost")
@@ -89,7 +87,7 @@ class TestMarginalEffects:
         """Elasticity = ME * x (for direct effects)."""
         ct, _, _, _ = _make_simple_dataset(n_obs=50, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         me = model.marginal_effect(variable="cost")
         elast = model.elasticity(variable="cost")
@@ -105,7 +103,7 @@ class TestMarginalEffects:
         """ME should work on out-of-sample data."""
         ct, _, _, _ = _make_simple_dataset(n_obs=100, n_alts=4)
         model = MultinomialLogit(ct, formula="cost + time - 1")
-        model.fit()
+        result = model.fit()
 
         # New data
         rng = np.random.default_rng(99)
@@ -122,8 +120,7 @@ class TestMarginalEffects:
             index=pd.Index(np.arange(4), name="aid"),
         )
         ct_new = ChoiceTable.from_tables(
-            choosers_new,
-            alternatives_new,
+            choosers_new, alternatives_new,
             chosen_alternatives=pd.Series(rng.choice(4, size=20), index=choosers_new.index),
         )
 
@@ -136,7 +133,6 @@ class TestMarginalEffects:
 # WTP / VOT
 # ---------------------------------------------------------------------------
 
-
 class TestWTP:
     """Tests for willingness-to-pay computation."""
 
@@ -146,7 +142,7 @@ class TestWTP:
         model = MultinomialLogit(ct, formula="cost + time - 1")
         result = model.fit()
 
-        wtp = FitDiagnostics.wtp(result, numerator="time", denominator="cost")
+        wtp = result.wtp(numerator="time", denominator="cost")
         beta_time = result.coefficients["time"]
         beta_cost = result.coefficients["cost"]
         expected = -beta_time / beta_cost
@@ -159,7 +155,7 @@ class TestWTP:
         model = MultinomialLogit(ct, formula="cost + time - 1")
         result = model.fit()
 
-        wtp = FitDiagnostics.wtp(result, numerator="time", denominator="cost")
+        wtp = result.wtp(numerator="time", denominator="cost")
         assert "se" in wtp.index
         assert np.isfinite(wtp["se"])
         assert wtp["se"] >= 0
@@ -170,7 +166,7 @@ class TestWTP:
         model = MultinomialLogit(ct, formula="cost + time - 1")
         result = model.fit()
 
-        wtp = FitDiagnostics.wtp(result, numerator="time", denominator="cost")
+        wtp = result.wtp(numerator="time", denominator="cost")
         assert "t_stat" in wtp.index
         assert "p_value" in wtp.index
         assert np.isfinite(wtp["t_stat"])
@@ -183,7 +179,7 @@ class TestWTP:
         result = model.fit()
 
         with pytest.raises(ValueError, match="Numerator 'income' not found"):
-            FitDiagnostics.wtp(result, numerator="income", denominator="cost")
+            result.wtp(numerator="income", denominator="cost")
 
     def test_wtp_invalid_denominator_raises(self):
         """WTP should raise for invalid denominator."""
@@ -192,7 +188,7 @@ class TestWTP:
         result = model.fit()
 
         with pytest.raises(ValueError, match="Denominator 'rent' not found"):
-            FitDiagnostics.wtp(result, numerator="time", denominator="rent")
+            result.wtp(numerator="time", denominator="rent")
 
     def test_vot_is_wtp_alias(self):
         """VOT should be equivalent to WTP(time, cost)."""
@@ -200,8 +196,8 @@ class TestWTP:
         model = MultinomialLogit(ct, formula="cost + time - 1")
         result = model.fit()
 
-        vot = FitDiagnostics.vot(result, time_var="time", cost_var="cost")
-        wtp = FitDiagnostics.wtp(result, numerator="time", denominator="cost")
+        vot = result.vot(time_var="time", cost_var="cost")
+        wtp = result.wtp(numerator="time", denominator="cost")
 
         npt.assert_allclose(vot["wtp"], wtp["wtp"], rtol=1e-10)
         npt.assert_allclose(vot["se"], wtp["se"], rtol=1e-10)
@@ -219,7 +215,7 @@ class TestWTP:
         model = MultinomialLogit(ct2, formula="rent + time - 1")
         result = model.fit()
 
-        wtp = FitDiagnostics.wtp(result, numerator="time", denominator="rent")
+        wtp = result.wtp(numerator="time", denominator="rent")
         beta_time = result.coefficients["time"]
         beta_rent = result.coefficients["rent"]
         expected = -beta_time / beta_rent

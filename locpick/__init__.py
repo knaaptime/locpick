@@ -5,7 +5,7 @@ and inference tools for discrete choice models with large alternative sets.
 
 Submodules and attributes are loaded lazily following SPEC 1
 (https://scientific-python.org/specs/spec-0001/) so that ``import locpick``
-is cheap and does not eagerly import JAX or Numba. The public API
+is cheap and does not eagerly import JAX, Numba, or Optimistix. The public API
 surface is declared in the sibling ``__init__.pyi`` stub for static type
 checkers and IDE autocomplete.
 

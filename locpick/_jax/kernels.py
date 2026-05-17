@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from jax.ops import segment_sum
 from jax.scipy.special import logsumexp as jax_logsumexp
+from jax.ops import segment_sum
+
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
 from locpick._kernels.constants import NEG_INF as _NEG_INF_FLOAT
 
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
@@ -152,13 +154,11 @@ def scl_log_probs(
         return V - log_sum_exp[:, None]
 
     # --- Sparse edge terms (vectorised over edges) ---
-    exp_V_i = exp_V[:, edge_data.edge_i]  # (n_obs, n_edges)
-    exp_V_j = exp_V[:, edge_data.edge_j]  # (n_obs, n_edges)
+    exp_V_i = exp_V[:, edge_data.edge_i]   # (n_obs, n_edges)
+    exp_V_j = exp_V[:, edge_data.edge_j]   # (n_obs, n_edges)
 
-    # alloc_ij/alloc_ji are cached on edge_data (parameter-independent
-    # gathers from the allocation matrix).
-    alloc_ij = edge_data.alloc_ij  # (n_edges,)
-    alloc_ji = edge_data.alloc_ji  # (n_edges,)
+    alloc_ij = edge_data.allocation[edge_data.edge_i, edge_data.edge_j]  # (n_edges,)
+    alloc_ji = edge_data.allocation[edge_data.edge_j, edge_data.edge_i]  # (n_edges,)
 
     term_i = jnp.power(jnp.clip(alloc_ij[None, :] * exp_V_i, 1e-30, 1e30), inv_rho)
     term_j = jnp.power(jnp.clip(alloc_ji[None, :] * exp_V_j, 1e-30, 1e30), inv_rho)
@@ -203,7 +203,9 @@ def scl_log_probs(
 
     flat_segment_ids = jnp.arange(n_obs)[:, None] * n_alts + flat_alt_idx[None, :]
     flat_segment_ids = flat_segment_ids.ravel()
-    flat_exp_contrib = jnp.exp((contributions - max_contrib[:, flat_alt_idx]).ravel())
+    flat_exp_contrib = jnp.exp(
+        (contributions - max_contrib[:, flat_alt_idx]).ravel()
+    )
     flat_sum_exp = segment_sum(flat_exp_contrib, flat_segment_ids, n_obs * n_alts)
     sum_exp = flat_sum_exp.reshape(n_obs, n_alts)
 
@@ -211,8 +213,9 @@ def scl_log_probs(
 
     # Isolated alternatives — vectorised via jnp.where
     if edge_data.isolated is not None and edge_data.isolated.shape[0] > 0:
-        # Cached 0/1 mask over n_alts marking isolated alternatives.
-        isolated_mask = edge_data.isolated_mask
+        # Build a mask for isolated alternatives
+        isolated_mask = jnp.zeros(n_alts, dtype=jnp.float64)
+        isolated_mask = isolated_mask.at[edge_data.isolated].set(1.0)
         log_probs = jnp.where(
             isolated_mask[None, :] > 0,
             V - log_denom[:, None],
@@ -372,7 +375,7 @@ def mixed_logit_ll(
         Simulated log-likelihood.
     """
     # Vectorised random coefficient generation
-    means = beta_random_means[None, :]  # (1, k_random)
+    means = beta_random_means[None, :]   # (1, k_random)
     spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     def _ll_single_draw(r):
@@ -386,10 +389,7 @@ def mixed_logit_ll(
         # Transform standard normal draws to uniform via CDF
         t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
         d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
+        poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
         phi_z = jnp.where(
             z_r >= 0,
             1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
@@ -410,11 +410,9 @@ def mixed_logit_ll(
         # Select distribution per parameter — vectorised
         dist = dist_codes[None, :]  # (1, k_random)
         beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
-            ),
+            dist == 0, beta_normal,
+            jnp.where(dist == 1, beta_lognormal,
+                jnp.where(dist == 2, beta_triangular, beta_uniform)),
         )  # (n_obs, k_random)
 
         # Random utility component
@@ -476,12 +474,21 @@ def compute_ll_contribs(
     chosen: jnp.ndarray,
     weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Per-observation weighted log-likelihood contributions.
+    """Compute per-observation log-likelihood contributions.
 
-    Returns an array of shape ``(n_obs,)`` whose sum equals
-    :func:`compute_ll`. Used by the BHHH solver to assemble the
-    outer-product-of-gradients Hessian approximation via
-    ``jax.jacrev`` of this function.
+    Parameters
+    ----------
+    log_probs : jnp.ndarray, shape (n_obs, n_alts)
+        Log-probabilities for each (obs, alt) pair.
+    chosen : jnp.ndarray, shape (n_obs, n_alts)
+        Binary indicator matrix for chosen alternatives.
+    weights : jnp.ndarray, shape (n_obs,)
+        Observation-level weights.
+
+    Returns
+    -------
+    jnp.ndarray, shape (n_obs,)
+        Per-observation weighted log-likelihood contributions.
     """
     chosen_log_probs = (log_probs * chosen).sum(axis=1)
     return chosen_log_probs * weights

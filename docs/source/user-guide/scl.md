@@ -47,7 +47,7 @@ All inputs are binarised (any non-zero entry becomes 1) and the diagonal is zero
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, FitDiagnostics, SpatiallyCorrelatedLogit
+from locpick import ChoiceTable, SpatiallyCorrelatedLogit
 from libpysal import graph
 
 # Build spatial adjacency from zone geometries
@@ -57,7 +57,7 @@ g = graph.Graph.build_contiguity(tracts_gdf, rook=False)
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
 model = SpatiallyCorrelatedLogit(ct, formula="cost + time", graph=g)
 result = model.fit()
-print(FitDiagnostics.summary(result))
+print(result.summary())
 ```
 
 ## Using scipy.sparse Input

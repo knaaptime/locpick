@@ -16,12 +16,12 @@ The `MultinomialLogit` class estimates multinomial logit (MNL) models for locati
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, FitDiagnostics, MultinomialLogit
+from locpick import ChoiceTable, MultinomialLogit
 
 ct = ChoiceTable.from_tables(choosers, alternatives, choice_column="choice")
 model = MultinomialLogit(ct, formula="choice ~ cost + time - 1")
 result = model.fit()
-print(FitDiagnostics.summary(result))
+print(result.summary())
 ```
 
 ## Backend Selection

@@ -2,8 +2,8 @@
 
 This package provides:
 
-- :mod:`locpick.results.fit_result` — ``FitResult`` payload dataclass (estimation outputs)
-- :mod:`locpick.results.diagnostics` — ``FitDiagnostics``, statistical tests, reporting
+- :mod:`locpick.results.fit_result` — ``FitResult`` payload dataclass (estimation outputs and reporting)
+- :mod:`locpick.results.diagnostics` — ``LikelihoodRatioTest``, ``WaldTest``, statistical tests
 
 Submodules and attributes are loaded lazily following SPEC 1
 (https://scientific-python.org/specs/spec-0001/).

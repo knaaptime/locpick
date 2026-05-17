@@ -95,19 +95,40 @@ _SOLVERS: dict[str, type] = {}
 
 def _register_builtins() -> None:
     """Register built-in solvers."""
-    from .bhhh import BHHHSolver
     from .lbfgs import LBFGSSolver
-    from .trust_ncg import TrustKrylovSolver, TrustNCGSolver
 
     _SOLVERS.setdefault("lbfgs", LBFGSSolver)
-    _SOLVERS.setdefault("bhhh", BHHHSolver)
-    _SOLVERS.setdefault("trust-ncg", TrustNCGSolver)
-    _SOLVERS.setdefault("trust-krylov", TrustKrylovSolver)
 
+    # BHHH (optional — requires JAX)
+    try:
+        from .bhhh import BHHHSolver
+
+        _SOLVERS.setdefault("bhhh", BHHHSolver)
+    except ImportError:
+        pass
+
+    # Trust-region Newton (optional — requires JAX + scipy)
+    try:
+        from .trust_ncg import TrustKrylovSolver, TrustNCGSolver
+
+        _SOLVERS.setdefault("trust-ncg", TrustNCGSolver)
+        _SOLVERS.setdefault("trust-krylov", TrustKrylovSolver)
+    except ImportError:
+        pass
+
+    # Optimagic (optional — requires optimagic)
     try:
         from .optimagic import OptimagicSolver
 
         _SOLVERS.setdefault("optimagic", OptimagicSolver)
+    except ImportError:
+        pass
+
+    # Optimistix (optional — requires optimistix)
+    try:
+        from .optimistix import OptimistixSolver
+
+        _SOLVERS.setdefault("optimistix", OptimistixSolver)
     except ImportError:
         pass
 

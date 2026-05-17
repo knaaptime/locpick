@@ -26,14 +26,14 @@ import pandas as pd
 from scipy.special import logsumexp
 
 from locpick._compat import _JAX_AVAILABLE, _NUMBA_AVAILABLE, _NUMBA_PARALLEL
-from locpick._jax.objective import Objective
-from locpick._kernels.constants import NEG_INF
-from locpick._sampling.correction import get_sampling_correction
-from locpick._solvers import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
 from locpick.results.fit_result import FitResult
+from locpick._sampling.correction import get_sampling_correction
+from locpick._jax.objective import Objective
+from locpick._solvers import Solver, SolverResult, get_solver
+from locpick._kernels.constants import NEG_INF
 from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,9 @@ class EdgeStructure:
             connected_set.add(j)
 
         self.connected = np.array(sorted(connected_set), dtype=np.int64)
-        self.isolated = np.array(sorted(set(range(n_alts)) - connected_set), dtype=np.int64)
+        self.isolated = np.array(
+            sorted(set(range(n_alts)) - connected_set), dtype=np.int64
+        )
 
         # Build alt → edge mapping as flat arrays
         # For each alt, store the indices of edges it participates in
@@ -362,9 +364,7 @@ if _NUMBA_AVAILABLE:
 
                     s = my_term + other_term
                     log_cond = np.log(my_term) - np.log(s) if s > 0.0 else 0.0
-                    log_nest = (
-                        np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
-                    )
+                    log_nest = np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
                     log_probs[n, alt_i] = log_cond + log_nest
                 else:
                     # Multiple edges: need logsumexp
@@ -382,11 +382,7 @@ if _NUMBA_AVAILABLE:
 
                         s = my_term + other_term
                         log_cond = np.log(my_term) - np.log(s) if s > 0.0 else 0.0
-                        log_nest = (
-                            np.log(nest_vals_n[e_idx]) - log_denom
-                            if nest_vals_n[e_idx] > 0.0
-                            else 0.0
-                        )
+                        log_nest = np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
                         contributions[k] = log_cond + log_nest
                         if contributions[k] > max_log:
                             max_log = contributions[k]
@@ -430,19 +426,11 @@ if _NUMBA_AVAILABLE:
     ) -> float:
         """Numba-JIT SCL log-likelihood kernel (parallel over observations)."""
         log_probs = _scl_log_probs_numba_core(
-            V,
-            rho,
-            allocation,
-            avail,
-            edge_i,
-            edge_j,
-            alt_edge_starts,
-            alt_edge_counts,
-            alt_edge_indices,
-            alt_edge_is_first,
-            connected,
-            isolated,
-            n_edges,
+            V, rho, allocation, avail,
+            edge_i, edge_j,
+            alt_edge_starts, alt_edge_counts,
+            alt_edge_indices, alt_edge_is_first,
+            connected, isolated, n_edges,
         )
         n_obs = V.shape[0]
         n_alts = V.shape[1]
@@ -482,18 +470,11 @@ def _scl_log_probs_numba(
     np.ndarray, shape (n_obs, n_alts)
     """
     return _scl_log_probs_numba_core(
-        V,
-        rho,
-        edge_struct.allocation,
-        avail,
-        edge_struct.edge_i,
-        edge_struct.edge_j,
-        edge_struct.alt_edge_starts,
-        edge_struct.alt_edge_counts,
-        edge_struct.alt_edge_indices,
-        edge_struct.alt_edge_is_first,
-        edge_struct.connected,
-        edge_struct.isolated,
+        V, rho, edge_struct.allocation, avail,
+        edge_struct.edge_i, edge_struct.edge_j,
+        edge_struct.alt_edge_starts, edge_struct.alt_edge_counts,
+        edge_struct.alt_edge_indices, edge_struct.alt_edge_is_first,
+        edge_struct.connected, edge_struct.isolated,
         edge_struct.n_edges,
     )
 
@@ -508,20 +489,11 @@ def _scl_ll_numba(
 ) -> float:
     """Compute SCL log-likelihood using Numba-JIT backend."""
     return _scl_ll_numba_core(
-        V,
-        rho,
-        edge_struct.allocation,
-        chosen,
-        avail,
-        weights,
-        edge_struct.edge_i,
-        edge_struct.edge_j,
-        edge_struct.alt_edge_starts,
-        edge_struct.alt_edge_counts,
-        edge_struct.alt_edge_indices,
-        edge_struct.alt_edge_is_first,
-        edge_struct.connected,
-        edge_struct.isolated,
+        V, rho, edge_struct.allocation, chosen, avail, weights,
+        edge_struct.edge_i, edge_struct.edge_j,
+        edge_struct.alt_edge_starts, edge_struct.alt_edge_counts,
+        edge_struct.alt_edge_indices, edge_struct.alt_edge_is_first,
+        edge_struct.connected, edge_struct.isolated,
         edge_struct.n_edges,
     )
 
@@ -896,15 +868,8 @@ def _scl_log_probs_dispatch(
         return _scl_log_probs_numba(V, rho, edge_struct, avail)
     else:
         return _scl_log_probs_numpy(
-            beta,
-            rho,
-            design_matrix,
-            allocation,
-            edge_list,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
+            beta, rho, design_matrix, allocation, edge_list,
+            n_obs, n_alts, available=available, inclusion_probs=inclusion_probs,
         )
 
 
@@ -924,9 +889,13 @@ def _scl_ll_dispatch(
 ) -> float:
     """Compute SCL log-likelihood, dispatching to Numba or NumPy."""
     V, avail = _prepare_V(beta, design_matrix, n_obs, n_alts, available, inclusion_probs)
-    chosen_2d = np.ascontiguousarray(np.asarray(chosen, dtype=np.float64).reshape(n_obs, n_alts))
+    chosen_2d = np.ascontiguousarray(
+        np.asarray(chosen, dtype=np.float64).reshape(n_obs, n_alts)
+    )
     if weights is not None:
-        w = np.ascontiguousarray(np.asarray(weights, dtype=np.float64).reshape(n_obs))
+        w = np.ascontiguousarray(
+            np.asarray(weights, dtype=np.float64).reshape(n_obs)
+        )
     else:
         w = np.ones(n_obs, dtype=np.float64)
 
@@ -934,16 +903,8 @@ def _scl_ll_dispatch(
         return _scl_ll_numba(V, rho, edge_struct, chosen_2d, avail, w)
     else:
         return _scl_ll_numpy(
-            beta,
-            rho,
-            design_matrix,
-            chosen,
-            allocation,
-            edge_list,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
+            beta, rho, design_matrix, chosen, allocation, edge_list,
+            n_obs, n_alts, available=available, inclusion_probs=inclusion_probs,
             weights=weights,
         )
 
@@ -1087,13 +1048,13 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
     Examples
     --------
-    >>> from locpick import ChoiceTable, FitDiagnostics, SpatiallyCorrelatedLogit
+    >>> from locpick import ChoiceTable, SpatiallyCorrelatedLogit
     >>> from libpysal import graph
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=10)
     >>> g = graph.Graph.build_contiguity(tracts_gdf, rook=False)
     >>> model = SpatiallyCorrelatedLogit(ct, formula="cost + time", graph=g)
     >>> result = model.fit()
-    >>> print(FitDiagnostics.summary(result))
+    >>> print(result.summary())
     """
 
     def __init__(
@@ -1358,7 +1319,17 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
             except Exception:
                 std_errors = np.full(len(display_params), np.nan)
         else:
-            std_errors = np.full(len(display_params), np.nan)
+            # Compute Hessian lazily via objective if available
+            if hasattr(self, '_objective') and self._objective is not None:
+                try:
+                    hess = self._objective.hessian(all_params)
+                    se_all = np.sqrt(np.abs(np.diag(hess)))
+                    se_rho = rho * (1.0 - rho) * se_all[k]
+                    std_errors = np.concatenate([se_all[:k], [se_rho]])
+                except Exception:
+                    std_errors = np.full(len(display_params), np.nan)
+            else:
+                std_errors = np.full(len(display_params), np.nan)
 
         # T-values and p-values
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1457,11 +1428,7 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        if (
-            self._result is not None
-            and self._result.solver_result
-            and "scipy_result" in self._result.solver_result
-        ):
+        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
             scipy_result = self._result.solver_result["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
@@ -1474,11 +1441,7 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
                 except Exception:
                     pass
 
-        if (
-            self._result is not None
-            and self._result.std_errors is not None
-            and not self._result.std_errors.isna().all()
-        ):
+        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
             variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
@@ -1520,7 +1483,7 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
         # Base probabilities and per-observation LL
         probs_base = self.probabilities(data=None, beta=beta_hat, rho=rho_hat)
-        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1647,7 +1610,9 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+            chosen_indices = np.array(
+                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
+            )
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1691,11 +1656,12 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1738,11 +1704,12 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1789,11 +1756,12 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1837,11 +1805,12 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
+        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            data.to_arrays(
+            arrays = data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -2087,15 +2056,9 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         inclusion_probs = get_sampling_correction(arrays)
 
         log_probs = _scl_log_probs_dispatch(
-            beta,
-            rho,
-            dm,
-            self._allocation,
-            self._edge_list,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
+            beta, rho, dm, self._allocation, self._edge_list,
+            n_obs, n_alts,
+            available=available, inclusion_probs=inclusion_probs,
             edge_struct=self._edge_struct,
         )
 

@@ -34,10 +34,10 @@ from .kernels import (
     mixed_logit_ll as mixed_logit_ll,
 )
 from .kernels import (
-    mnl_log_probs as mnl_log_probs,
+    mnl_probs as mnl_probs,
 )
 from .kernels import (
-    mnl_probs as mnl_probs,
+    mnl_log_probs as mnl_log_probs,
 )
 from .kernels import (
     nested_log_probs as nested_log_probs,

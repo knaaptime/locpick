@@ -31,7 +31,7 @@ The SCL structure handles spatial correlation in closed form, so the simulation 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, FitDiagnostics, MixedSpatiallyCorrelatedLogit
+from locpick import ChoiceTable, MixedSpatiallyCorrelatedLogit
 from locpick.models.mixed import ParamDistribution
 from libpysal import graph
 
@@ -52,7 +52,7 @@ model = MixedSpatiallyCorrelatedLogit(
     n_draws=250,
 )
 result = model.fit()
-print(FitDiagnostics.summary(result))
+print(result.summary())
 ```
 
 ## Random Parameters

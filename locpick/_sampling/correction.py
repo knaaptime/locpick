@@ -73,3 +73,4 @@ def apply_sampling_correction(
     if utilities.ndim == 1:
         return utilities + log_correction.ravel()
     return utilities + log_correction
+
