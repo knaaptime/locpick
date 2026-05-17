@@ -106,7 +106,10 @@ class Objective:
             )
         if not _JAX_AVAILABLE:
             raise RuntimeError("JAX is required for score_contribs.")
-        return jax.jacrev(self.loglike_contribs_jax)
+        # Cache the JIT'd score function to avoid recompilation on every call
+        if not hasattr(self, '_score_fn_cache'):
+            self._score_fn_cache = jax.jit(jax.jacrev(self.loglike_contribs_jax))
+        return self._score_fn_cache
 
     def hvp(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
         """Hessian-vector product at ``x`` with direction ``v``.

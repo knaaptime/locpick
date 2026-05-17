@@ -15,6 +15,8 @@ The model classes call these builders instead of building closures inline.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 from locpick._compat import _JAX_AVAILABLE
@@ -41,6 +43,29 @@ from locpick._jax.transforms import ParamTransform, Sigmoid, Identity
 # MNL objective
 # ---------------------------------------------------------------------------
 
+# Top-level JIT'd kernels — cached across all MNL objectives
+@functools.partial(jax.jit, static_argnums=(6, 7))
+def _mnl_ll_kernel(beta, design_matrix, available, chosen, weights, inclusion_probs, n_obs, n_alts):
+    """Pure JAX MNL log-likelihood (top-level for JIT caching)."""
+    V = compute_utilities(design_matrix, beta, n_obs, n_alts)
+    log_probs = mnl_log_probs(V, available, inclusion_probs=inclusion_probs)
+    return compute_ll(log_probs, chosen, weights)
+
+
+@functools.partial(jax.jit, static_argnums=(6, 7))
+def _mnl_ll_contribs_kernel(beta, design_matrix, available, chosen, weights, inclusion_probs, n_obs, n_alts):
+    """Per-observation MNL log-likelihood contributions (top-level for JIT caching)."""
+    V = compute_utilities(design_matrix, beta, n_obs, n_alts)
+    log_probs = mnl_log_probs(V, available, inclusion_probs=inclusion_probs)
+    return compute_ll_contribs(log_probs, chosen, weights)
+
+
+# Pre-compute gradient of the kernel (also cached)
+_mnl_grad_kernel = jax.jit(
+    jax.grad(_mnl_ll_kernel, argnums=0),
+    static_argnums=(6, 7),
+)
+
 
 def build_mnl_objective(arrays) -> Objective:
     """Build an Objective for MNL estimation using JAX.
@@ -60,26 +85,29 @@ def build_mnl_objective(arrays) -> Objective:
 
     data = ChoiceDataJAX.from_arrays(arrays)
 
+    # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
     def _ll_jax(beta):
-        """Pure JAX MNL log-likelihood."""
-        V = compute_utilities(data.design_matrix, beta, data.n_obs, data.n_alts)
-        log_probs = mnl_log_probs(V, data.available, inclusion_probs=data.inclusion_probs)
-        return compute_ll(log_probs, data.chosen, data.weights)
+        return _mnl_ll_kernel(
+            beta, data.design_matrix, data.available, data.chosen,
+            data.weights, data.inclusion_probs, data.n_obs, data.n_alts,
+        )
 
     def _ll_contribs_jax(beta):
-        """Per-observation MNL log-likelihood contributions."""
-        V = compute_utilities(data.design_matrix, beta, data.n_obs, data.n_alts)
-        log_probs = mnl_log_probs(V, data.available, inclusion_probs=data.inclusion_probs)
-        return compute_ll_contribs(log_probs, data.chosen, data.weights)
+        return _mnl_ll_contribs_kernel(
+            beta, data.design_matrix, data.available, data.chosen,
+            data.weights, data.inclusion_probs, data.n_obs, data.n_alts,
+        )
 
-    _ll_jit = jax.jit(_ll_jax)
-    _grad_jit = jax.jit(jax.grad(_ll_jax))
-    _ll_contribs_jit = jax.jit(_ll_contribs_jax)
+    def _grad_jax(beta):
+        return _mnl_grad_kernel(
+            beta, data.design_matrix, data.available, data.chosen,
+            data.weights, data.inclusion_probs, data.n_obs, data.n_alts,
+        )
 
     return Objective.from_jax(
-        ll_fn=_ll_jit,
-        grad_fn=_grad_jit,
-        loglike_contribs_jax=_ll_contribs_jit,
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=list(arrays.param_names),
     )
 
@@ -87,6 +115,49 @@ def build_mnl_objective(arrays) -> Objective:
 # ---------------------------------------------------------------------------
 # SCL objective
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SCL objective
+# ---------------------------------------------------------------------------
+
+# Top-level JIT'd kernels — cached across all SCL objectives
+@jax.jit
+def _scl_ll_kernel(params, data):
+    """Pure JAX SCL log-likelihood (top-level for JIT caching)."""
+    k = data.design_matrix.shape[1]
+    beta = params[:k]
+    alpha_rho = params[k]
+    rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
+
+    V = compute_utilities(
+        data.design_matrix, beta, data.n_obs, data.n_alts,
+        inclusion_probs=data.inclusion_probs,
+        available=data.available,
+    )
+    log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
+    return compute_ll(log_probs, data.chosen, data.weights)
+
+
+@jax.jit
+def _scl_ll_contribs_kernel(params, data):
+    """Per-observation SCL log-likelihood contributions (top-level for JIT caching)."""
+    k = data.design_matrix.shape[1]
+    beta = params[:k]
+    alpha_rho = params[k]
+    rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
+
+    V = compute_utilities(
+        data.design_matrix, beta, data.n_obs, data.n_alts,
+        inclusion_probs=data.inclusion_probs,
+        available=data.available,
+    )
+    log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
+    return compute_ll_contribs(log_probs, data.chosen, data.weights)
+
+
+# Pre-compute gradient of the kernel (also cached)
+_scl_grad_kernel = jax.jit(jax.grad(_scl_ll_kernel, argnums=0))
 
 
 def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective:
@@ -115,45 +186,23 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
     data = ChoiceDataJAX.from_arrays(arrays, edge_struct=edge_struct)
     k = arrays.design_matrix.shape[1]
 
+    # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
     def _ll_jax(params):
-        """Pure JAX SCL log-likelihood."""
-        beta = params[:k]
-        alpha_rho = params[k]
-        rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))  # sigmoid transform
-
-        V = compute_utilities(
-            data.design_matrix, beta, data.n_obs, data.n_alts,
-            inclusion_probs=data.inclusion_probs,
-            available=data.available,
-        )
-        log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
-        return compute_ll(log_probs, data.chosen, data.weights)
+        return _scl_ll_kernel(params, data)
 
     def _ll_contribs_jax(params):
-        """Per-observation SCL log-likelihood contributions."""
-        beta = params[:k]
-        alpha_rho = params[k]
-        rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
+        return _scl_ll_contribs_kernel(params, data)
 
-        V = compute_utilities(
-            data.design_matrix, beta, data.n_obs, data.n_alts,
-            inclusion_probs=data.inclusion_probs,
-            available=data.available,
-        )
-        log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
-        return compute_ll_contribs(log_probs, data.chosen, data.weights)
-
-    _ll_jit = jax.jit(_ll_jax)
-    _grad_jit = jax.jit(jax.grad(_ll_jax))
-    _ll_contribs_jit = jax.jit(_ll_contribs_jax)
+    def _grad_jax(params):
+        return _scl_grad_kernel(params, data)
 
     param_names = list(arrays.param_names) + ["rho"]
     transform = ParamTransform.for_scl(k)
 
     return Objective.from_jax(
-        ll_fn=_ll_jit,
-        grad_fn=_grad_jit,
-        loglike_contribs_jax=_ll_contribs_jit,
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
     )
@@ -162,6 +211,101 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
 # ---------------------------------------------------------------------------
 # MSCL objective
 # ---------------------------------------------------------------------------
+
+# Top-level JIT'd kernels — cached across all MSCL objectives
+@functools.partial(jax.jit, static_argnums=(2, 3, 4))
+def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
+    """Pure JAX MSCL simulated log-likelihood (top-level for JIT caching)."""
+    from jax.scipy.special import logsumexp as jax_logsumexp
+
+    beta_fixed = params[:k_fixed]
+    alpha_rho = params[k_fixed]
+    beta_random_means = params[k_fixed + 1 : k_fixed + 1 + k_random]
+    beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
+
+    rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
+    # Enforce non-negative spreads via softplus
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    # Fixed utility component
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    # Sampling correction
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    # Simulated log-likelihood via vmap over draws
+    def _ll_single_draw(r):
+        """Log-likelihood contribution for a single draw."""
+        z_r = data.draws[:, r, :]  # (n_obs, k_random)
+
+        # Vectorised random coefficient generation
+        means = beta_random_means[None, :]   # (1, k_random)
+        spreads = beta_random_spreads[None, :]  # (1, k_random)
+
+        # Normal: β = μ + σ * z
+        beta_normal = means + spreads * z_r
+        # Lognormal: β = exp(μ + σ * z)
+        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
+        # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
+        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
+        d = 0.3989422804014327
+        poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+        phi_z = jnp.where(
+            z_r >= 0,
+            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
+            d * jnp.exp(-0.5 * z_r * z_r) * poly,
+        )
+        # Uniform on [μ - σ, μ + σ]
+        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
+        # Symmetric triangular on [μ - σ, μ + σ]
+        mask = phi_z <= 0.5
+        beta_triangular = jnp.where(
+            mask,
+            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
+            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        )
+
+        # Select distribution per parameter — vectorised via jnp.where
+        dist = data.dist_codes[None, :]  # (1, k_random)
+        beta_random_r = jnp.where(
+            dist == 0, beta_normal,
+            jnp.where(dist == 1, beta_lognormal,
+                jnp.where(dist == 2, beta_triangular, beta_uniform)),
+        )  # (n_obs, k_random)
+
+        # Random utility component
+        v_random = jnp.sum(
+            data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
+            axis=2,
+        )
+
+        # Total utility
+        V = v_fixed + v_random
+
+        # SCL log-probabilities
+        log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
+
+        # Chosen log-probability
+        log_L_n = (log_probs * data.chosen).sum(axis=1)
+        return log_L_n
+
+    # vmap over draws
+    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+
+    # Simulated log-likelihood
+    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
+    return jnp.sum(log_L_sim * data.weights)
+
+
+# Pre-compute gradient of the kernel (also cached)
+_mscl_grad_kernel = jax.jit(
+    jax.grad(_mscl_ll_kernel, argnums=0),
+    static_argnums=(2, 3, 4),
+)
 
 
 def build_mscl_objective(
@@ -201,8 +345,6 @@ def build_mscl_objective(
     if not _JAX_AVAILABLE:
         raise ImportError("JAX is required for MSCL objective")
 
-    from jax.scipy.special import logsumexp as jax_logsumexp
-
     data = ChoiceDataJAX.from_arrays(
         arrays,
         edge_struct=edge_struct,
@@ -215,97 +357,12 @@ def build_mscl_objective(
     k_random = len(random_col_indices)
     n_draws = draws.shape[1]
 
+    # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
     def _ll_jax(params):
-        """Pure JAX MSCL simulated log-likelihood."""
-        beta_fixed = params[:k_fixed]
-        alpha_rho = params[k_fixed]
-        beta_random_means = params[k_fixed + 1 : k_fixed + 1 + k_random]
-        beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
+        return _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws)
 
-        rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
-        # Enforce non-negative spreads via softplus
-        beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
-
-        # Fixed utility component
-        if data.dm_fixed is not None and k_fixed > 0:
-            v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
-        else:
-            v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
-
-        # Sampling correction
-        if data.inclusion_probs is not None:
-            v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
-
-        # Simulated log-likelihood via vmap over draws
-        def _ll_single_draw(r):
-            """Log-likelihood contribution for a single draw."""
-            z_r = data.draws[:, r, :]  # (n_obs, k_random)
-
-            # Vectorised random coefficient generation — no Python loop
-            # means: (k_random,), spreads: (k_random,), z_r: (n_obs, k_random)
-            means = beta_random_means[None, :]   # (1, k_random)
-            spreads = beta_random_spreads[None, :]  # (1, k_random)
-
-            # Normal: β = μ + σ * z
-            beta_normal = means + spreads * z_r
-            # Lognormal: β = exp(μ + σ * z)
-            beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-            # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-            # NOTE: "triangular" is currently a synonym for "uniform" in this
-            # implementation. A true triangular distribution would require a
-            # different inverse-CDF (piecewise sqrt, not linear).
-            t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-            d = 0.3989422804014327
-            poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-            phi_z = jnp.where(
-                z_r >= 0,
-                1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-                d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            )
-            # Uniform on [μ - σ, μ + σ]
-            beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-            # Symmetric triangular on [μ - σ, μ + σ]
-            mask = phi_z <= 0.5
-            beta_triangular = jnp.where(
-                mask,
-                means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-                means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-            )
-
-            # Select distribution per parameter — vectorised via jnp.where
-            # dist_codes: (k_random,) → broadcast against (n_obs, k_random)
-            dist = data.dist_codes[None, :]  # (1, k_random)
-            beta_random_r = jnp.where(
-                dist == 0, beta_normal,
-                jnp.where(dist == 1, beta_lognormal,
-                    jnp.where(dist == 2, beta_triangular, beta_uniform)),
-            )  # (n_obs, k_random)
-
-            # Random utility component
-            v_random = jnp.sum(
-                data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
-                axis=2,
-            )
-
-            # Total utility
-            V = v_fixed + v_random
-
-            # SCL log-probabilities
-            log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
-
-            # Chosen log-probability
-            log_L_n = (log_probs * data.chosen).sum(axis=1)
-            return log_L_n
-
-        # vmap over draws
-        log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
-
-        # Simulated log-likelihood
-        log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-        return jnp.sum(log_L_sim * data.weights)
-
-    _ll_jit = jax.jit(_ll_jax)
-    _grad_jit = jax.jit(jax.grad(_ll_jax))
+    def _grad_jax(params):
+        return _mscl_grad_kernel(params, data, k_fixed, k_random, n_draws)
 
     # Parameter names
     param_names_list = list(arrays.param_names)
@@ -322,8 +379,8 @@ def build_mscl_objective(
     transform = ParamTransform.for_mscl(k_fixed, k_random)
 
     return Objective.from_jax(
-        ll_fn=_ll_jit,
-        grad_fn=_grad_jit,
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
         param_names=display_param_names,
         transform=transform,
     )
@@ -332,6 +389,29 @@ def build_mscl_objective(
 # ---------------------------------------------------------------------------
 # Nested logit objective
 # ---------------------------------------------------------------------------
+
+# Top-level JIT'd kernels — cached across all nested logit objectives
+@functools.partial(jax.jit, static_argnums=(3,))
+def _nested_ll_kernel(params, data, nest_matrix, k):
+    """Pure JAX nested logit log-likelihood (top-level for JIT caching)."""
+    beta = params[:k]
+    alpha = params[k:]
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha))
+
+    V = compute_utilities(
+        data.design_matrix, beta, data.n_obs, data.n_alts,
+        inclusion_probs=data.inclusion_probs,
+        available=data.available,
+    )
+    log_probs = nested_log_probs(V, lambdas, nest_matrix, data.available)
+    return compute_ll(log_probs, data.chosen, data.weights)
+
+
+# Pre-compute gradient of the kernel (also cached)
+_nested_grad_kernel = jax.jit(
+    jax.grad(_nested_ll_kernel, argnums=0),
+    static_argnums=(3,),
+)
 
 
 def build_nested_objective(arrays, nest_matrix) -> Objective:
@@ -358,22 +438,12 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
     n_nests = nest_matrix.shape[1]
     k = arrays.design_matrix.shape[1]
 
+    # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
     def _ll_jax(params):
-        """Pure JAX nested logit log-likelihood."""
-        beta = params[:k]
-        alpha = params[k:]  # unconstrained nest params
-        lambdas = 1.0 / (1.0 + jnp.exp(-alpha))  # sigmoid transform
+        return _nested_ll_kernel(params, data, nest_matrix_jax, k)
 
-        V = compute_utilities(
-            data.design_matrix, beta, data.n_obs, data.n_alts,
-            inclusion_probs=data.inclusion_probs,
-            available=data.available,
-        )
-        log_probs = nested_log_probs(V, lambdas, nest_matrix_jax, data.available)
-        return compute_ll(log_probs, data.chosen, data.weights)
-
-    _ll_jit = jax.jit(_ll_jax)
-    _grad_jit = jax.jit(jax.grad(_ll_jax))
+    def _grad_jax(params):
+        return _nested_grad_kernel(params, data, nest_matrix_jax, k)
 
     param_names = list(arrays.param_names) + [f"nest_alpha_{i}" for i in range(n_nests)]
 
@@ -382,8 +452,8 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
     transform = ParamTransform(transforms=transforms)
 
     return Objective.from_jax(
-        ll_fn=_ll_jit,
-        grad_fn=_grad_jit,
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
         param_names=param_names,
         transform=transform,
     )
@@ -392,6 +462,50 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
 # ---------------------------------------------------------------------------
 # Mixed logit objective (non-spatial)
 # ---------------------------------------------------------------------------
+
+# Top-level JIT'd kernels — cached across all mixed logit objectives
+@functools.partial(jax.jit, static_argnums=(2, 3, 4))
+def _mixed_ll_kernel(params, data, k_fixed, k_random, n_draws):
+    """Pure JAX mixed logit simulated log-likelihood (top-level for JIT caching)."""
+    beta_fixed = params[:k_fixed]
+    beta_random_means = params[k_fixed : k_fixed + k_random]
+    beta_random_spreads_raw = params[k_fixed + k_random :]
+
+    # Enforce non-negative spreads via softplus
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    # Fixed utility component
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    # Sampling correction
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    return mixed_logit_ll(
+        V_fixed=v_fixed,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=data.n_obs,
+        n_alts=data.n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+    )
+
+
+# Pre-compute gradient of the kernel (also cached)
+_mixed_grad_kernel = jax.jit(
+    jax.grad(_mixed_ll_kernel, argnums=0),
+    static_argnums=(2, 3, 4),
+)
 
 
 def build_mixed_logit_objective(
@@ -434,43 +548,12 @@ def build_mixed_logit_objective(
     k_random = len(random_col_indices)
     n_draws = draws.shape[1]
 
+    # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
     def _ll_jax(params):
-        """Pure JAX mixed logit simulated log-likelihood."""
-        beta_fixed = params[:k_fixed]
-        beta_random_means = params[k_fixed : k_fixed + k_random]
-        beta_random_spreads_raw = params[k_fixed + k_random :]
+        return _mixed_ll_kernel(params, data, k_fixed, k_random, n_draws)
 
-        # Enforce non-negative spreads via softplus
-        beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
-
-        # Fixed utility component
-        if data.dm_fixed is not None and k_fixed > 0:
-            v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
-        else:
-            v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
-
-        # Sampling correction
-        if data.inclusion_probs is not None:
-            v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
-
-        return mixed_logit_ll(
-            V_fixed=v_fixed,
-            dm_random=data.dm_random,
-            beta_random_means=beta_random_means,
-            beta_random_spreads=beta_random_spreads,
-            dist_codes=data.dist_codes,
-            draws=data.draws,
-            chosen=data.chosen,
-            weights=data.weights,
-            available=data.available,
-            n_obs=data.n_obs,
-            n_alts=data.n_alts,
-            k_random=k_random,
-            n_draws=n_draws,
-        )
-
-    _ll_jit = jax.jit(_ll_jax)
-    _grad_jit = jax.jit(jax.grad(_ll_jax))
+    def _grad_jax(params):
+        return _mixed_grad_kernel(params, data, k_fixed, k_random, n_draws)
 
     # Parameter names
     param_names_list = list(arrays.param_names)
@@ -494,8 +577,8 @@ def build_mixed_logit_objective(
     transform = ParamTransform(transforms=transforms)
 
     return Objective.from_jax(
-        ll_fn=_ll_jit,
-        grad_fn=_grad_jit,
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
         param_names=display_param_names,
         transform=transform,
     )

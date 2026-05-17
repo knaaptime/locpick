@@ -16,9 +16,11 @@ from locpick._compat import _JAX_AVAILABLE
 from locpick._sampling.correction import get_sampling_correction
 
 if _JAX_AVAILABLE:
+    import jax
     import jax.numpy as jnp
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass
 class EdgeDataJAX:
     """JAX-ready spatial edge structure for SCL/MSCL models.
@@ -113,7 +115,29 @@ class EdgeDataJAX:
             flat_is_first=jnp.array(_is_first_np, dtype=jnp.int32),
         )
 
+    # --- JAX pytree methods ---
 
+    def tree_flatten(self):
+        children = (
+            self.edge_i, self.edge_j, self.allocation,
+            self.isolated, self.connected,
+            self.flat_alt_idx, self.flat_edge_idx, self.flat_is_first,
+        )
+        aux_data = (self.n_edges, self.n_alts)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        n_edges, n_alts = aux_data
+        return cls(
+            edge_i=children[0], edge_j=children[1], allocation=children[2],
+            n_edges=n_edges, n_alts=n_alts,
+            isolated=children[3], connected=children[4],
+            flat_alt_idx=children[5], flat_edge_idx=children[6], flat_is_first=children[7],
+        )
+
+
+@jax.tree_util.register_pytree_node_class
 @dataclass
 class ChoiceDataJAX:
     """JAX-ready estimation data — built once, shared across solvers.
@@ -272,4 +296,26 @@ class ChoiceDataJAX:
             dist_codes=dist_codes_jax,
             dm_fixed=dm_fixed,
             dm_random=dm_random,
+        )
+
+    # --- JAX pytree methods ---
+
+    def tree_flatten(self):
+        children = (
+            self.design_matrix, self.chosen, self.available, self.weights,
+            self.inclusion_probs, self.edge_data, self.draws,
+            self.dist_codes, self.dm_fixed, self.dm_random,
+        )
+        aux_data = (self.n_obs, self.n_alts, self.random_col_indices, self.fixed_col_indices)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        n_obs, n_alts, random_col_indices, fixed_col_indices = aux_data
+        return cls(
+            design_matrix=children[0], chosen=children[1], n_obs=n_obs, n_alts=n_alts,
+            available=children[2], weights=children[3], inclusion_probs=children[4],
+            edge_data=children[5], draws=children[6], random_col_indices=random_col_indices,
+            fixed_col_indices=fixed_col_indices, dist_codes=children[7],
+            dm_fixed=children[8], dm_random=children[9],
         )

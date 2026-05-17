@@ -34,8 +34,7 @@ from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel
 from locpick.models.mixed import (
     ParamDistribution,
-    generate_halton_draws,
-    generate_random_draws,
+    _resolve_draws,
 )
 from locpick._compat import _JAX_AVAILABLE, _NUMBA_AVAILABLE, _NUMBA_PARALLEL
 from locpick._sampling.correction import get_sampling_correction
@@ -639,8 +638,8 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         spec: Optional[ModelSpec] = None,
         graph: Any = None,
         random_params: Optional[dict[str, ParamDistribution]] = None,
-        n_draws: int = 250,
-        draw_type: str = "halton",
+        n_draws: int = 50,
+        draw_type: str = "qmc",
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
         solver: Union[str, Solver] = "lbfgs",
@@ -769,10 +768,9 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         k_total = arrays.design_matrix.shape[1]
 
         # Generate draws
-        if self._draw_type == "halton":
-            draws = generate_halton_draws(arrays.n_obs, self._n_draws, k_random, seed=42)
-        else:
-            draws = generate_random_draws(arrays.n_obs, self._n_draws, k_random, seed=42)
+        draws = _resolve_draws(
+            self._draw_type, arrays.n_obs, self._n_draws, k_random, seed=42
+        )
 
         # Cache random structure for objective/prediction paths
         self._draws = draws
@@ -1672,12 +1670,9 @@ class MixedSpatiallyCorrelatedLogit(BaseChoiceModel):
         inclusion_probs = get_sampling_correction(arrays)
 
         # Generate draws (same as estimation)
-        from locpick.models.mixed import generate_halton_draws, generate_random_draws
+        from locpick.models.mixed import _resolve_draws
 
-        if self._draw_type == "halton":
-            draws = generate_halton_draws(n_obs, self._n_draws, k_random)
-        else:
-            draws = generate_random_draws(n_obs, self._n_draws, k_random, seed=42)
+        draws = _resolve_draws(self._draw_type, n_obs, self._n_draws, k_random, seed=42)
 
         # Compute simulated probabilities
         alpha_rho = np.log(rho / (1.0 - rho)) if rho is not None else 0.0
