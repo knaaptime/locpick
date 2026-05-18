@@ -143,52 +143,53 @@ def scl_log_probs(
     # Mask unavailable
     V = jnp.where(available > 0, V, _NEG_INF)
 
-    # exp(V) clipped for numerical stability
-    exp_V = jnp.exp(jnp.clip(V, -500.0, 500.0))
-
     if n_edges == 0:
         # MNL fallback — no spatial correlation
         log_sum_exp = jax_logsumexp(V, axis=1)
         return V - log_sum_exp[:, None]
 
-    # --- Sparse edge terms (vectorised over edges) ---
-    exp_V_i = exp_V[:, edge_data.edge_i]  # (n_obs, n_edges)
-    exp_V_j = exp_V[:, edge_data.edge_j]  # (n_obs, n_edges)
+    # --- Sparse edge terms (vectorised over edges, log-space) ---
+    V_i = V[:, edge_data.edge_i]  # (n_obs, n_edges)
+    V_j = V[:, edge_data.edge_j]  # (n_obs, n_edges)
 
     alloc_ij = edge_data.allocation[edge_data.edge_i, edge_data.edge_j]  # (n_edges,)
     alloc_ji = edge_data.allocation[edge_data.edge_j, edge_data.edge_i]  # (n_edges,)
 
-    term_i = jnp.power(jnp.clip(alloc_ij[None, :] * exp_V_i, 1e-30, 1e30), inv_rho)
-    term_j = jnp.power(jnp.clip(alloc_ji[None, :] * exp_V_j, 1e-30, 1e30), inv_rho)
+    # Log-space computation: log((alloc * exp(V))^inv_rho) = inv_rho * (log(alloc) + V)
+    log_term_i = inv_rho * (jnp.log(jnp.maximum(alloc_ij[None, :], 1e-30)) + V_i)
+    log_term_j = inv_rho * (jnp.log(jnp.maximum(alloc_ji[None, :], 1e-30)) + V_j)
 
-    # --- Nest values ---
-    nest_vals = jnp.power(term_i + term_j, rho)  # (n_obs, n_edges)
+    # --- Nest values (log-space) ---
+    # nest_val = (term_i + term_j)^rho = exp(rho * logaddexp(log_term_i, log_term_j))
+    log_nest_vals = rho * jnp.logaddexp(log_term_i, log_term_j)  # (n_obs, n_edges)
 
-    # --- Denominator ---
-    denom = nest_vals.sum(axis=1)  # (n_obs,)
+    # --- Denominator (log-space) ---
+    log_denom = jax_logsumexp(log_nest_vals, axis=1)  # (n_obs,)
     if edge_data.isolated is not None and edge_data.isolated.shape[0] > 0:
-        denom = denom + exp_V[:, edge_data.isolated].sum(axis=1)
-    log_denom = jnp.log(jnp.maximum(denom, 1e-300))
+        # Add isolated alternatives: exp(V_isolated)
+        log_denom = jnp.logaddexp(
+            log_denom,
+            jax_logsumexp(V[:, edge_data.isolated], axis=1),
+        )
 
     # --- Log-probabilities via flat alt-edge table (fully vectorised) ---
     e_idx = edge_data.flat_edge_idx
     is_first = edge_data.flat_is_first
 
-    my_term = jnp.where(
+    log_my_term = jnp.where(
         is_first[None, :] > 0,
-        term_i[:, e_idx],
-        term_j[:, e_idx],
+        log_term_i[:, e_idx],
+        log_term_j[:, e_idx],
     )
-    other_term = jnp.where(
+    log_other_term = jnp.where(
         is_first[None, :] > 0,
-        term_j[:, e_idx],
-        term_i[:, e_idx],
+        log_term_j[:, e_idx],
+        log_term_i[:, e_idx],
     )
 
-    log_cond = jnp.log(jnp.maximum(my_term, 1e-300)) - jnp.log(
-        jnp.maximum(my_term + other_term, 1e-300)
-    )
-    log_nest = jnp.log(jnp.maximum(nest_vals[:, e_idx], 1e-300)) - log_denom[:, None]
+    # log(P(i|ij)) = log_my_term - logaddexp(log_my_term, log_other_term)
+    log_cond = log_my_term - jnp.logaddexp(log_my_term, log_other_term)
+    log_nest = log_nest_vals[:, e_idx] - log_denom[:, None]
 
     contributions = log_cond + log_nest  # (n_obs, total_alt_edges)
 
@@ -260,52 +261,53 @@ def scl_log_probs_and_inclusive_value(
     # Mask unavailable
     V = jnp.where(available > 0, V, _NEG_INF)
 
-    # exp(V) clipped for numerical stability
-    exp_V = jnp.exp(jnp.clip(V, -500.0, 500.0))
-
     if n_edges == 0:
         # MNL fallback — no spatial correlation
         log_sum_exp = jax_logsumexp(V, axis=1)
         return V - log_sum_exp[:, None], log_sum_exp
 
-    # --- Sparse edge terms (vectorised over edges) ---
-    exp_V_i = exp_V[:, edge_data.edge_i]  # (n_obs, n_edges)
-    exp_V_j = exp_V[:, edge_data.edge_j]  # (n_obs, n_edges)
+    # --- Sparse edge terms (vectorised over edges, log-space) ---
+    V_i = V[:, edge_data.edge_i]  # (n_obs, n_edges)
+    V_j = V[:, edge_data.edge_j]  # (n_obs, n_edges)
 
     alloc_ij = edge_data.allocation[edge_data.edge_i, edge_data.edge_j]  # (n_edges,)
     alloc_ji = edge_data.allocation[edge_data.edge_j, edge_data.edge_i]  # (n_edges,)
 
-    term_i = jnp.power(jnp.clip(alloc_ij[None, :] * exp_V_i, 1e-30, 1e30), inv_rho)
-    term_j = jnp.power(jnp.clip(alloc_ji[None, :] * exp_V_j, 1e-30, 1e30), inv_rho)
+    # Log-space computation: log((alloc * exp(V))^inv_rho) = inv_rho * (log(alloc) + V)
+    log_term_i = inv_rho * (jnp.log(jnp.maximum(alloc_ij[None, :], 1e-30)) + V_i)
+    log_term_j = inv_rho * (jnp.log(jnp.maximum(alloc_ji[None, :], 1e-30)) + V_j)
 
-    # --- Nest values ---
-    nest_vals = jnp.power(term_i + term_j, rho)  # (n_obs, n_edges)
+    # --- Nest values (log-space) ---
+    # nest_val = (term_i + term_j)^rho = exp(rho * logaddexp(log_term_i, log_term_j))
+    log_nest_vals = rho * jnp.logaddexp(log_term_i, log_term_j)  # (n_obs, n_edges)
 
-    # --- Denominator ---
-    denom = nest_vals.sum(axis=1)  # (n_obs,)
+    # --- Denominator (log-space) ---
+    log_denom = jax_logsumexp(log_nest_vals, axis=1)  # (n_obs,)
     if edge_data.isolated is not None and edge_data.isolated.shape[0] > 0:
-        denom = denom + exp_V[:, edge_data.isolated].sum(axis=1)
-    log_denom = jnp.log(jnp.maximum(denom, 1e-300))
+        # Add isolated alternatives: exp(V_isolated)
+        log_denom = jnp.logaddexp(
+            log_denom,
+            jax_logsumexp(V[:, edge_data.isolated], axis=1),
+        )
 
     # --- Log-probabilities via flat alt-edge table (fully vectorised) ---
     e_idx = edge_data.flat_edge_idx
     is_first = edge_data.flat_is_first
 
-    my_term = jnp.where(
+    log_my_term = jnp.where(
         is_first[None, :] > 0,
-        term_i[:, e_idx],
-        term_j[:, e_idx],
+        log_term_i[:, e_idx],
+        log_term_j[:, e_idx],
     )
-    other_term = jnp.where(
+    log_other_term = jnp.where(
         is_first[None, :] > 0,
-        term_j[:, e_idx],
-        term_i[:, e_idx],
+        log_term_j[:, e_idx],
+        log_term_i[:, e_idx],
     )
 
-    log_cond = jnp.log(jnp.maximum(my_term, 1e-300)) - jnp.log(
-        jnp.maximum(my_term + other_term, 1e-300)
-    )
-    log_nest = jnp.log(jnp.maximum(nest_vals[:, e_idx], 1e-300)) - log_denom[:, None]
+    # log(P(i|ij)) = log_my_term - logaddexp(log_my_term, log_other_term)
+    log_cond = log_my_term - jnp.logaddexp(log_my_term, log_other_term)
+    log_nest = log_nest_vals[:, e_idx] - log_denom[:, None]
 
     contributions = log_cond + log_nest  # (n_obs, total_alt_edges)
 

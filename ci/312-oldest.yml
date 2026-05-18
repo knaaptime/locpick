@@ -10,6 +10,10 @@ dependencies:
   - formulaic>=0.5
   - numba>=0.59
   - xarray>=2022.06
+  - lazy_loader
+  # optional (jax)
+  - jax>=0.4
+  - jaxlib>=0.4
   # optional (spatial)
   - libpysal>=4.0
   - geopandas>=0.13

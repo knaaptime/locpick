@@ -64,9 +64,8 @@ def mnl_log_probs_numpy(
     np.ndarray, shape (n_obs, n_alts)
         Log-probabilities.  Unavailable alternatives receive ``NEG_INF``.
     """
-    V = utilities.copy()
-
     # Step 2: sampling correction
+    V = utilities  # No copy needed: subsequent ops create new arrays
     if inclusion_probs is not None:
         V = V + np.log(np.asarray(inclusion_probs, dtype=np.float64))
 

@@ -20,6 +20,7 @@ dependencies:
   - libpysal>=4.0
   - geopandas>=0.13
   - scikit-learn>=1.2
+  - lazy_loader
   # development & testing
   - pytest>=7
   - pytest-cov

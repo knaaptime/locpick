@@ -611,7 +611,8 @@ class MNL(BaseChoiceModel):
             Robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_robust(data=data)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_robust")
 
     def std_errors_clustered(self, data=None, groups=None) -> pd.Series:
@@ -630,7 +631,8 @@ class MNL(BaseChoiceModel):
             Cluster-robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_clustered(data=data, groups=groups)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_clustered")
 
     # ------------------------------------------------------------------
@@ -774,35 +776,50 @@ class MNL(BaseChoiceModel):
         param_names = list(arrays.param_names)
         n_params = len(param_names)
 
-        # Standard errors from inverse Hessian
-        if solver_result.hessian is not None:
-            try:
-                hess = solver_result.hessian
-                # If fixed parameters were used, the Hessian only covers
-                # free parameters. Expand to full parameter space.
-                if hess.shape[0] < n_params and self._problem is not None:
-                    fixed_mask = self._problem.fixed_mask
-                    if fixed_mask is not None:
-                        free_mask = ~fixed_mask
-                        full_hess = np.zeros((n_params, n_params))
-                        free_idx = np.where(free_mask)[0]
-                        for i, fi in enumerate(free_idx):
-                            for j, fj in enumerate(free_idx):
-                                full_hess[fi, fj] = hess[i, j]
-                        hess = full_hess
-                std_errors = np.sqrt(np.diag(hess))
-            except Exception:
-                std_errors = np.full(len(beta), np.nan)
-        else:
-            # Compute Hessian lazily via objective if available
-            if hasattr(self, "_objective") and self._objective is not None:
+        # Compute standard errors using the most accurate Hessian available.
+        # Prefer HVP-based Hessian (exact, via JAX autodiff) over the
+        # solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv).
+        # Note: _compute_hessian returns the Hessian of the log-likelihood
+        # (negative definite), so we use _compute_std_errors_from_hessian
+        # which negates and inverts it.
+        std_errors = np.full(len(beta), np.nan)
+        try:
+            hess = self._compute_hessian(beta)
+            # If fixed parameters were used, the Hessian only covers
+            # free parameters. Expand to full parameter space.
+            if hess.shape[0] < n_params and self._problem is not None:
+                fixed_mask = self._problem.fixed_mask
+                if fixed_mask is not None:
+                    free_mask = ~fixed_mask
+                    full_hess = np.zeros((n_params, n_params))
+                    free_idx = np.where(free_mask)[0]
+                    for i, fi in enumerate(free_idx):
+                        for j, fj in enumerate(free_idx):
+                            full_hess[fi, fj] = hess[i, j]
+                    hess = full_hess
+            std_errors = self._compute_std_errors_from_hessian(hess)
+        except Exception:
+            # Fallback: try solver's Hessian (approximate, e.g. L-BFGS-B hess_inv)
+            # Note: solver_result.hessian is the *inverse* of the negative Hessian
+            # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
+            if solver_result.hessian is not None:
                 try:
-                    hess = self._objective.hessian(beta)
-                    std_errors = np.sqrt(np.diag(hess))
+                    hess = solver_result.hessian
+                    if hess.shape[0] < n_params and self._problem is not None:
+                        fixed_mask = self._problem.fixed_mask
+                        if fixed_mask is not None:
+                            free_mask = ~fixed_mask
+                            full_hess = np.zeros((n_params, n_params))
+                            free_idx = np.where(free_mask)[0]
+                            for i, fi in enumerate(free_idx):
+                                for j, fj in enumerate(free_idx):
+                                    full_hess[fi, fj] = hess[i, j]
+                            hess = full_hess
+                    se = np.sqrt(np.maximum(np.diag(hess), 0))
+                    se[se == 0] = np.nan
+                    std_errors = se
                 except Exception:
-                    std_errors = np.full(len(beta), np.nan)
-            else:
-                std_errors = self._compute_std_errors(arrays, beta)
+                    pass
 
         # Build result using shared helper
         coefficients = pd.Series(beta, index=param_names, name="coefficient")

@@ -263,12 +263,14 @@ class Objective:
         if not _JAX_AVAILABLE:
             raise ImportError("JAX is required for Objective.from_jax")
 
-        # Numpy-compatible wrappers
+        # Numpy-compatible wrappers — minimise JAX↔NumPy overhead
         def log_likelihood(params: np.ndarray) -> float:
-            return float(ll_fn(jnp.array(params, dtype=jnp.float64)))
+            return np.asarray(ll_fn(jnp.array(params, dtype=jnp.float64))).item()
 
         def gradient(params: np.ndarray) -> np.ndarray:
-            return np.asarray(grad_fn(jnp.array(params, dtype=jnp.float64)))
+            out = grad_fn(jnp.array(params, dtype=jnp.float64))
+            # Skip copy when output is already a CPU numpy array
+            return out if isinstance(out, np.ndarray) else np.asarray(out)
 
         return cls(
             fn=log_likelihood,
