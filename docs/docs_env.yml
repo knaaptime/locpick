@@ -21,6 +21,7 @@ dependencies:
   - livelike
   - geosnap
   - duckdb < 1.5
+  - pymedm
   # testing
   - codecov
   - coverage
