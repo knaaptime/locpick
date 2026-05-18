@@ -1528,9 +1528,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
     def _build_nested_scl_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build Nested SCL objective."""
-        backend = (
-            self._backend or os.environ.get("LOCPICK_NESTED_SCL_BACKEND", "jax")
-        ).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_NESTED_SCL_BACKEND", "jax")).lower()
 
         if backend == "jax" and _JAX_AVAILABLE:
             from locpick._jax.builders import build_nested_scl_objective
