@@ -22,6 +22,7 @@ SCL <user-guide/scl>
 MSCL <user-guide/mscl>
 NestedSCL <user-guide/nscl>
 MixedNestedSCL <user-guide/mnscl>
+Simulated Location Choice Demo <user-guide/livelike_locpick_household_tract_demo>
 Spatial Models Demo <user-guide/spatial_models_demo>
 Sampling Correction <user-guide/sampling>
 Prediction & Simulation <user-guide/prediction>

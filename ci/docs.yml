@@ -2,7 +2,7 @@ name: test
 channels:
   - conda-forge
 dependencies:
-  - python=3.14
+  - python>=3.14
   # core
   - numpy
   - pandas
@@ -18,9 +18,21 @@ dependencies:
   - libpysal>=4.0
   - geopandas>=0.13
   - scikit-learn>=1.2
+  - livelike
   # testing
   - codecov
   - coverage
   - pytest>=7
   - pytest-cov
   - pytest-xdist
+  # docs
+  - numpydoc
+  - nbsphinx
+  - myst-parser
+  - sphinx>=7
+  - sphinx-autodoc2
+  - sphinxcontrib-bibtex
+  - sphinx-copybutton
+  - sphinx-immaterial
+  - myst-nb
+  - watermark
