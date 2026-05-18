@@ -908,7 +908,7 @@ class MixedMNL(BaseChoiceModel):
                 seed=self._seed,
             )
 
-        backend = (self._backend or os.environ.get("CHOICEMODELS_MIXED_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_MIXED_BACKEND", "")).lower()
         if backend != "numpy":
             try:
                 from locpick._jax.builders import build_mixed_logit_objective

@@ -78,9 +78,9 @@ FORMULA = "alt_feature + obs_x_alt - 1"
 
 def _fit_v2(dataset, backend, monkeypatch):
     """Fit using the v2 MultinomialLogit, controlling JAX vs NumPy via env var."""
-    monkeypatch.delenv("CHOICEMODELS_MNL_BACKEND", raising=False)
+    monkeypatch.delenv("LOCPICK_MNL_BACKEND", raising=False)
     if backend != "jax":
-        monkeypatch.setenv("CHOICEMODELS_MNL_BACKEND", backend)
+        monkeypatch.setenv("LOCPICK_MNL_BACKEND", backend)
     model = MNL(dataset.choice_table, FORMULA)
     result = model.fit()
     return result.coefficients
@@ -407,9 +407,9 @@ class TestProbabilityKernelConsistency:
 
         ct, _, _, _ = _make_simple_dataset(seed=99)
 
-        monkeypatch.delenv("CHOICEMODELS_MNL_BACKEND", raising=False)
+        monkeypatch.delenv("LOCPICK_MNL_BACKEND", raising=False)
         if backend == "numpy":
-            monkeypatch.setenv("CHOICEMODELS_MNL_BACKEND", "numpy")
+            monkeypatch.setenv("LOCPICK_MNL_BACKEND", "numpy")
 
         model = MNL(ct, formula="obsval + altval - 1")
         result = model.fit()
@@ -547,13 +547,13 @@ class TestGradientCorrectness:
         # Force NumPy backend
         import os
 
-        os.environ["CHOICEMODELS_MNL_BACKEND"] = "numpy"
+        os.environ["LOCPICK_MNL_BACKEND"] = "numpy"
         try:
             objective = model._build_objective_numpy(arrays)
             ll_fn = objective.fn
             grad_fn = objective.grad
         finally:
-            del os.environ["CHOICEMODELS_MNL_BACKEND"]
+            del os.environ["LOCPICK_MNL_BACKEND"]
 
         beta = np.array([0.1, -0.2])
 
@@ -1585,9 +1585,9 @@ class TestDGPRecovery:
 
         dataset = simulate_mnl(n_obs=3000, n_alts=6, seed=8005)
 
-        monkeypatch.delenv("CHOICEMODELS_MNL_BACKEND", raising=False)
+        monkeypatch.delenv("LOCPICK_MNL_BACKEND", raising=False)
         if backend != "jax":
-            monkeypatch.setenv("CHOICEMODELS_MNL_BACKEND", backend)
+            monkeypatch.setenv("LOCPICK_MNL_BACKEND", backend)
 
         model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result = model.fit()

@@ -698,7 +698,7 @@ class MNL(BaseChoiceModel):
         """
         import os
 
-        backend = (self._backend or os.environ.get("CHOICEMODELS_MNL_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_MNL_BACKEND", "")).lower()
         if backend == "numpy":
             return self._build_objective_numpy(arrays)
         try:

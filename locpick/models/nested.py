@@ -535,7 +535,7 @@ class NestedMNL(BaseChoiceModel):
         nest_matrix = self._nest_matrix
 
         # Try JAX backend first (default when available)
-        backend = (self._backend or os.environ.get("CHOICEMODELS_NESTED_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_NESTED_BACKEND", "")).lower()
         if backend != "numpy":
             try:
                 from locpick._jax.builders import build_nested_objective

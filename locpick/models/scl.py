@@ -1419,7 +1419,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
         """Build SCL (plain) objective."""
         edge_struct = self._edge_struct
 
-        backend = (self._backend or os.environ.get("CHOICEMODELS_SCL_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_SCL_BACKEND", "")).lower()
         if backend == "jax":
             use_jax = _JAX_AVAILABLE
         elif backend in {"numba", "numpy"}:
@@ -1500,7 +1500,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
                 "Random parameter structure must be prepared before building objective."
             )
 
-        backend = (self._backend or os.environ.get("CHOICEMODELS_MSCL_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_MSCL_BACKEND", "")).lower()
         if backend == "jax":
             use_jax = _JAX_AVAILABLE
         elif backend in {"numba", "numpy"}:
@@ -1529,7 +1529,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
     def _build_nested_scl_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build Nested SCL objective."""
         backend = (
-            self._backend or os.environ.get("CHOICEMODELS_NESTED_SCL_BACKEND", "jax")
+            self._backend or os.environ.get("LOCPICK_NESTED_SCL_BACKEND", "jax")
         ).lower()
 
         if backend == "jax" and _JAX_AVAILABLE:
@@ -1544,7 +1544,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
     def _build_mnscl_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build MNSCL (mixed nested) objective."""
-        backend = (self._backend or os.environ.get("CHOICEMODELS_MNSCL_BACKEND", "jax")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_MNSCL_BACKEND", "jax")).lower()
 
         if backend == "jax" and _JAX_AVAILABLE:
             from locpick._jax.builders import build_mnscl_objective
