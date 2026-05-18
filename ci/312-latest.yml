@@ -10,6 +10,7 @@ dependencies:
   - formulaic>=0.5
   - numba>=0.59
   - xarray
+  - lazy_loader
   # optional (jax)
   - jax>=0.4
   - jaxlib>=0.4
