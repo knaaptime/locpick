@@ -99,6 +99,23 @@ def _register_builtins() -> None:
 
     _SOLVERS.setdefault("lbfgs", LBFGSSolver)
 
+    # Trust-region Newton (optional — requires JAX + scipy)
+    try:
+        from .trust_ncg import TrustKrylovSolver, TrustNCGSolver
+
+        _SOLVERS.setdefault("trust-ncg", TrustNCGSolver)
+        _SOLVERS.setdefault("trust-krylov", TrustKrylovSolver)
+    except ImportError:
+        pass
+
+    # Optimagic (optional — requires optimagic)
+    try:
+        from .optimagic import OptimagicSolver
+
+        _SOLVERS.setdefault("optimagic", OptimagicSolver)
+    except ImportError:
+        pass
+
     # Optimistix (optional — requires optimistix)
     try:
         from .optimistix import OptimistixSolver

@@ -2,22 +2,23 @@
 
 This module defines the :class:`ChoiceModel` protocol and the
 :class:`BaseChoiceModel` abstract base class that all concrete
-model classes implement.
+model classes implement.  It also provides :class:`SpatialMixin`,
+a mixin for models that require a spatial adjacency graph.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, Union, runtime_checkable
 
 import numpy as np
+import pandas as pd
+from scipy import stats
 
+from locpick._jax.objective import Objective
+from locpick._solvers.protocol import Solver, SolverResult, get_solver
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.choicetable import ChoiceTable
 from locpick.data.problem import EstimationProblem
 from locpick.results.fit_result import FitResult
-from locpick._jax.objective import Objective
-from locpick._solvers.protocol import SolverResult, get_solver
 
 
 @runtime_checkable
@@ -42,25 +43,174 @@ class ChoiceModel(Protocol):
         ...
 
 
+# ---------------------------------------------------------------------------
+# Helpers shared across all models
+# ---------------------------------------------------------------------------
+
+
+def _compute_null_ll(arrays: ChoiceArrays) -> float:
+    """Compute the null log-likelihood (equal-choice-probability model).
+
+    Parameters
+    ----------
+    arrays : ChoiceArrays
+        Estimation data arrays.
+
+    Returns
+    -------
+    float
+        Null log-likelihood.
+    """
+    n_obs = arrays.n_obs
+    n_alts = arrays.n_alts
+    if arrays.available is not None:
+        avail = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, -1)
+        n_avail = avail.sum(axis=1)
+        return -np.sum(np.log(n_avail))
+    return -n_obs * np.log(n_alts)
+
+
+def _compute_fit_statistics(
+    ll: float,
+    ll_null: float,
+    n_obs: int,
+    n_params: int,
+    n_alts: int,
+    coefficients: pd.Series,
+    std_errors: pd.Series,
+    model_type: str,
+    solver_name: str,
+    solver_result_raw: Any,
+) -> dict:
+    """Compute standard fit statistics from estimation results.
+
+    Parameters
+    ----------
+    ll : float
+        Log-likelihood at estimated parameters.
+    ll_null : float
+        Null log-likelihood.
+    n_obs : int
+        Number of observations.
+    n_params : int
+        Number of estimated parameters.
+    n_alts : int
+        Number of alternatives.
+    coefficients : pd.Series
+        Estimated coefficients (display-scale).
+    std_errors : pd.Series
+        Standard errors.
+    model_type : str
+        Human-readable model name.
+    solver_name : str
+        Name of the solver used.
+    solver_result_raw : Any
+        Raw solver result for storage.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys: ``coefficients``, ``std_errors``, ``t_values``,
+        ``p_values``, ``conf_int``, ``log_likelihood``, ``log_likelihood_null``,
+        ``n_observations``, ``n_parameters``, ``n_alts``, ``aic``, ``bic``,
+        ``rho_squared``, ``rho_bar_squared``, ``model_type``, ``solver_name``,
+        ``solver_result``.
+    """
+    t_values = np.where(
+        std_errors.values > 0,
+        coefficients.values / std_errors.values,
+        np.nan,
+    )
+    p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
+
+    z_crit = stats.norm.ppf(0.975)
+    conf_lower = coefficients.values - z_crit * std_errors.values
+    conf_upper = coefficients.values + z_crit * std_errors.values
+
+    aic = 2 * n_params - 2 * ll
+    bic = n_params * np.log(n_obs) - 2 * ll
+    rho_squared = 1 - ll / ll_null
+    rho_bar_squared = 1 - (ll - n_params) / ll_null
+
+    return {
+        "coefficients": coefficients,
+        "std_errors": std_errors,
+        "t_values": pd.Series(t_values, index=coefficients.index, name="t_value"),
+        "p_values": pd.Series(p_values, index=coefficients.index, name="p_value"),
+        "conf_int": pd.DataFrame(
+            {"lower": conf_lower, "upper": conf_upper},
+            index=coefficients.index,
+        ),
+        "log_likelihood": ll,
+        "log_likelihood_null": ll_null,
+        "n_observations": n_obs,
+        "n_parameters": n_params,
+        "n_alts": n_alts,
+        "aic": aic,
+        "bic": bic,
+        "rho_squared": rho_squared,
+        "rho_bar_squared": rho_bar_squared,
+        "model_type": model_type,
+        "solver_name": solver_name,
+        "solver_result": solver_result_raw,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Base model class
+# ---------------------------------------------------------------------------
+
+
 class BaseChoiceModel(ABC):
     """Abstract base class for discrete choice model estimators.
 
     Provides common infrastructure for model estimation, result caching,
     and prediction. Subclasses must implement model-specific methods
     for building objectives and computing probabilities.
+
+    Parameters
+    ----------
+    data : ChoiceTable or EstimationProblem
+        The choice data to estimate on.
+    formula : str, optional
+        A formulaic formula string.
+    spec : ModelSpec, optional
+        A ModelSpec object.  Mutually exclusive with ``formula``.
+    solver : str or Solver, optional
+        Solver name or instance.  Default ``"lbfgs"``.
+    solver_options : dict, optional
+        Additional options passed to the solver constructor.
+    backend : str, optional
+        Computation backend hint.
+    weights : str or array-like, optional
+        Observation weights.
+    availability : str or array-like, optional
+        Alternative availability.
     """
 
     def __init__(
         self,
-        data: ChoiceTable | EstimationProblem,
-        formula: str | None = None,
+        data: Union[ChoiceTable, EstimationProblem],
+        formula: Optional[str] = None,
         spec=None,
-        solver: str = "lbfgs",
-        backend: str | None = None,
-        weights=None,
-        availability=None,
+        solver: Union[str, Solver] = None,
+        solver_options: Optional[dict] = None,
+        backend: Optional[str] = None,
+        weights: Optional[Union[str, np.ndarray]] = None,
+        availability: Optional[Union[str, np.ndarray]] = None,
     ):
+        from locpick.config import config
         from locpick.spec.model_spec import ModelSpec
+
+        self._solver_options = solver_options or {}
+        self._backend = backend
+
+        # Resolve solver
+        solver_name = solver if solver is not None else config.default_solver
+        if isinstance(solver_name, str):
+            self._solver = get_solver(solver_name, **self._solver_options)
+        else:
+            self._solver = solver_name
 
         # Handle EstimationProblem path
         if isinstance(data, EstimationProblem):
@@ -70,31 +220,40 @@ class BaseChoiceModel(ABC):
             self._spec = None
             self._weights = None
             self._availability = None
+            self._arrays = data.arrays
         else:
             self._problem = None
             self._data = data
             self._formula = formula
-            self._spec = spec
             self._weights = weights
             self._availability = availability
 
-        # Build ModelSpec from formula if needed
-        if formula is not None:
-            self._spec = ModelSpec(formula=formula)
+            # Build ModelSpec from formula if needed
+            if formula is not None and spec is not None:
+                raise ValueError("Provide 'formula' or 'spec', not both.")
+            if formula is None and spec is None:
+                raise ValueError("Either 'formula' or 'spec' must be provided.")
+            if formula is not None:
+                self._spec = ModelSpec(formula=formula)
+            else:
+                self._spec = spec
 
-        # Lazy-initialized estimation arrays (for non-problem path)
-        self._arrays: Optional[ChoiceArrays] = None
+            # Lazy-initialized estimation arrays
+            self._arrays: Optional[ChoiceArrays] = None
+
         self._result: Optional[FitResult] = None
+        self._objective: Optional[Objective] = None
 
-        # Caches
+        # Caches (cleared on re-estimation)
         self._hessian_inverse: Optional[np.ndarray] = None
         self._observation_scores_cache: dict = {}
         self._probabilities_cache: Optional[np.ndarray] = None
         self._utilities_cache: Optional[np.ndarray] = None
+        self._covariance_robust_cache: Optional[np.ndarray] = None
 
-        # Solver
-        self._solver = get_solver(solver)
-        self._backend = backend
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def data(self):
@@ -107,7 +266,7 @@ class BaseChoiceModel(ABC):
         return self._spec
 
     @property
-    def solver(self):
+    def solver(self) -> Solver:
         """The solver used for estimation."""
         return self._solver
 
@@ -116,8 +275,16 @@ class BaseChoiceModel(ABC):
         """The estimation result, or None if not yet estimated."""
         return self._result
 
+    # ------------------------------------------------------------------
+    # Estimation
+    # ------------------------------------------------------------------
+
     def fit(self, **kwargs) -> FitResult:
         """Estimate the model and return results.
+
+        Subclasses that need to resolve spatial graphs or set up
+        model-specific data should override ``_pre_fit()`` instead
+        of this method.
 
         Returns
         -------
@@ -125,7 +292,12 @@ class BaseChoiceModel(ABC):
         """
         arrays = self._get_arrays()
         self._arrays = arrays
+
+        # Hook for subclasses to resolve spatial graphs, etc.
+        self._pre_fit(arrays)
+
         objective = self._build_objective(arrays)
+        self._objective = objective
         x0, param_names, bounds, fixed_mask = self._get_solver_inputs(arrays)
 
         solver_result = self._solver.solve(
@@ -140,14 +312,50 @@ class BaseChoiceModel(ABC):
         self._clear_caches()
         return self._result
 
+    def _pre_fit(self, arrays: ChoiceArrays) -> None:
+        """Hook called before objective construction in ``fit()``.
+
+        Subclasses can override this to resolve spatial graphs, build
+        edge structures, or perform other pre-estimation setup.  The
+        default implementation does nothing.
+        """
+        pass
+
     def _get_arrays(self) -> ChoiceArrays:
         """Get estimation arrays from problem or build from data."""
         if self._problem is not None:
             return self._problem.arrays
         return self._build_arrays()
 
+    def _build_arrays(self) -> ChoiceArrays:
+        """Build ChoiceArrays from the data and spec.
+
+        This is the same across all model classes — it delegates to
+        ``EstimationProblem.from_choice_table()`` with the model's
+        stored configuration.
+        """
+        if self._problem is not None:
+            return self._problem.arrays
+
+        spec = self._spec if self._formula is None else None
+        self._problem = EstimationProblem.from_choice_table(
+            self._data,
+            spec=spec,
+            formula=self._formula,
+            weights=self._weights,
+            available=self._availability,
+            backend=self._backend or "auto",
+            solver_name=getattr(self._solver, "name", "lbfgs"),
+            solver_options=self._solver_options or None,
+        )
+        return self._problem.arrays
+
     def _get_solver_inputs(self, arrays: ChoiceArrays):
-        """Get initial values, param names, bounds, and fixed mask."""
+        """Get initial values, param names, bounds, and fixed mask.
+
+        Subclasses that add extra parameters (rho, lambda, sigma)
+        should override this to extend the parameter vector.
+        """
         if self._problem is not None:
             return (
                 self._problem.initial_values,
@@ -162,10 +370,9 @@ class BaseChoiceModel(ABC):
             None,
         )
 
-    @abstractmethod
-    def _build_arrays(self) -> ChoiceArrays:
-        """Build ChoiceArrays from the data and spec."""
-        ...
+    # ------------------------------------------------------------------
+    # Abstract methods — subclasses must implement
+    # ------------------------------------------------------------------
 
     @abstractmethod
     def _build_objective(self, arrays: ChoiceArrays) -> Objective:
@@ -187,9 +394,129 @@ class BaseChoiceModel(ABC):
         """Compute choice utilities."""
         ...
 
+    # ------------------------------------------------------------------
+    # Cache management
+    # ------------------------------------------------------------------
+
     def _clear_caches(self):
         """Clear all cached computation results."""
         self._hessian_inverse = None
         self._observation_scores_cache = {}
         self._probabilities_cache = None
         self._utilities_cache = None
+        self._covariance_robust_cache = None
+
+    def _get_hessian_inverse(self) -> Optional[np.ndarray]:
+        """Get the inverse Hessian from the solver result.
+
+        Returns
+        -------
+        np.ndarray or None
+            Inverse Hessian matrix, or None if not available.
+        """
+        if self._hessian_inverse is not None:
+            return self._hessian_inverse
+
+        if (
+            self._result is not None
+            and self._result.solver_result
+            and "scipy_result" in self._result.solver_result
+        ):
+            scipy_result = self._result.solver_result["scipy_result"]
+            if hasattr(scipy_result, "hess_inv"):
+                try:
+                    self._hessian_inverse = np.asarray(
+                        scipy_result.hess_inv.todense()
+                        if hasattr(scipy_result.hess_inv, "todense")
+                        else scipy_result.hess_inv
+                    )
+                    return self._hessian_inverse
+                except Exception:
+                    pass
+
+        if (
+            self._result is not None
+            and self._result.std_errors is not None
+            and not self._result.std_errors.isna().all()
+        ):
+            variances = self._result.std_errors.values**2
+            self._hessian_inverse = np.diag(variances)
+            return self._hessian_inverse
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Spatial mixin
+# ---------------------------------------------------------------------------
+
+
+class SpatialMixin:
+    """Mixin for models that require a spatial adjacency graph.
+
+    Provides ``_resolve_spatial_graph()`` and ``_pre_fit()`` hooks
+    that handle graph resolution, allocation computation, and
+    ``EdgeStructure`` construction.  Subclasses that use this mixin
+    must set ``self._graph_input`` before calling ``fit()``.
+
+    This mixin eliminates the duplicated graph-resolution boilerplate
+    that was previously copy-pasted across SCL, MSCL, NestedSCL, and
+    MNSCL.
+    """
+
+    _graph_input: Any
+    _omega: Optional[np.ndarray]
+    _allocation: Optional[np.ndarray]
+    _edge_list: Optional[list]
+    _n_alts_graph: Optional[int]
+    _edge_struct: Optional[Any]  # EdgeStructure from scl.py
+
+    def _resolve_spatial_graph(self) -> tuple[np.ndarray, list, int]:
+        """Resolve the spatial graph and store allocation/edge data.
+
+        Delegates to :func:`locpick.models.scl._resolve_spatial_graph`
+        and caches the results on ``self``.
+
+        Returns
+        -------
+        omega : np.ndarray
+            Adjacency matrix with preserved weights.
+        allocation : np.ndarray
+            Row-standardised allocation parameters.
+        edge_list : list of (int, int)
+            Paired-nest edges.
+        n_alts : int
+            Number of alternatives (dimension of the graph).
+        """
+        from locpick._compat import _NUMBA_AVAILABLE
+        from locpick.models.scl import EdgeStructure, _resolve_spatial_graph
+
+        omega, allocation, edge_list, n_alts = _resolve_spatial_graph(self._graph_input)
+        self._omega = omega
+        self._allocation = allocation
+        self._edge_list = edge_list
+        self._n_alts_graph = n_alts
+
+        # Precompute edge structure for Numba backend
+        if _NUMBA_AVAILABLE:
+            self._edge_struct = EdgeStructure(edge_list, n_alts, allocation)
+        else:
+            self._edge_struct = None
+
+        return omega, allocation, edge_list, n_alts
+
+    def _validate_graph_size(self, arrays: ChoiceArrays) -> None:
+        """Validate that the spatial graph matches the choice data.
+
+        Raises
+        ------
+        ValueError
+            If the graph has a different number of nodes than the
+            choice data has alternatives.
+        """
+        if self._n_alts_graph is not None and self._n_alts_graph != arrays.n_alts:
+            raise ValueError(
+                f"Spatial graph has {self._n_alts_graph} nodes but the choice "
+                f"data has {arrays.n_alts} alternatives.  The graph must "
+                f"cover exactly the same alternatives as the choice data."
+            )

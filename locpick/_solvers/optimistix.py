@@ -67,8 +67,9 @@ class OptimistixSolver:
     seed : int
         Random seed for multi-start perturbations.
     compute_hessian : bool
-        Whether to compute an exact Hessian at the optimum via ``jax.hessian``.
-        This can be expensive for large objectives; default ``True``.
+        Kept for API compatibility.  Hessian is now computed lazily by
+        the model via :meth:`Objective.hessian` when standard errors
+        are requested, rather than eagerly in the solver.
     """
 
     # Map of method names to Optimistix solver constructors
@@ -108,8 +109,7 @@ class OptimistixSolver:
         name = self.method.lower()
         if name not in self._METHODS:
             raise ValueError(
-                f"Unknown method '{self.method}'. "
-                f"Choose from: {list(self._METHODS.keys())}"
+                f"Unknown method '{self.method}'. Choose from: {list(self._METHODS.keys())}"
             )
 
         if name == "bfgs":
@@ -215,7 +215,7 @@ class OptimistixSolver:
         try:
             import jax
             import jax.numpy as jnp
-            import optimistix as optx
+            import optimistix as optx  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "OptimistixSolver requires jax and optimistix. "
@@ -232,8 +232,7 @@ class OptimistixSolver:
             fixed_mask_arr = np.asarray(fixed_mask, dtype=bool)
             if fixed_mask_arr.shape != x0_full.shape:
                 raise ValueError(
-                    f"fixed_mask must have shape {x0_full.shape}; "
-                    f"got {fixed_mask_arr.shape}."
+                    f"fixed_mask must have shape {x0_full.shape}; got {fixed_mask_arr.shape}."
                 )
             free_mask_arr = ~fixed_mask_arr
             free_indices = np.where(free_mask_arr)[0]
@@ -313,7 +312,7 @@ class OptimistixSolver:
             has_lower = jnp.isfinite(lower_bounds)
             has_upper = jnp.isfinite(upper_bounds)
             has_both = has_lower & has_upper
-            has_neither = ~has_lower & ~has_upper
+            ~has_lower & ~has_upper
 
             # Convert x0 to unconstrained space (inverse sigmoid)
             x0_jax = jnp.array(x0, dtype=jnp.float64)
@@ -321,11 +320,7 @@ class OptimistixSolver:
             # For unbounded params: α = θ
             x0_unconstrained = jnp.where(
                 has_both,
-                jnp.log(
-                    (x0_jax - lower_bounds)
-                    / (upper_bounds - x0_jax + 1e-30)
-                    + 1e-30
-                ),
+                jnp.log((x0_jax - lower_bounds) / (upper_bounds - x0_jax + 1e-30) + 1e-30),
                 x0_jax,
             )
 
@@ -333,8 +328,7 @@ class OptimistixSolver:
                 # Transform unconstrained α → bounded θ
                 theta = jnp.where(
                     has_both,
-                    lower_bounds
-                    + (upper_bounds - lower_bounds) * jax.nn.sigmoid(alpha),
+                    lower_bounds + (upper_bounds - lower_bounds) * jax.nn.sigmoid(alpha),
                     jnp.where(
                         has_lower,
                         lower_bounds + jax.nn.softplus(alpha),
@@ -358,9 +352,7 @@ class OptimistixSolver:
 
         # Single-start optimisation
         if self.n_starts == 1:
-            params_opt, n_iter, converged, run_diag = self._run_single(
-                objective, solver, x0_opt
-            )
+            params_opt, n_iter, converged, run_diag = self._run_single(objective, solver, x0_opt)
             run_diag["start_index"] = 0
             run_diag["objective_value"] = float(objective(params_opt))
             run_diagnostics.append(run_diag)
@@ -383,11 +375,7 @@ class OptimistixSolver:
                     # Convert perturbed start to unconstrained space
                     x0_i = jnp.where(
                         has_both,
-                        jnp.log(
-                            (x0_i - lower_bounds)
-                            / (upper_bounds - x0_i + 1e-30)
-                            + 1e-30
-                        ),
+                        jnp.log((x0_i - lower_bounds) / (upper_bounds - x0_i + 1e-30) + 1e-30),
                         x0_i,
                     )
 
@@ -415,8 +403,7 @@ class OptimistixSolver:
         if bounds is not None:
             coefficients = jnp.where(
                 has_both,
-                lower_bounds
-                + (upper_bounds - lower_bounds) * jax.nn.sigmoid(params_opt),
+                lower_bounds + (upper_bounds - lower_bounds) * jax.nn.sigmoid(params_opt),
                 jnp.where(
                     has_lower,
                     lower_bounds + jax.nn.softplus(params_opt),
@@ -436,17 +423,9 @@ class OptimistixSolver:
             full[free_mask_arr] = coefficients
             coefficients = full
 
-        # Compute Hessian at optimum for standard errors (if JAX-native)
+        # Hessian is computed lazily by the model via Objective.hessian()
+        # when standard errors are requested, rather than eagerly here.
         hessian_inv = None
-        if self.compute_hessian and ll_jax is not None and free_mask_arr is None:
-            try:
-                neg_ll_hess = jax.hessian(lambda p: -ll_jax(p))
-                hessian_neg_ll = np.asarray(
-                    neg_ll_hess(jnp.array(coefficients, dtype=jnp.float64))
-                )
-                hessian_inv = np.linalg.inv(hessian_neg_ll)
-            except Exception:
-                hessian_inv = None
 
         ll_val = float(base_ll_fn(jnp.array(coefficients, dtype=jnp.float64)))
 
@@ -486,9 +465,7 @@ class OptimistixSolver:
         """Run a single optimisation with the given solver."""
         import optimistix as optx
 
-        sol = optx.minimise(
-            objective, solver, x0, max_steps=self.maxiter, throw=False
-        )
+        sol = optx.minimise(objective, solver, x0, max_steps=self.maxiter, throw=False)
         params = sol.value
         status_name, status_message, status_code = self._status_metadata(sol.result, optx)
         converged = status_name == "successful"

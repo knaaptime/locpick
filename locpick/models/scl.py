@@ -26,15 +26,20 @@ import pandas as pd
 from scipy.special import logsumexp
 
 from locpick._compat import _JAX_AVAILABLE, _NUMBA_AVAILABLE, _NUMBA_PARALLEL
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel
-from locpick.results.fit_result import FitResult
-from locpick._sampling.correction import get_sampling_correction
 from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult, get_solver
 from locpick._kernels.constants import NEG_INF
-from locpick.spec import ModelSpec
+from locpick._sampling.correction import get_sampling_correction
+from locpick._solvers import Solver, SolverResult
+from locpick.data.arrays import ChoiceArrays
+from locpick.models.base import (
+    BaseChoiceModel,
+    SpatialMixin,
+    _compute_fit_statistics,
+    _compute_null_ll,
+)
+from locpick.models.mixed import ParamDistribution, _resolve_draws
+from locpick.models.nested import NestingTree, naturalize_nest_params
+from locpick.results.fit_result import FitResult
 
 # ---------------------------------------------------------------------------
 # Numba imports (only if available)
@@ -54,9 +59,9 @@ def _resolve_spatial_graph(
     """Resolve a spatial connectivity object into SCL-ready arrays.
 
     Accepts a ``libpysal.graph.Graph``, a ``scipy.sparse`` array, or a
-    dense NumPy array and returns the binary adjacency matrix, the
-    allocation matrix, and the list of paired-nest edges needed by the
-    SCL probability kernel.
+    dense NumPy array and returns the adjacency matrix, the allocation
+    matrix, and the list of paired-nest edges needed by the SCL
+    probability kernel.
 
     Parameters
     ----------
@@ -64,7 +69,8 @@ def _resolve_spatial_graph(
         Spatial connectivity structure.  ``libpysal.graph.Graph`` objects
         are converted via their ``.sparse`` property.  ``scipy.sparse``
         arrays are used directly.  Dense NumPy arrays are converted to
-        CSR format.  Weights are binarised (any non-zero entry becomes 1).
+        CSR format.  Weights are preserved (not binarised) so that
+        distance- or kernel-weighted graphs can be used directly.
     alt_ids : list, optional
         Alternative IDs that index into the graph.  If *None*, the graph
         is assumed to be ordered consistently with the design matrix
@@ -73,15 +79,16 @@ def _resolve_spatial_graph(
     Returns
     -------
     omega : np.ndarray, shape (n_alts, n_alts)
-        Binary adjacency matrix.  ``omega[i, j] = 1`` if alternatives *i*
-        and *j* are spatially contiguous, 0 otherwise.  Diagonal is zero.
+        Adjacency matrix with preserved weights.  ``omega[i, j] > 0`` if
+        alternatives *i* and *j* are spatially connected, 0 otherwise.
+        Diagonal is zero.
     allocation : np.ndarray, shape (n_alts, n_alts)
         Row-standardised allocation parameters.  ``allocation[i, j] =
         omega[i, j] / sum_k omega[i, k]``.  This is :math:`\\alpha_{i,j}`
         in Bhat & Guo (2004, Eq. 2).
     edge_list : list of (int, int)
         List of paired-nest edges ``(i, j)`` with ``i < j`` and
-        ``omega[i, j] = 1``.  Each edge defines one paired nest in the
+        ``omega[i, j] > 0``.  Each edge defines one paired nest in the
         PGNL structure.
     n_alts : int
         Number of alternatives (dimension of the graph).
@@ -99,8 +106,8 @@ def _resolve_spatial_graph(
 
     n = sp_mat.shape[0]
 
-    # --- Binarise (any non-zero → 1) and zero the diagonal ---
-    omega_sp = sp.csr_array((sp_mat != 0).astype(np.float64))
+    # --- Preserve weights, zero the diagonal ---
+    omega_sp = sp.csr_array(sp_mat, dtype=np.float64)
     omega_sp.setdiag(0.0)
     omega_sp.eliminate_zeros()
 
@@ -209,9 +216,7 @@ class EdgeStructure:
             connected_set.add(j)
 
         self.connected = np.array(sorted(connected_set), dtype=np.int64)
-        self.isolated = np.array(
-            sorted(set(range(n_alts)) - connected_set), dtype=np.int64
-        )
+        self.isolated = np.array(sorted(set(range(n_alts)) - connected_set), dtype=np.int64)
 
         # Build alt → edge mapping as flat arrays
         # For each alt, store the indices of edges it participates in
@@ -364,7 +369,9 @@ if _NUMBA_AVAILABLE:
 
                     s = my_term + other_term
                     log_cond = np.log(my_term) - np.log(s) if s > 0.0 else 0.0
-                    log_nest = np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
+                    log_nest = (
+                        np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
+                    )
                     log_probs[n, alt_i] = log_cond + log_nest
                 else:
                     # Multiple edges: need logsumexp
@@ -382,7 +389,11 @@ if _NUMBA_AVAILABLE:
 
                         s = my_term + other_term
                         log_cond = np.log(my_term) - np.log(s) if s > 0.0 else 0.0
-                        log_nest = np.log(nest_vals_n[e_idx]) - log_denom if nest_vals_n[e_idx] > 0.0 else 0.0
+                        log_nest = (
+                            np.log(nest_vals_n[e_idx]) - log_denom
+                            if nest_vals_n[e_idx] > 0.0
+                            else 0.0
+                        )
                         contributions[k] = log_cond + log_nest
                         if contributions[k] > max_log:
                             max_log = contributions[k]
@@ -426,11 +437,19 @@ if _NUMBA_AVAILABLE:
     ) -> float:
         """Numba-JIT SCL log-likelihood kernel (parallel over observations)."""
         log_probs = _scl_log_probs_numba_core(
-            V, rho, allocation, avail,
-            edge_i, edge_j,
-            alt_edge_starts, alt_edge_counts,
-            alt_edge_indices, alt_edge_is_first,
-            connected, isolated, n_edges,
+            V,
+            rho,
+            allocation,
+            avail,
+            edge_i,
+            edge_j,
+            alt_edge_starts,
+            alt_edge_counts,
+            alt_edge_indices,
+            alt_edge_is_first,
+            connected,
+            isolated,
+            n_edges,
         )
         n_obs = V.shape[0]
         n_alts = V.shape[1]
@@ -470,11 +489,18 @@ def _scl_log_probs_numba(
     np.ndarray, shape (n_obs, n_alts)
     """
     return _scl_log_probs_numba_core(
-        V, rho, edge_struct.allocation, avail,
-        edge_struct.edge_i, edge_struct.edge_j,
-        edge_struct.alt_edge_starts, edge_struct.alt_edge_counts,
-        edge_struct.alt_edge_indices, edge_struct.alt_edge_is_first,
-        edge_struct.connected, edge_struct.isolated,
+        V,
+        rho,
+        edge_struct.allocation,
+        avail,
+        edge_struct.edge_i,
+        edge_struct.edge_j,
+        edge_struct.alt_edge_starts,
+        edge_struct.alt_edge_counts,
+        edge_struct.alt_edge_indices,
+        edge_struct.alt_edge_is_first,
+        edge_struct.connected,
+        edge_struct.isolated,
         edge_struct.n_edges,
     )
 
@@ -489,11 +515,20 @@ def _scl_ll_numba(
 ) -> float:
     """Compute SCL log-likelihood using Numba-JIT backend."""
     return _scl_ll_numba_core(
-        V, rho, edge_struct.allocation, chosen, avail, weights,
-        edge_struct.edge_i, edge_struct.edge_j,
-        edge_struct.alt_edge_starts, edge_struct.alt_edge_counts,
-        edge_struct.alt_edge_indices, edge_struct.alt_edge_is_first,
-        edge_struct.connected, edge_struct.isolated,
+        V,
+        rho,
+        edge_struct.allocation,
+        chosen,
+        avail,
+        weights,
+        edge_struct.edge_i,
+        edge_struct.edge_j,
+        edge_struct.alt_edge_starts,
+        edge_struct.alt_edge_counts,
+        edge_struct.alt_edge_indices,
+        edge_struct.alt_edge_is_first,
+        edge_struct.connected,
+        edge_struct.isolated,
         edge_struct.n_edges,
     )
 
@@ -679,6 +714,120 @@ def _scl_log_probs_numpy(
     log_probs = np.where(avail > 0, log_probs, NEG_INF)
 
     return log_probs
+
+
+def _scl_log_probs_and_inclusive_value_numpy(
+    beta: np.ndarray,
+    rho: float,
+    design_matrix: np.ndarray,
+    allocation: np.ndarray,
+    edge_list: list[tuple[int, int]],
+    n_obs: int,
+    n_alts: int,
+    available: Optional[np.ndarray] = None,
+    inclusion_probs: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute SCL log-probabilities and the inclusive value ln G_SCL.
+
+    This is identical to :func:`_scl_log_probs_numpy` but also returns
+    ``log_denom = ln G_SCL`` per observation, which serves as the inclusive
+    value for a nested SCL upper level.
+
+    Returns
+    -------
+    log_probs : np.ndarray, shape (n_obs, n_alts)
+    log_inclusive_value : np.ndarray, shape (n_obs,)
+        ``ln G_SCL`` for each observation.
+    """
+    # Step 1: systematic utility
+    V = (design_matrix @ beta).reshape(n_obs, n_alts)
+
+    # Step 2: sampling correction
+    if inclusion_probs is not None:
+        sr = np.asarray(inclusion_probs, dtype=np.float64).reshape(n_obs, n_alts)
+        V = V + np.log(np.maximum(sr, 1e-30))
+
+    # Step 3: availability masking
+    if available is not None:
+        avail = np.asarray(available, dtype=np.float64).reshape(n_obs, n_alts)
+    else:
+        avail = np.ones((n_obs, n_alts), dtype=np.float64)
+
+    V = np.where(avail > 0, V, NEG_INF)
+
+    # Step 4: compute SCL probabilities
+    inv_rho = 1.0 / rho
+    exp_V = np.exp(np.clip(V, -500, 500))  # (n_obs, n_alts)
+
+    alloc_exp_V = allocation[None, :, :] * exp_V[:, :, None]  # (n_obs, n_alts, n_alts)
+    alloc_exp_V = np.clip(alloc_exp_V, 1e-30, 1e30)
+    alloc_exp_V_inv_rho = np.power(alloc_exp_V, inv_rho)  # (n_obs, n_alts, n_alts)
+
+    n_edges = len(edge_list)
+    if n_edges == 0:
+        log_sum_exp_V = logsumexp(V, axis=1)
+        log_probs = V - log_sum_exp_V[:, None]
+        return log_probs, log_sum_exp_V
+
+    # Identify connected vs isolated alternatives
+    connected = set()
+    for i, j in edge_list:
+        connected.add(i)
+        connected.add(j)
+    isolated = sorted(set(range(n_alts)) - connected)
+
+    # Compute nest values for each edge
+    nest_vals = np.zeros((n_obs, n_edges), dtype=np.float64)
+    for idx, (i, j) in enumerate(edge_list):
+        term_i = alloc_exp_V_inv_rho[:, i, j]
+        term_j = alloc_exp_V_inv_rho[:, j, i]
+        nest_vals[:, idx] = np.power(term_i + term_j, rho)
+
+    # Denominator
+    if isolated:
+        iso_exp_V = exp_V[:, isolated]
+        denom_components = np.column_stack([nest_vals, iso_exp_V])
+    else:
+        denom_components = nest_vals
+
+    log_denom = np.log(np.maximum(denom_components.sum(axis=1), 1e-300))  # (n_obs,)
+
+    # Compute log-probabilities for each alternative
+    log_probs = np.full((n_obs, n_alts), NEG_INF, dtype=np.float64)
+
+    alt_to_edges: dict[int, list[tuple[int, bool]]] = {}
+    for idx, (i, j) in enumerate(edge_list):
+        alt_to_edges.setdefault(i, []).append((idx, True))
+        alt_to_edges.setdefault(j, []).append((idx, False))
+
+    for alt_i in connected:
+        edge_contributions = []
+        for edge_idx, is_first in alt_to_edges[alt_i]:
+            i, j = edge_list[edge_idx]
+            if is_first:
+                my_term = alloc_exp_V_inv_rho[:, alt_i, j]
+                other_term = alloc_exp_V_inv_rho[:, j, alt_i]
+            else:
+                my_term = alloc_exp_V_inv_rho[:, alt_i, i]
+                other_term = alloc_exp_V_inv_rho[:, i, alt_i]
+
+            log_cond = np.log(np.maximum(my_term, 1e-300)) - np.log(
+                np.maximum(my_term + other_term, 1e-300)
+            )
+            log_nest = np.log(np.maximum(nest_vals[:, edge_idx], 1e-300)) - log_denom
+            edge_contributions.append(log_cond + log_nest)
+
+        if len(edge_contributions) == 1:
+            log_probs[:, alt_i] = edge_contributions[0]
+        else:
+            log_probs[:, alt_i] = logsumexp(np.column_stack(edge_contributions), axis=1)
+
+    for alt_i in isolated:
+        log_probs[:, alt_i] = V[:, alt_i] - log_denom
+
+    log_probs = np.where(avail > 0, log_probs, NEG_INF)
+
+    return log_probs, log_denom
 
 
 def _scl_ll_numpy(
@@ -868,8 +1017,15 @@ def _scl_log_probs_dispatch(
         return _scl_log_probs_numba(V, rho, edge_struct, avail)
     else:
         return _scl_log_probs_numpy(
-            beta, rho, design_matrix, allocation, edge_list,
-            n_obs, n_alts, available=available, inclusion_probs=inclusion_probs,
+            beta,
+            rho,
+            design_matrix,
+            allocation,
+            edge_list,
+            n_obs,
+            n_alts,
+            available=available,
+            inclusion_probs=inclusion_probs,
         )
 
 
@@ -889,13 +1045,9 @@ def _scl_ll_dispatch(
 ) -> float:
     """Compute SCL log-likelihood, dispatching to Numba or NumPy."""
     V, avail = _prepare_V(beta, design_matrix, n_obs, n_alts, available, inclusion_probs)
-    chosen_2d = np.ascontiguousarray(
-        np.asarray(chosen, dtype=np.float64).reshape(n_obs, n_alts)
-    )
+    chosen_2d = np.ascontiguousarray(np.asarray(chosen, dtype=np.float64).reshape(n_obs, n_alts))
     if weights is not None:
-        w = np.ascontiguousarray(
-            np.asarray(weights, dtype=np.float64).reshape(n_obs)
-        )
+        w = np.ascontiguousarray(np.asarray(weights, dtype=np.float64).reshape(n_obs))
     else:
         w = np.ones(n_obs, dtype=np.float64)
 
@@ -903,8 +1055,16 @@ def _scl_ll_dispatch(
         return _scl_ll_numba(V, rho, edge_struct, chosen_2d, avail, w)
     else:
         return _scl_ll_numpy(
-            beta, rho, design_matrix, chosen, allocation, edge_list,
-            n_obs, n_alts, available=available, inclusion_probs=inclusion_probs,
+            beta,
+            rho,
+            design_matrix,
+            chosen,
+            allocation,
+            edge_list,
+            n_obs,
+            n_alts,
+            available=available,
+            inclusion_probs=inclusion_probs,
             weights=weights,
         )
 
@@ -978,7 +1138,7 @@ def _scl_gradient_dispatch(
 # ---------------------------------------------------------------------------
 
 
-class SpatiallyCorrelatedLogit(BaseChoiceModel):
+class SCL(BaseChoiceModel, SpatialMixin):
     r"""Spatially Correlated Logit (SCL) model for location choice estimation.
 
     The SCL model captures spatial correlation between contiguous alternatives
@@ -1048,169 +1208,216 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
     Examples
     --------
-    >>> from locpick import ChoiceTable, FitDiagnostics, SpatiallyCorrelatedLogit
+    >>> from locpick import ChoiceTable, SpatiallyCorrelatedLogit
     >>> from libpysal import graph
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=10)
     >>> g = graph.Graph.build_contiguity(tracts_gdf, rook=False)
     >>> model = SpatiallyCorrelatedLogit(ct, formula="cost + time", graph=g)
     >>> result = model.fit()
-    >>> print(FitDiagnostics.summary(result))
+    >>> print(result.summary())
     """
 
     def __init__(
         self,
         data,
         formula: Optional[str] = None,
-        spec: Optional[ModelSpec] = None,
+        spec=None,
         graph: Any = None,
+        nests: Optional[NestingTree] = None,
+        random_params: Optional[dict[str, ParamDistribution]] = None,
+        n_draws: Optional[int] = None,
+        draw_type: Optional[str] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
-        solver: Union[str, Solver] = "lbfgs",
+        solver: Union[str, Solver] = None,
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
     ):
+        from locpick.config import config
+
         if graph is None:
             raise ValueError(
                 "SpatiallyCorrelatedLogit requires a 'graph' argument "
                 "specifying the spatial adjacency structure."
             )
-        if formula is None and spec is None:
-            raise ValueError("Either 'formula' or 'spec' must be provided.")
-        if formula is not None and spec is not None:
-            raise ValueError("Provide 'formula' or 'spec', not both.")
 
-        self._data = data
-        self._problem: Optional[EstimationProblem] = None
-        self._formula = formula
+        super().__init__(
+            data=data,
+            formula=formula,
+            spec=spec,
+            solver=solver,
+            solver_options=solver_options,
+            backend=backend,
+            weights=weights,
+            availability=availability,
+        )
         self._graph_input = graph
-        self._weights = weights
-        self._availability = availability
-        self._solver_options = solver_options or {}
-        self._backend = backend
-
-        # Build ModelSpec from formula if needed
-        if formula is not None:
-            self._spec = ModelSpec(formula=formula)
-        else:
-            self._spec = spec
-
-        # Resolve solver
-        if isinstance(solver, str):
-            self._solver = get_solver(solver, **self._solver_options)
-        else:
-            self._solver = solver
-
-        # Lazy-initialized
-        self._arrays: Optional[ChoiceArrays] = None
-        self._result: Optional[FitResult] = None
-
-        # Caches (cleared on re-estimation)
-        self._hessian_inverse: Optional[np.ndarray] = None
-        self._observation_scores_cache: dict = {}
-        self._probabilities_cache: Optional[np.ndarray] = None
-        self._utilities_cache: Optional[np.ndarray] = None
-        self._covariance_bhhh_cache: Optional[np.ndarray] = None
-        self._covariance_robust_cache: Optional[np.ndarray] = None
+        self._nests = nests
+        self._random_params = random_params or {}
+        self._n_draws = n_draws if n_draws is not None else config.default_n_draws_mixed
+        self._draw_type = draw_type if draw_type is not None else config.default_qmc_engine
         self._allocation: Optional[np.ndarray] = None
         self._edge_list: Optional[list] = None
         self._n_alts_graph: Optional[int] = None
         self._edge_struct: Optional[EdgeStructure] = None
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def data(self):
-        """The ChoiceTable data."""
-        return self._data
-
-    @property
-    def spec(self) -> ModelSpec:
-        """The ModelSpec used for estimation."""
-        return self._spec
-
-    @property
-    def solver(self) -> Solver:
-        """The solver used for estimation."""
-        return self._solver
-
-    @property
-    def result(self) -> Optional[FitResult]:
-        """The estimation result, or None if not yet estimated."""
-        return self._result
+        self._nest_matrix: Optional[np.ndarray] = None
+        self._edge_structs: Optional[list] = None
+        self._edge_data_list: Optional[list] = None
 
     # ------------------------------------------------------------------
     # Estimation
     # ------------------------------------------------------------------
 
-    def fit(self) -> FitResult:
-        """Estimate the SCL model and return results.
+    def _pre_fit(self, arrays: ChoiceArrays) -> None:
+        """Resolve spatial graph and optional nest/random structures before objective construction."""
+        self._resolve_spatial_graph()
+        self._validate_graph_size(arrays)
 
-        Returns
-        -------
-        FitResult
-            Complete estimation results including coefficients, standard
-            errors, the dissimilarity parameter :math:`\\rho`, and fit
-            statistics.
+        has_nests = self._nests is not None
+        has_random = bool(self._random_params)
+
+        # Build nest matrix and per-nest edge structures if nests are provided
+        if has_nests:
+            alt_ids = list(range(arrays.n_alts))
+            self._nest_matrix = self._nests.build_nest_matrix(alt_ids)
+            n_nests = self._nests.n_nests
+
+            self._edge_structs = []
+            self._edge_data_list = []
+
+            for m in range(n_nests):
+                nest_alts = np.where(self._nest_matrix[:, m] > 0)[0]
+                n_nest_alts = len(nest_alts)
+
+                if n_nest_alts == 0:
+                    self._edge_structs.append(None)
+                    self._edge_data_list.append(None)
+                    continue
+
+                # Extract subgraph for this nest
+                nest_adj = self._omega[np.ix_(nest_alts, nest_alts)]
+                _, nest_alloc, nest_edges, _ = _resolve_spatial_graph(nest_adj)
+
+                # Build EdgeStructure for this nest
+                edge_struct = EdgeStructure(nest_edges, n_nest_alts, nest_alloc)
+                self._edge_structs.append(edge_struct)
+
+                # Build EdgeDataJAX if JAX is available
+                if _JAX_AVAILABLE:
+                    from locpick._jax.data import EdgeDataJAX
+
+                    edge_data = EdgeDataJAX.from_edge_structure(edge_struct)
+                    self._edge_data_list.append(edge_data)
+                else:
+                    self._edge_data_list.append(None)
+
+        # Set up random parameter structure if random_params are provided
+        if has_random:
+            param_names = list(arrays.param_names)
+            random_param_names = list(self._random_params.keys())
+            random_col_indices = [param_names.index(name) for name in random_param_names]
+            random_distributions = [
+                self._random_params[name].distribution for name in random_param_names
+            ]
+            k_random = len(random_col_indices)
+
+            # Generate draws
+            draws = _resolve_draws(self._draw_type, arrays.n_obs, self._n_draws, k_random, seed=42)
+
+            # Cache random structure for objective/prediction paths
+            self._draws = draws
+            self._random_col_indices = random_col_indices
+            self._random_distributions = random_distributions
+            self._random_param_names = random_param_names
+
+    def _get_solver_inputs(self, arrays: ChoiceArrays):
+        """Get initial values, param names, bounds, and fixed mask.
+
+        Parameter layout depends on which features are active:
+        - SCL (no nests, no random): [beta, alpha_rho]
+        - MSCL (no nests, random): [beta_fixed, alpha_rho, mean_*, sd_*]
+        - NestedSCL (nests, no random): [beta, alpha_rho_1..M, alpha_lambda_1..M]
+        - MNSCL (nests, random): [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
         """
-        # Build estimation arrays
-        arrays = self._build_arrays()
-        self._arrays = arrays
+        has_nests = self._nests is not None
+        has_random = bool(self._random_params)
+        param_names_all = list(arrays.param_names)
+        k_total = arrays.design_matrix.shape[1]
 
-        # Resolve spatial graph
-        omega, allocation, edge_list, n_alts_graph = _resolve_spatial_graph(self._graph_input)
-        self._allocation = allocation
-        self._edge_list = edge_list
-        self._n_alts_graph = n_alts_graph
-
-        if n_alts_graph != arrays.n_alts:
-            raise ValueError(
-                f"Spatial graph has {n_alts_graph} nodes but the choice "
-                f"data has {arrays.n_alts} alternatives.  The graph must "
-                f"cover exactly the same alternatives as the choice data."
-            )
-
-        # Precompute edge structure for Numba backend
-        if _NUMBA_AVAILABLE:
-            self._edge_struct = EdgeStructure(edge_list, n_alts_graph, allocation)
+        if has_nests:
+            n_nests = self._nests.n_nests
+            nest_names = self._nests.nest_names
         else:
-            self._edge_struct = None
+            n_nests = 0
+            nest_names = []
 
-        objective = self._build_objective(arrays)
+        if has_random:
+            random_param_names = list(self._random_params.keys())
+            k_random = len(random_param_names)
+            k_fixed = k_total - k_random
+            fixed_param_names = [
+                name for name in param_names_all if name not in random_param_names
+            ]
+        else:
+            k_random = 0
+            k_fixed = k_total
+            fixed_param_names = list(param_names_all)
+            random_param_names = []
 
-        # Initial values: zeros for beta, 0.0 for alpha_rho (→ rho ≈ 0.5)
-        k = arrays.design_matrix.shape[1]
-        x0 = np.concatenate([np.zeros(k), [0.0]])
+        # Build parameter vector
+        # Layout: [beta_fixed, rho_param(s), lambda_param(s)?, mean_*?, sd_*?]
+        # rho_param: 1 scalar (alpha_rho) if no nests, M scalars (alpha_rho_m) if nests
+        # lambda_param: M scalars (alpha_lambda_m) only if nests
+        n_rho = n_nests if has_nests else 1  # 1 alpha_rho for plain SCL/MSCL
+        n_lambda = n_nests if has_nests else 0  # lambda only for nested variants
+        n_params = k_fixed + n_rho + n_lambda + 2 * k_random
+        x0 = np.zeros(n_params)
 
-        solver_result = self._solver.solve(
-            objective=objective,
-            x0=x0,
-            param_names=list(arrays.param_names) + ["rho"],
-        )
+        # Build parameter names
+        display_names = list(fixed_param_names)
+        if has_nests:
+            display_names += [f"rho_{name}" for name in nest_names]
+            display_names += [f"lambda_{name}" for name in nest_names]
+        else:
+            display_names += ["rho"]
+        if has_random:
+            display_names += [f"mean_{name}" for name in random_param_names]
+            display_names += [f"sd_{name}" for name in random_param_names]
 
-        # Build FitResult
-        self._result = self._build_fit_result(solver_result, arrays, k)
-        self._clear_caches()
-        return self._result
+        return x0, display_names, None, None
 
     def _build_objective(self, arrays: ChoiceArrays) -> Objective:
-        """Build optimization objective for SCL estimation."""
+        """Build optimization objective, dispatching to the appropriate JAX builder.
+
+        Dispatches based on which features are active:
+        - No nests, no random: SCL objective
+        - No nests, random: MSCL objective
+        - Nests, no random: Nested SCL objective
+        - Nests, random: MNSCL objective
+        """
         if self._allocation is None or self._edge_list is None:
             raise RuntimeError("Spatial graph must be resolved before building objective.")
 
-        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
-        chosen = np.asarray(arrays.chosen, dtype=np.float64)
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        available = arrays.available
-        weights = arrays.weights
+        has_nests = self._nests is not None
+        has_random = bool(self._random_params)
+
+        # Dispatch to the appropriate JAX builder
+        if has_nests and has_random:
+            # MNSCL: Mixed Nested Spatially Correlated Logit
+            return self._build_mnscl_objective(arrays)
+        elif has_nests:
+            # Nested SCL
+            return self._build_nested_scl_objective(arrays)
+        elif has_random:
+            # MSCL: Mixed Spatially Correlated Logit
+            return self._build_mscl_objective(arrays)
+        else:
+            # Plain SCL
+            return self._build_scl_objective(arrays)
+
+    def _build_scl_objective(self, arrays: ChoiceArrays) -> Objective:
+        """Build SCL (plain) objective."""
         edge_struct = self._edge_struct
-
-        from locpick._sampling.correction import get_sampling_correction
-
-        inclusion_probs = get_sampling_correction(arrays)
-        k = dm.shape[1]
 
         backend = (self._backend or os.environ.get("CHOICEMODELS_SCL_BACKEND", "")).lower()
         if backend == "jax":
@@ -1225,6 +1432,19 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
             from locpick._jax.builders import build_scl_objective
 
             return build_scl_objective(arrays, edge_struct, self._allocation, self._edge_list)
+
+        # NumPy/Numba fallback
+        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
+        chosen = np.asarray(arrays.chosen, dtype=np.float64)
+        n_obs = arrays.n_obs
+        n_alts = arrays.n_alts
+        available = arrays.available
+        weights = arrays.weights
+
+        from locpick._sampling.correction import get_sampling_correction
+
+        inclusion_probs = get_sampling_correction(arrays)
+        k = dm.shape[1]
 
         def ll_fn(params):
             beta = params[:k]
@@ -1273,173 +1493,274 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
             param_names=list(arrays.param_names) + ["rho"],
         )
 
-    def _build_arrays(self) -> ChoiceArrays:
-        """Build ChoiceArrays from the data and spec."""
-        if self._problem is None:
-            spec = self._spec if self._formula is None else None
-            self._problem = EstimationProblem.from_choice_table(
-                self._data,
-                spec=spec,
-                formula=self._formula,
-                weights=self._weights,
-                available=self._availability,
-                backend=self._backend or "auto",
-                solver_name=getattr(self._solver, "name", "lbfgs"),
-                solver_options=self._solver_options or None,
+    def _build_mscl_objective(self, arrays: ChoiceArrays) -> Objective:
+        """Build MSCL (mixed) objective."""
+        if not hasattr(self, "_random_col_indices"):
+            raise RuntimeError(
+                "Random parameter structure must be prepared before building objective."
             )
 
-        return self._problem.arrays
+        backend = (self._backend or os.environ.get("CHOICEMODELS_MSCL_BACKEND", "")).lower()
+        if backend == "jax":
+            use_jax = _JAX_AVAILABLE
+        elif backend in {"numba", "numpy"}:
+            use_jax = False
+        else:
+            use_jax = _JAX_AVAILABLE
+
+        if use_jax:
+            from locpick._jax.builders import build_mscl_objective
+
+            return build_mscl_objective(
+                arrays,
+                self._edge_struct,
+                self._allocation,
+                self._edge_list,
+                self._random_col_indices,
+                self._random_distributions,
+                self._draws,
+            )
+
+        raise NotImplementedError(
+            "Mixed Spatially Correlated Logit currently only supports the JAX backend. "
+            f"Requested backend: {backend!r}."
+        )
+
+    def _build_nested_scl_objective(self, arrays: ChoiceArrays) -> Objective:
+        """Build Nested SCL objective."""
+        backend = (
+            self._backend or os.environ.get("CHOICEMODELS_NESTED_SCL_BACKEND", "jax")
+        ).lower()
+
+        if backend == "jax" and _JAX_AVAILABLE:
+            from locpick._jax.builders import build_nested_scl_objective
+
+            return build_nested_scl_objective(arrays, self._nest_matrix, self._edge_data_list)
+
+        raise NotImplementedError(
+            "NestedSpatiallyCorrelatedLogit currently only supports the JAX backend. "
+            f"Requested backend: {backend!r}."
+        )
+
+    def _build_mnscl_objective(self, arrays: ChoiceArrays) -> Objective:
+        """Build MNSCL (mixed nested) objective."""
+        backend = (self._backend or os.environ.get("CHOICEMODELS_MNSCL_BACKEND", "jax")).lower()
+
+        if backend == "jax" and _JAX_AVAILABLE:
+            from locpick._jax.builders import build_mnscl_objective
+
+            return build_mnscl_objective(
+                arrays,
+                self._nest_matrix,
+                self._edge_data_list,
+                self._random_col_indices,
+                self._random_distributions,
+                self._draws,
+            )
+
+        raise NotImplementedError(
+            "MixedNestedSpatiallyCorrelatedLogit currently only supports the JAX backend. "
+            f"Requested backend: {backend!r}."
+        )
 
     def _build_fit_result(
         self,
         solver_result: SolverResult,
         arrays: ChoiceArrays,
-        k: int,
     ) -> FitResult:
-        """Build a FitResult from solver output."""
+        """Build a FitResult from solver output.
+
+        Parameter layout depends on which features are active:
+        - SCL (no nests, no random): [beta, alpha_rho]
+        - MSCL (no nests, random): [beta_fixed, alpha_rho, mean_*, sd_*]
+        - NestedSCL (nests, no random): [beta, alpha_rho_1..M, alpha_lambda_1..M]
+        - MNSCL (nests, random): [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
+        """
+        has_nests = self._nests is not None
+        has_random = bool(self._random_params)
         all_params = solver_result.coefficients
-        beta = all_params[:k]
-        alpha_rho = all_params[k]
-        rho = naturalize_rho(alpha_rho)
 
-        # Parameter names
-        param_names = list(arrays.param_names) + ["rho"]
+        # Determine parameter layout
+        param_names_all = list(arrays.param_names)
+        k_total = arrays.design_matrix.shape[1]
 
-        # Display values: beta + rho (natural scale)
-        display_params = np.concatenate([beta, [rho]])
+        if has_random:
+            random_param_names = list(self._random_params.keys())
+            k_random = len(random_param_names)
+            k_fixed = k_total - k_random
+            fixed_param_names = [
+                name for name in param_names_all if name not in random_param_names
+            ]
+        else:
+            random_param_names = []
+            k_random = 0
+            k_fixed = k_total
+            fixed_param_names = list(param_names_all)
 
-        # Standard errors
-        se_rho = np.nan  # default when Hessian is unavailable
+        if has_nests:
+            n_nests = self._nests.n_nests
+            nest_names = self._nests.nest_names
+        else:
+            n_nests = 0
+            nest_names = []
+
+        # Number of rho and lambda parameters
+        n_rho = n_nests if has_nests else 1  # 1 alpha_rho for plain SCL/MSCL
+        n_lambda = n_nests if has_nests else 0  # lambda only for nested variants
+
+        # Unpack parameters based on layout
+        # Layout: [beta_fixed, rho_param(s), lambda_param(s)?, mean_*?, sd_*?]
+        beta_fixed = all_params[:k_fixed]
+
+        # Offset after rho and lambda parameters
+        rho_offset = k_fixed
+        if has_nests:
+            alpha_rhos = all_params[rho_offset : rho_offset + n_nests]
+            alpha_lambdas = all_params[rho_offset + n_nests : rho_offset + 2 * n_nests]
+            rhos = naturalize_rho(alpha_rhos)
+            lambdas = naturalize_nest_params(alpha_lambdas)
+        else:
+            alpha_rho = all_params[rho_offset]
+            rho = naturalize_rho(alpha_rho)
+
+        # Offset for random parameters (after rho and lambda)
+        random_offset = rho_offset + n_rho + n_lambda
+        if has_random:
+            beta_random_means = all_params[random_offset : random_offset + k_random]
+            beta_random_spreads = np.abs(
+                all_params[random_offset + k_random : random_offset + 2 * k_random]
+            )
+
+        # Build display parameter names and values
+        display_param_names = list(fixed_param_names)
+        display_values = [beta_fixed]
+
+        if has_nests:
+            display_param_names += [f"rho_{name}" for name in nest_names]
+            display_param_names += [f"lambda_{name}" for name in nest_names]
+            display_values.append(rhos)
+            display_values.append(lambdas)
+        else:
+            display_param_names += ["rho"]
+            display_values.append([rho])
+
+        if has_random:
+            display_param_names += [f"mean_{name}" for name in random_param_names]
+            display_param_names += [f"sd_{name}" for name in random_param_names]
+            display_values.append(beta_random_means)
+            display_values.append(beta_random_spreads)
+
+        display_params = np.concatenate(display_values)
+
+        # Standard errors with delta method for transformed parameters
         if solver_result.hessian is not None:
             try:
                 se_all = np.sqrt(np.abs(np.diag(solver_result.hessian)))
-                # Delta method for rho: SE(rho) = rho * (1 - rho) * SE(alpha_rho)
-                se_rho = rho * (1.0 - rho) * se_all[k]
-                std_errors = np.concatenate([se_all[:k], [se_rho]])
+                se_parts = [se_all[:k_fixed]]
+
+                if has_nests:
+                    # Delta method for rho_m: SE(rho_m) = rho_m * (1 - rho_m) * SE(alpha_rho_m)
+                    se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
+                    # Delta method for lambda_m: SE(lambda_m) = lambda_m * (1 - lambda_m) * SE(alpha_lambda_m)
+                    se_lambda = (
+                        lambdas
+                        * (1.0 - lambdas)
+                        * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                    )
+                    se_parts.append(se_rho)
+                    se_parts.append(se_lambda)
+                else:
+                    # Delta method for rho: SE(rho) = rho * (1 - rho) * SE(alpha_rho)
+                    se_rho = rho * (1.0 - rho) * se_all[rho_offset]
+                    se_parts.append([se_rho])
+
+                if has_random:
+                    se_parts.append(se_all[random_offset : random_offset + k_random])
+                    se_parts.append(
+                        se_all[random_offset + k_random : random_offset + 2 * k_random]
+                    )
+
+                std_errors = np.concatenate(se_parts)
             except Exception:
                 std_errors = np.full(len(display_params), np.nan)
         else:
-            std_errors = np.full(len(display_params), np.nan)
+            # Compute Hessian lazily via objective if available
+            if hasattr(self, "_objective") and self._objective is not None:
+                try:
+                    hess = self._objective.hessian(all_params)
+                    se_all = np.sqrt(np.abs(np.diag(hess)))
+                    se_parts = [se_all[:k_fixed]]
 
-        # T-values and p-values
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_values = np.where(std_errors > 0, display_params / std_errors, np.nan)
-        from scipy import stats
+                    if has_nests:
+                        se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
+                        se_lambda = (
+                            lambdas
+                            * (1.0 - lambdas)
+                            * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                        )
+                        se_parts.append(se_rho)
+                        se_parts.append(se_lambda)
+                    else:
+                        se_rho = rho * (1.0 - rho) * se_all[rho_offset]
+                        se_parts.append([se_rho])
 
-        p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
+                    if has_random:
+                        se_parts.append(se_all[random_offset : random_offset + k_random])
+                        se_parts.append(
+                            se_all[random_offset + k_random : random_offset + 2 * k_random]
+                        )
 
-        # For rho, report t-statistic against H0: rho=1 (i.e., MNL)
-        # This is a one-sided test: t = (rho - 1) / SE(rho)
-        _ = (rho - 1.0) / se_rho if not np.isnan(se_rho) and se_rho > 0 else np.nan  # noqa: F841
+                    std_errors = np.concatenate(se_parts)
+                except Exception:
+                    std_errors = np.full(len(display_params), np.nan)
+            else:
+                std_errors = np.full(len(display_params), np.nan)
 
-        # Confidence intervals
-        z_crit = stats.norm.ppf(0.975)
-        conf_lower = display_params - z_crit * std_errors
-        conf_upper = display_params + z_crit * std_errors
-
-        # Log-likelihood
-        ll = solver_result.log_likelihood
-
-        # Null log-likelihood
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        if arrays.available is not None:
-            avail = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, -1)
-            n_avail = avail.sum(axis=1)
-            ll_null = -np.sum(np.log(n_avail))
+        # Determine model type name
+        if has_nests and has_random:
+            model_type = "Mixed Nested Spatially Correlated Logit"
+        elif has_nests:
+            model_type = "Nested Spatially Correlated Logit"
+        elif has_random:
+            model_type = "Mixed Spatially Correlated Logit"
         else:
-            ll_null = -n_obs * np.log(n_alts)
+            model_type = "Spatially Correlated Logit"
 
-        # Number of parameters
+        # Build result using shared helper
+        coefficients = pd.Series(display_params, index=display_param_names, name="coefficient")
+        std_err_series = pd.Series(std_errors, index=display_param_names, name="std_error")
+        ll = solver_result.log_likelihood
+        ll_null = _compute_null_ll(arrays)
         n_params = len(display_params)
 
-        # Fit statistics
-        aic = 2 * n_params - 2 * ll
-        bic = n_params * np.log(n_obs) - 2 * ll
-        rho_squared = 1 - ll / ll_null
-        rho_bar_squared = 1 - (ll - n_params) / ll_null
-
-        # Build pandas objects
-        coefficients = pd.Series(display_params, index=param_names, name="coefficient")
-        std_err_series = pd.Series(std_errors, index=param_names, name="std_error")
-        t_series = pd.Series(t_values, index=param_names, name="t_value")
-        p_series = pd.Series(p_values, index=param_names, name="p_value")
-        conf_int = pd.DataFrame(
-            {"lower": conf_lower, "upper": conf_upper},
-            index=param_names,
+        stats = _compute_fit_statistics(
+            ll=ll,
+            ll_null=ll_null,
+            n_obs=arrays.n_obs,
+            n_params=n_params,
+            n_alts=arrays.n_alts,
+            coefficients=coefficients,
+            std_errors=std_err_series,
+            model_type=model_type,
+            solver_name=solver_result.solver_name,
+            solver_result_raw=solver_result.raw,
         )
 
         return FitResult(
-            coefficients=coefficients,
-            std_errors=std_err_series,
-            t_values=t_series,
-            p_values=p_series,
-            conf_int=conf_int,
-            log_likelihood=ll,
-            log_likelihood_null=ll_null,
-            n_observations=n_obs,
-            n_parameters=n_params,
-            n_alts=n_alts,
-            aic=aic,
-            bic=bic,
-            rho_squared=rho_squared,
-            rho_bar_squared=rho_bar_squared,
             spec=self._spec,
-            model_type="Spatially Correlated Logit",
-            solver_name=solver_result.solver_name,
-            solver_result=solver_result.raw,
+            **stats,
         )
-
-    # ------------------------------------------------------------------
-    # Cache management
-    # ------------------------------------------------------------------
-
-    def _clear_caches(self):
-        """Clear all cached computation results."""
-        self._hessian_inverse = None
-        self._observation_scores_cache = {}
-        self._probabilities_cache = None
-        self._utilities_cache = None
-        self._covariance_bhhh_cache = None
-        self._covariance_robust_cache = None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_hessian_inverse(self) -> np.ndarray | None:
-        """Get the inverse Hessian from the solver result.
-
-        Returns
-        -------
-        np.ndarray or None
-            Inverse Hessian matrix, or None if not available.
-        """
-        if self._hessian_inverse is not None:
-            return self._hessian_inverse
-
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
-            scipy_result = self._result.solver_result["scipy_result"]
-            if hasattr(scipy_result, "hess_inv"):
-                try:
-                    self._hessian_inverse = np.asarray(
-                        scipy_result.hess_inv.todense()
-                        if hasattr(scipy_result.hess_inv, "todense")
-                        else scipy_result.hess_inv
-                    )
-                    return self._hessian_inverse
-                except Exception:
-                    pass
-
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
-            variances = self._result.std_errors.values**2
-            self._hessian_inverse = np.diag(variances)
-            return self._hessian_inverse
-
-        return None
-
     def _observation_scores(self, arrays) -> np.ndarray:
         """Compute observation-level score vectors via numerical differentiation.
+
+        Currently only implemented for the plain SCL model (no nests, no random
+        parameters).  For MSCL, NestedSCL, and MNSCL variants, this method
+        raises ``NotImplementedError``.
 
         Parameters
         ----------
@@ -1450,9 +1771,23 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         -------
         np.ndarray, shape (n_obs, n_params)
             Score vector for each observation.
+
+        Raises
+        ------
+        NotImplementedError
+            If the model has nests or random parameters.
         """
         if self._result is None:
             raise RuntimeError("Model must be estimated first.")
+
+        has_nests = self._nests is not None
+        has_random = bool(self._random_params)
+        if has_nests or has_random:
+            raise NotImplementedError(
+                "Observation-level scores are not yet implemented for "
+                "MSCL, NestedSCL, or MNSCL variants. "
+                "Use the default Hessian-based standard errors instead."
+            )
 
         cache_key = id(arrays)
         if cache_key in self._observation_scores_cache:
@@ -1473,7 +1808,7 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
         # Base probabilities and per-observation LL
         probs_base = self.probabilities(data=None, beta=beta_hat, rho=rho_hat)
-        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1600,9 +1935,7 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array(
-                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
-            )
+            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1646,12 +1979,11 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1694,12 +2026,11 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1746,12 +2077,11 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1795,12 +2125,11 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1822,41 +2151,6 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
     # ------------------------------------------------------------------
     # Covariance estimation
     # ------------------------------------------------------------------
-
-    def covariance_bhhh(self, data=None) -> np.ndarray:
-        """Compute the BHHH covariance matrix.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute covariance on.  If ``None``, uses
-            estimation data.
-
-        Returns
-        -------
-        np.ndarray, shape (n_parameters, n_parameters)
-            BHHH covariance matrix.
-        """
-        from locpick.data.choicetable import ChoiceTable
-
-        if self._arrays is None:
-            raise RuntimeError("Model must be estimated first.")
-
-        arrays = self._arrays
-        if data is not None:
-            if not isinstance(data, ChoiceTable):
-                raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
-                formula=self._spec.formula,
-                spec=self._spec if self._spec.formula is None else None,
-            )
-
-        scores = self._observation_scores(arrays)
-        bhhh = scores.T @ scores
-        try:
-            return np.linalg.inv(bhhh)
-        except np.linalg.LinAlgError:
-            return np.full_like(bhhh, np.nan)
 
     def covariance_robust(self, data=None) -> np.ndarray:
         """Compute the sandwich (Huber-White) robust covariance matrix.
@@ -1952,23 +2246,6 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
 
         return H_inv @ B_clustered @ H_inv
 
-    def std_errors_bhhh(self, data=None) -> pd.Series:
-        """Compute BHHH standard errors.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute standard errors on.
-
-        Returns
-        -------
-        pd.Series
-            BHHH standard errors, indexed by parameter name.
-        """
-        cov = self.covariance_bhhh(data=data)
-        se = np.sqrt(np.diag(cov))
-        return pd.Series(se, index=self._result.coefficients.index, name="std_error_bhhh")
-
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.
 
@@ -2046,9 +2323,15 @@ class SpatiallyCorrelatedLogit(BaseChoiceModel):
         inclusion_probs = get_sampling_correction(arrays)
 
         log_probs = _scl_log_probs_dispatch(
-            beta, rho, dm, self._allocation, self._edge_list,
-            n_obs, n_alts,
-            available=available, inclusion_probs=inclusion_probs,
+            beta,
+            rho,
+            dm,
+            self._allocation,
+            self._edge_list,
+            n_obs,
+            n_alts,
+            available=available,
+            inclusion_probs=inclusion_probs,
             edge_struct=self._edge_struct,
         )
 

@@ -78,9 +78,7 @@ def compute_inclusion_probs(
             raise ValueError(f"weights are required for method={method!r}")
         weights = np.asarray(weights, dtype=np.float64)
         if weights.shape != (n_alts,):
-            raise ValueError(
-                f"weights must have shape ({n_alts},), got {weights.shape}"
-            )
+            raise ValueError(f"weights must have shape ({n_alts},), got {weights.shape}")
         if np.any(weights < 0):
             raise ValueError("weights must be non-negative")
         w_sum = weights.sum()
@@ -127,10 +125,6 @@ def validate_inclusion_probs(
     probs = np.asarray(probs)
     expected_shape = (n_obs, n_alts)
     if probs.shape != expected_shape:
-        raise ValueError(
-            f"inclusion_probs must have shape {expected_shape}, "
-            f"got {probs.shape}"
-        )
+        raise ValueError(f"inclusion_probs must have shape {expected_shape}, got {probs.shape}")
     if np.any(probs <= 0) or np.any(probs > 1):
         raise ValueError("inclusion_probs must be in (0, 1]")
-

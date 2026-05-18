@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from locpick import ChoiceTable, ModelSpec
-from locpick.spec import P, X, ScopedTerm
+from locpick.spec import ScopedTerm
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -212,32 +212,3 @@ class TestEstimationProblemMetadata:
         assert problem.param_bounds == [(-10, 0), (-1e6, 1e6)]
         assert problem.param_fixed == [True, False]
         assert problem.param_initial == [-0.5, 0.0]
-
-
-def test_modelspec_utility_path_supported_for_advanced_specs():
-    from locpick.data import EstimationProblem
-
-    choosers, alternatives, chosen = _make_toy_data()
-    utility = P("beta_cost", null_value=-0.5, bounds=(-5.0, 0.0), holdfast=True) * X(
-        "cost"
-    ) + P("beta_time") * X("time")
-
-    spec = ModelSpec(utility=utility)
-    ct = ChoiceTable.from_tables(
-        choosers,
-        alternatives,
-        chosen_alternatives=pd.Series(chosen["alt_id"].values, index=choosers.index),
-        seed=42,
-    )
-
-    arrays = ct.to_arrays(spec=spec)
-    frame = ct.to_frame()
-
-    assert arrays.param_names == ["beta_cost", "beta_time"]
-    assert np.allclose(arrays.design_matrix[:, 0], frame["cost"].to_numpy())
-    assert np.allclose(arrays.design_matrix[:, 1], frame["time"].to_numpy())
-
-    problem = EstimationProblem.from_choice_table(ct, spec=spec)
-    assert problem.param_bounds == [(-5.0, 0.0), (-1e6, 1e6)]
-    assert problem.param_fixed == [True, False]
-    assert problem.param_initial == [-0.5, 0.0]

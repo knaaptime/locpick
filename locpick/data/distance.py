@@ -116,7 +116,11 @@ def pairwise_distance(
     units_mult = _resolve_units_multiplier(units)
 
     if method == "auto":
-        method = "geopandas" if hasattr(origins, "geometry") and hasattr(destinations, "geometry") else "haversine"
+        method = (
+            "geopandas"
+            if hasattr(origins, "geometry") and hasattr(destinations, "geometry")
+            else "haversine"
+        )
 
     if method in {"haversine", "greatcircle"}:
         o_lat = origins[y].to_numpy(dtype=float)[:, None]
@@ -124,7 +128,10 @@ def pairwise_distance(
         d_lat = destinations[y].to_numpy(dtype=float)[None, :]
         d_lng = destinations[x].to_numpy(dtype=float)[None, :]
         dist = great_circle_vec(o_lat, o_lng, d_lat, d_lng) * units_mult
-        idx = pd.MultiIndex.from_product([origins.index, destinations.index], names=[origins.index.name, destinations.index.name])
+        idx = pd.MultiIndex.from_product(
+            [origins.index, destinations.index],
+            names=[origins.index.name, destinations.index.name],
+        )
         return pd.Series(dist.reshape(-1), index=idx)
 
     if method == "geopandas":
@@ -168,7 +175,11 @@ def nearest_neighbors(
     units_mult = _resolve_units_multiplier(units)
 
     if method == "auto":
-        method = "geopandas" if hasattr(origins, "geometry") and hasattr(destinations, "geometry") else "haversine"
+        method = (
+            "geopandas"
+            if hasattr(origins, "geometry") and hasattr(destinations, "geometry")
+            else "haversine"
+        )
 
     rows = []
 
@@ -207,7 +218,9 @@ def nearest_neighbors(
     raise ValueError("method must be one of 'auto', 'haversine', 'greatcircle', or 'geopandas'")
 
 
-def distance_matrix(df, method="euclidean", x="lng", y="lat", earth_radius=EARTH_RADIUS_METERS, return_int=True):
+def distance_matrix(
+    df, method="euclidean", x="lng", y="lat", earth_radius=EARTH_RADIUS_METERS, return_int=True
+):
     """Backwards-compatible distance matrix helper (v2 location: locpick.distance)."""
     if not df.index.is_unique:
         raise ValueError("The passed-in DataFrame must have a unique index")
@@ -215,11 +228,15 @@ def distance_matrix(df, method="euclidean", x="lng", y="lat", earth_radius=EARTH
     if method == "euclidean":
         return euclidean_distance_matrix(df=df)
     if method in {"greatcircle", "haversine"}:
-        return great_circle_distance_matrix(df=df, x=x, y=y, earth_radius=earth_radius, return_int=return_int)
+        return great_circle_distance_matrix(
+            df=df, x=x, y=y, earth_radius=earth_radius, return_int=return_int
+        )
     if method == "network":
         return network_distance_matrix(df=df, x=x, y=y)
 
-    raise ValueError('argument `method` must be one of "euclidean", "greatcircle", "haversine", or "network"')
+    raise ValueError(
+        'argument `method` must be one of "euclidean", "greatcircle", "haversine", or "network"'
+    )
 
 
 def pairwise(iterable):

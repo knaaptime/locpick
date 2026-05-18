@@ -8,10 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 import pandas as pd
-
-from locpick.results.diagnostics import FitDiagnostics
 
 
 def format_coefficient_table(
@@ -42,7 +39,7 @@ def format_coefficient_table(
     if alpha_levels is None:
         alpha_levels = {"***": 0.01, "**": 0.05, "*": 0.1}
 
-    tidy = FitDiagnostics.tidy(result)
+    tidy = result.tidy()
 
     if significance_codes:
         stars = []
@@ -81,7 +78,7 @@ def format_fit_statistics(
     str
         Formatted fit statistics.
     """
-    stats_df = FitDiagnostics.fit_statistics(result)
+    stats_df = result.fit_statistics()
 
     if format == "html":
         rows = []
@@ -134,7 +131,7 @@ def format_side_by_side(
         Side-by-side comparison table.
     """
     if labels is None:
-        labels = [f"Model {i+1}" for i in range(len(results))]
+        labels = [f"Model {i + 1}" for i in range(len(results))]
 
     if format == "html":
         return _format_side_by_side_html(results, labels)
@@ -198,8 +195,12 @@ def _format_coefficient_latex(tidy: pd.DataFrame, significance_codes: bool) -> s
     if significance_codes:
         header += " & "
     header += " \\\\"
-    lines = ["\\begin{tabular}{lcccc" + ("c" if significance_codes else "") + "}",
-             "\\hline", header, "\\hline"]
+    lines = [
+        "\\begin{tabular}{lcccc" + ("c" if significance_codes else "") + "}",
+        "\\hline",
+        header,
+        "\\hline",
+    ]
 
     for name, row in tidy.iterrows():
         line = (
@@ -215,9 +216,7 @@ def _format_coefficient_latex(tidy: pd.DataFrame, significance_codes: bool) -> s
     return "\n".join(lines)
 
 
-def _format_side_by_side_text(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_text(results: list, labels: list[str]) -> str:
     # Collect all parameter names
     all_params = []
     for r in results:
@@ -225,9 +224,9 @@ def _format_side_by_side_text(
             if p not in all_params:
                 all_params.append(p)
 
-    n_models = len(results)
+    len(results)
     col_width = 12
-    header = f"{'Parameter':<20}" + "".join(f" {l:>{col_width}}" for l in labels)
+    header = f"{'Parameter':<20}" + "".join(f" {label:>{col_width}}" for label in labels)
     lines = [header, "-" * len(header)]
 
     for param in all_params:
@@ -258,16 +257,14 @@ def _format_side_by_side_text(
     return "\n".join(lines)
 
 
-def _format_side_by_side_html(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_html(results: list, labels: list[str]) -> str:
     all_params = []
     for r in results:
         for p in r.coefficients.index:
             if p not in all_params:
                 all_params.append(p)
 
-    header = "<tr><th>Parameter</th>" + "".join(f"<th>{l}</th>" for l in labels) + "</tr>"
+    header = "<tr><th>Parameter</th>" + "".join(f"<th>{label}</th>" for label in labels) + "</tr>"
     rows = []
     for param in all_params:
         row = f"<tr><td>{param}</td>"
@@ -282,16 +279,14 @@ def _format_side_by_side_html(
     return f"<table>\n{header}\n" + "\n".join(rows) + "\n</table>"
 
 
-def _format_side_by_side_latex(
-    results: list, labels: list[str]
-) -> str:
+def _format_side_by_side_latex(results: list, labels: list[str]) -> str:
     all_params = []
     for r in results:
         for p in r.coefficients.index:
             if p not in all_params:
                 all_params.append(p)
 
-    n_cols = 1 + len(results)
+    1 + len(results)
     col_spec = "l" + "r" * len(results)
     header = "Parameter & " + " & ".join(labels) + " \\\\"
     lines = [f"\\begin{{tabular}}{{{col_spec}}}", "\\hline", header, "\\hline"]

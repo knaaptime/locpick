@@ -12,15 +12,14 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel
+from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
 from locpick.results.fit_result import FitResult
-from locpick._solvers import Solver, SolverResult, get_solver
-from locpick.spec import ModelSpec
 
 
-class MultinomialLogit(BaseChoiceModel):
+class MNL(BaseChoiceModel):
     r"""Multinomial logit model for location choice estimation.
 
     The MNL model assumes that the unobserved utility components are
@@ -88,18 +87,18 @@ class MultinomialLogit(BaseChoiceModel):
 
     Examples
     --------
-    >>> from locpick import ChoiceTable, FitDiagnostics, MultinomialLogit
+    >>> from locpick import ChoiceTable, MultinomialLogit
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=10)
     >>> model = MultinomialLogit(ct, formula="chosen ~ cost + time")
     >>> result = model.fit()
-    >>> print(FitDiagnostics.summary(result))
+    >>> print(result.summary())
     """
 
     def __init__(
         self,
         data,
         formula: Optional[str] = None,
-        spec: Optional[ModelSpec] = None,
+        spec=None,
         problem: Optional[EstimationProblem] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
@@ -107,93 +106,20 @@ class MultinomialLogit(BaseChoiceModel):
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
     ):
-        self._solver_options = solver_options or {}
-        self._backend = backend
+        # Handle the legacy `problem` parameter by wrapping it as EstimationProblem
+        if problem is not None:
+            data = problem
 
-        # Resolve solver
-        if isinstance(solver, str):
-            self._solver = get_solver(solver, **self._solver_options)
-        else:
-            self._solver = solver
-
-        self._data = data
-        self._problem = problem
-        self._formula = None
-        self._spec = None
-        self._weights = None
-        self._availability = None
-
-        if self._problem is None:
-            # Build from ChoiceTable + formula/spec
-            if formula is None and spec is None:
-                raise ValueError("Either 'formula', 'spec', or 'problem' must be provided.")
-            if formula is not None and spec is not None:
-                raise ValueError("Provide 'formula' or 'spec', not both.")
-
-            self._formula = formula
-            self._weights = weights
-            self._availability = availability
-
-            # Build ModelSpec from formula if needed
-            if formula is not None:
-                self._spec = ModelSpec(formula=formula)
-            else:
-                self._spec = spec
-
-            # Lazy-initialized estimation arrays (for non-problem path)
-            self._arrays: Optional[ChoiceArrays] = None
-        else:
-            # Canonical estimation config lives on EstimationProblem.
-            self._arrays = self._problem.arrays
-
-        self._result: Optional[FitResult] = None
-
-        # Caches (cleared on re-estimation)
-        self._hessian_inverse: Optional[np.ndarray] = None
-        self._observation_scores_cache: dict = {}
-        self._probabilities_cache: Optional[np.ndarray] = None
-        self._utilities_cache: Optional[np.ndarray] = None
-        self._covariance_bhhh_cache: Optional[np.ndarray] = None
-        self._covariance_robust_cache: Optional[np.ndarray] = None
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def data(self):
-        """The ChoiceTable data."""
-        return self._data
-
-    @property
-    def spec(self) -> ModelSpec:
-        """The ModelSpec used for estimation."""
-        return self._spec
-
-    @property
-    def solver(self) -> Solver:
-        """The solver used for estimation."""
-        return self._solver
-
-    @property
-    def result(self) -> Optional[FitResult]:
-        """The estimation result, or None if not yet estimated."""
-        return self._result
-
-    # ------------------------------------------------------------------
-    # Estimation
-    # ------------------------------------------------------------------
-
-    def fit(self) -> FitResult:
-        """Estimate the model and return results.
-
-        Returns
-        -------
-        FitResult
-            Complete estimation results including coefficients, standard
-            errors, fit statistics, and prediction methods.
-        """
-        return super().fit()
+        super().__init__(
+            data=data,
+            formula=formula,
+            spec=spec,
+            solver=solver,
+            solver_options=solver_options,
+            backend=backend,
+            weights=weights,
+            availability=availability,
+        )
 
     def probabilities(self, data=None, beta=None):
         """Compute choice probabilities.
@@ -232,13 +158,12 @@ class MultinomialLogit(BaseChoiceModel):
         # Systematic utility with sampling correction
         utilities = (dm @ beta).reshape(n_obs, n_alts)
         from locpick._sampling.correction import apply_sampling_correction
+
         utilities = apply_sampling_correction(utilities, arrays)
 
         # Availability
         if arrays.available is not None:
-            available = np.asarray(arrays.available, dtype=np.float64).reshape(
-                n_obs, n_alts
-            )
+            available = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, n_alts)
         else:
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
@@ -348,12 +273,14 @@ class MultinomialLogit(BaseChoiceModel):
         # Draw one uniform per observation per draw
         uniform_draws = rng.random((n_draws, n_obs))  # (n_draws, n_obs)
         # Find first index where cumulative_prob > uniform
-        chosen_indices = np.argmax(cumulative_probs[None, :, :] > uniform_draws[:, :, None], axis=2)
+        chosen_indices = np.argmax(
+            cumulative_probs[None, :, :] > uniform_draws[:, :, None], axis=2
+        )
         # Handle edge case where uniform == 1.0 (shouldn't happen with random(), but safe)
         chosen_indices = np.clip(chosen_indices, 0, n_alts - 1)
 
         chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]  # (n_draws, n_obs)
-        chosen_probs = probs[np.arange(n_obs), chosen_indices]   # (n_draws, n_obs)
+        chosen_probs = probs[np.arange(n_obs), chosen_indices]  # (n_draws, n_obs)
 
         # Build results DataFrame
         results = []
@@ -401,12 +328,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -452,12 +378,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -503,12 +428,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -552,12 +476,11 @@ class MultinomialLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -579,41 +502,6 @@ class MultinomialLogit(BaseChoiceModel):
     # ------------------------------------------------------------------
     # Covariance estimation
     # ------------------------------------------------------------------
-
-    def covariance_bhhh(self, data=None) -> np.ndarray:
-        """Compute the BHHH covariance matrix.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute covariance on.  If ``None``, uses
-            estimation data.
-
-        Returns
-        -------
-        np.ndarray, shape (n_parameters, n_parameters)
-            BHHH covariance matrix.
-        """
-        from locpick.data.choicetable import ChoiceTable
-
-        if self._arrays is None:
-            raise RuntimeError("Model must be estimated first.")
-
-        arrays = self._arrays
-        if data is not None:
-            if not isinstance(data, ChoiceTable):
-                raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
-                formula=self._spec.formula,
-                spec=self._spec if self._spec.formula is None else None,
-            )
-
-        scores = self._observation_scores(arrays)
-        bhhh = scores.T @ scores
-        try:
-            return np.linalg.inv(bhhh)
-        except np.linalg.LinAlgError:
-            return np.full_like(bhhh, np.nan)
 
     def covariance_robust(self, data=None) -> np.ndarray:
         """Compute the sandwich (Huber-White) robust covariance matrix.
@@ -645,7 +533,7 @@ class MultinomialLogit(BaseChoiceModel):
 
         scores = self._observation_scores(arrays)
         B = scores.T @ scores
-        H_inv = self._get_hessian_inverse(arrays)
+        H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
             try:
@@ -699,7 +587,7 @@ class MultinomialLogit(BaseChoiceModel):
             g_c = scores[mask].sum(axis=0)
             B_clustered += np.outer(g_c, g_c)
 
-        H_inv = self._get_hessian_inverse(arrays)
+        H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
             try:
@@ -708,23 +596,6 @@ class MultinomialLogit(BaseChoiceModel):
                 return np.full_like(B_clustered, np.nan)
 
         return H_inv @ B_clustered @ H_inv
-
-    def std_errors_bhhh(self, data=None) -> pd.Series:
-        """Compute BHHH standard errors.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute standard errors on.
-
-        Returns
-        -------
-        pd.Series
-            BHHH standard errors, indexed by parameter name.
-        """
-        cov = self.covariance_bhhh(data=data)
-        se = np.sqrt(np.diag(cov))
-        return pd.Series(se, index=self._result.coefficients.index, name="std_error_bhhh")
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.
@@ -817,63 +688,6 @@ class MultinomialLogit(BaseChoiceModel):
         self._observation_scores_cache[cache_key] = scores
         return scores
 
-    def _clear_caches(self):
-        """Clear all cached computation results."""
-        self._hessian_inverse = None
-        self._observation_scores_cache = {}
-        self._probabilities_cache = None
-        self._utilities_cache = None
-        self._covariance_bhhh_cache = None
-        self._covariance_robust_cache = None
-
-    def _get_hessian_inverse(self, arrays) -> np.ndarray | None:
-        """Get the inverse Hessian from the solver result.
-
-        Returns
-        -------
-        np.ndarray or None
-            Inverse Hessian matrix, or None if not available.
-        """
-        if self._hessian_inverse is not None:
-            return self._hessian_inverse
-
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
-            scipy_result = self._result.solver_result["scipy_result"]
-            if hasattr(scipy_result, "hess_inv"):
-                try:
-                    self._hessian_inverse = np.asarray(
-                        scipy_result.hess_inv.todense()
-                        if hasattr(scipy_result.hess_inv, "todense")
-                        else scipy_result.hess_inv
-                    )
-                    return self._hessian_inverse
-                except Exception:
-                    pass
-
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
-            variances = self._result.std_errors.values**2
-            self._hessian_inverse = np.diag(variances)
-            return self._hessian_inverse
-
-        return None
-
-    def _build_arrays(self) -> ChoiceArrays:
-        """Build ChoiceArrays from the data and spec."""
-        if self._problem is None:
-            spec = self._spec if self._formula is None else None
-            self._problem = EstimationProblem.from_choice_table(
-                self._data,
-                spec=spec,
-                formula=self._formula,
-                weights=self._weights,
-                available=self._availability,
-                backend=self._backend or "auto",
-                solver_name=getattr(self._solver, "name", "lbfgs"),
-                solver_options=self._solver_options or None,
-            )
-
-        return self._problem.arrays
-
     def _build_objective(self, arrays: ChoiceArrays):
         """Build log-likelihood and gradient functions.
 
@@ -951,6 +765,7 @@ class MultinomialLogit(BaseChoiceModel):
             )
 
         from locpick._jax.objective import Objective
+
         return Objective(fn=log_likelihood, grad=gradient)
 
     def _build_fit_result(self, solver_result: SolverResult, arrays: ChoiceArrays) -> FitResult:
@@ -969,88 +784,48 @@ class MultinomialLogit(BaseChoiceModel):
                     fixed_mask = self._problem.fixed_mask
                     if fixed_mask is not None:
                         free_mask = ~fixed_mask
-                        int(free_mask.sum())
                         full_hess = np.zeros((n_params, n_params))
-                        # Place the free-parameter block into the full matrix
                         free_idx = np.where(free_mask)[0]
                         for i, fi in enumerate(free_idx):
                             for j, fj in enumerate(free_idx):
                                 full_hess[fi, fj] = hess[i, j]
-                        # Fixed parameters get zero variance (they're constants)
                         hess = full_hess
                 std_errors = np.sqrt(np.diag(hess))
             except Exception:
                 std_errors = np.full(len(beta), np.nan)
         else:
-            # Compute numerically if not available from solver
-            std_errors = self._compute_std_errors(arrays, beta)
+            # Compute Hessian lazily via objective if available
+            if hasattr(self, "_objective") and self._objective is not None:
+                try:
+                    hess = self._objective.hessian(beta)
+                    std_errors = np.sqrt(np.diag(hess))
+                except Exception:
+                    std_errors = np.full(len(beta), np.nan)
+            else:
+                std_errors = self._compute_std_errors(arrays, beta)
 
-        # T-values and p-values
-        # Fixed parameters have zero std error → set t/p to NaN
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_values = np.where(std_errors > 0, beta / std_errors, np.nan)
-        from scipy import stats
-
-        p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
-
-        # Confidence intervals (95%)
-        z_crit = stats.norm.ppf(0.975)
-        conf_lower = beta - z_crit * std_errors
-        conf_upper = beta + z_crit * std_errors
-
-        # Log-likelihood
-        ll = solver_result.log_likelihood
-
-        # Null log-likelihood: equal probability among available alternatives
-        # per observation. When availability varies, this accounts for
-        # different choice set sizes across observations.
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        if arrays.available is not None:
-            avail = np.asarray(arrays.available, dtype=np.float64)
-            n_avail = avail.reshape(n_obs, -1).sum(axis=1)
-            ll_null = -np.sum(np.log(n_avail))
-        else:
-            ll_null = -n_obs * np.log(n_alts)
-
-        # Number of parameters
-        k = len(beta)
-
-        # Fit statistics
-        aic = 2 * k - 2 * ll
-        bic = k * np.log(n_obs) - 2 * ll
-        rho_squared = 1 - ll / ll_null
-        rho_bar_squared = 1 - (ll - k) / ll_null
-
-        # Build pandas objects
+        # Build result using shared helper
         coefficients = pd.Series(beta, index=param_names, name="coefficient")
         std_err_series = pd.Series(std_errors, index=param_names, name="std_error")
-        t_series = pd.Series(t_values, index=param_names, name="t_value")
-        p_series = pd.Series(p_values, index=param_names, name="p_value")
-        conf_int = pd.DataFrame(
-            {"lower": conf_lower, "upper": conf_upper},
-            index=param_names,
+        ll = solver_result.log_likelihood
+        ll_null = _compute_null_ll(arrays)
+
+        stats = _compute_fit_statistics(
+            ll=ll,
+            ll_null=ll_null,
+            n_obs=arrays.n_obs,
+            n_params=n_params,
+            n_alts=arrays.n_alts,
+            coefficients=coefficients,
+            std_errors=std_err_series,
+            model_type="Multinomial Logit",
+            solver_name=solver_result.solver_name,
+            solver_result_raw=solver_result.raw,
         )
 
         return FitResult(
-            coefficients=coefficients,
-            std_errors=std_err_series,
-            t_values=t_series,
-            p_values=p_series,
-            conf_int=conf_int,
-            log_likelihood=ll,
-            log_likelihood_null=ll_null,
-            n_observations=n_obs,
-            n_parameters=k,
-            n_alts=n_alts,
-            aic=aic,
-            bic=bic,
-            rho_squared=rho_squared,
-            rho_bar_squared=rho_bar_squared,
             spec=self._spec,
-            model_type="Multinomial Logit",
-            solver_name=solver_result.solver_name,
-            solver_result=solver_result.raw,
+            **stats,
         )
 
     def _compute_std_errors(self, arrays: ChoiceArrays, beta: np.ndarray) -> np.ndarray:

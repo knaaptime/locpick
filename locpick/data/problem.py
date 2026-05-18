@@ -69,7 +69,7 @@ class EstimationProblem:
     param_fixed: Optional[list[bool]] = None
     param_initial: Optional[list[float]] = None
     backend: str = "auto"
-    solver_name: str = "lbfgs"
+    solver_name: Optional[str] = None
     solver_options: Optional[dict] = None
     model_type: str = "mnl"
     sampling_design: Optional[dict[str, Any]] = None
@@ -78,9 +78,15 @@ class EstimationProblem:
 
     def __post_init__(self) -> None:
         """Validate and infer defaults."""
+        from locpick.config import config
+
         # Infer param_names from arrays if not provided
         if not self.param_names and self.arrays.param_names:
             self.param_names = list(self.arrays.param_names)
+
+        # Default solver from config
+        if self.solver_name is None:
+            self.solver_name = config.default_solver
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -95,7 +101,7 @@ class EstimationProblem:
         weights: Optional[Union[str, np.ndarray]] = None,
         available: Optional[Union[str, np.ndarray]] = None,
         backend: str = "auto",
-        solver_name: str = "lbfgs",
+        solver_name: Optional[str] = None,
         solver_options: Optional[dict] = None,
     ) -> "EstimationProblem":
         """Create an EstimationProblem from a ChoiceTable and ModelSpec.
@@ -114,8 +120,8 @@ class EstimationProblem:
             Alternative availability.
         backend : {"numpy", "jax", "auto"}
             Computation backend preference.
-        solver_name : str
-            Solver name. Default "lbfgs".
+        solver_name : str or None
+            Solver name. Defaults to ``config.default_solver``.
         solver_options : dict or None
             Additional solver options.
 

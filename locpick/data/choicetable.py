@@ -13,19 +13,18 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from locpick._sampling.kernels import (
+    HAS_NUMBA,
+    _sample_unweighted_without_replacement_exclusion,
+    _sample_weighted_without_replacement_1d_exclusion,
+)
+from locpick.data.arrays import ChoiceArrays
 from locpick.data.dataset import (
     _resolve_interaction,
     build_choice_dataset,
     build_choice_dataset_from_long,
     dataset_to_long_frame,
 )
-from locpick.data.arrays import ChoiceArrays
-from locpick._sampling.kernels import (
-    HAS_NUMBA,
-    _sample_unweighted_without_replacement_exclusion,
-    _sample_weighted_without_replacement_1d_exclusion,
-)
-
 
 # ---------------------------------------------------------------------------
 # ChoiceTable class
@@ -170,9 +169,7 @@ class ChoiceTable:
                     chosen_series = df_c.set_index(obs_key_col)[alt_key_col]
                 else:
                     # obs_key_col is a data column in choosers — look up the index
-                    key_to_idx = pd.Series(
-                        choosers.index, index=choosers[obs_key_col].values
-                    )
+                    key_to_idx = pd.Series(choosers.index, index=choosers[obs_key_col].values)
                     chosen_series = df_c.set_index(obs_key_col)[alt_key_col]
                     chosen_series.index = chosen_series.index.map(key_to_idx)
             else:
@@ -208,9 +205,7 @@ class ChoiceTable:
 
         # Build the merged table
         if sample_size is None:
-            df = cls._build_census(
-                choosers, alternatives, chosen_series, oid_name, aid_name
-            )
+            df = cls._build_census(choosers, alternatives, chosen_series, oid_name, aid_name)
         else:
             df = cls._build_sampled(
                 choosers,
@@ -245,7 +240,10 @@ class ChoiceTable:
                 available_col_name = available
             else:
                 available_col_name = available_series.name or "available"
-                if isinstance(available_series.index, pd.MultiIndex) and available_series.index.nlevels == 2:
+                if (
+                    isinstance(available_series.index, pd.MultiIndex)
+                    and available_series.index.nlevels == 2
+                ):
                     available_arr = _resolve_interaction(
                         available_series,
                         obs_ids,
@@ -490,9 +488,7 @@ class ChoiceTable:
                 continue
             provided_alts = set(series.xs(obs_id, level=0).index.tolist())
             if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-                raise KeyError(
-                    f"Interaction contains no alt_ids present for obs_id {obs_id!r}."
-                )
+                raise KeyError(f"Interaction contains no alt_ids present for obs_id {obs_id!r}.")
 
         matrix_data = dict(self._matrix_data)
         matrix_data[name] = series
@@ -568,7 +564,9 @@ class ChoiceTable:
         missing = np.isnan(probe_values)
         if missing.any():
             if missing_policy == "allow_unavailable" and self._available_col in probe_df.columns:
-                available = np.asarray(probe_df[self._available_col], dtype=np.float64).astype(bool)
+                available = np.asarray(probe_df[self._available_col], dtype=np.float64).astype(
+                    bool
+                )
                 if np.any(missing & available):
                     raise ValueError(
                         f"Generated interaction '{name}' has missing values for available alternatives."
@@ -638,7 +636,9 @@ class ChoiceTable:
                     f"Cannot resolve interaction '{name}': '{left}' or '{right}' is missing."
                 )
 
-            values = np.asarray(df[left], dtype=np.float64) * np.asarray(df[right], dtype=np.float64)
+            values = np.asarray(df[left], dtype=np.float64) * np.asarray(
+                df[right], dtype=np.float64
+            )
             missing = np.isnan(values)
             if missing.any():
                 if missing_policy == "allow_unavailable" and self._available_col in df.columns:
@@ -754,8 +754,12 @@ class ChoiceTable:
         cache_key = (
             formula,
             id(spec) if spec is not None else None,
-            tuple(weights) if hasattr(weights, "__iter__") and not isinstance(weights, str) else weights,
-            tuple(available) if hasattr(available, "__iter__") and not isinstance(available, str) else available,
+            tuple(weights)
+            if hasattr(weights, "__iter__") and not isinstance(weights, str)
+            else weights,
+            tuple(available)
+            if hasattr(available, "__iter__") and not isinstance(available, str)
+            else available,
             sparse,
             sparse_threshold,
         )
@@ -785,7 +789,10 @@ class ChoiceTable:
                 # Suppress the intercept by default: MNL utility functions
                 # don't use alternative-specific constants via the formula.
                 # Users can add "+ 1" explicitly to include an intercept.
-                if "intercept" not in formula.lower() and formula.strip()[-2:] not in ("+ 1", "+1"):
+                if "intercept" not in formula.lower() and formula.strip()[-2:] not in (
+                    "+ 1",
+                    "+1",
+                ):
                     formula_str = formula + " - 1"
                 else:
                     formula_str = formula
@@ -803,8 +810,7 @@ class ChoiceTable:
             if self._available_col:
                 reserved.add(self._available_col)
             numeric_cols = [
-                c for c in df.select_dtypes(include=[np.number]).columns
-                if c not in reserved
+                c for c in df.select_dtypes(include=[np.number]).columns if c not in reserved
             ]
             dm = df[numeric_cols].values
 
@@ -867,6 +873,7 @@ class ChoiceTable:
             zero_fraction = 1.0 - np.count_nonzero(design_matrix) / design_matrix.size
             if zero_fraction >= sparse_threshold:
                 import scipy.sparse as sp
+
                 design_matrix_sparse = sp.csr_matrix(design_matrix)
 
         # Get obs_ids and alt_ids
@@ -969,9 +976,7 @@ class ChoiceTable:
                     if excluded_alt_ids[i] >= 0:
                         available_mask[excluded_alt_ids[i]] = False
                     available_alts = alt_ids[available_mask]
-                    sampled[i] = np.random.choice(
-                        available_alts, size=sample_size, replace=True
-                    )
+                    sampled[i] = np.random.choice(available_alts, size=sample_size, replace=True)
         else:
             # Without replacement — use Numba kernels if available
             if weights_series is not None and weights_1d and HAS_NUMBA:
@@ -998,9 +1003,7 @@ class ChoiceTable:
                     if excluded_alt_ids[i] >= 0:
                         available_mask[excluded_alt_ids[i]] = False
                     available_alts = alt_ids[available_mask]
-                    sampled[i] = np.random.choice(
-                        available_alts, size=sample_size, replace=False
-                    )
+                    sampled[i] = np.random.choice(available_alts, size=sample_size, replace=False)
 
         # Ensure chosen alternative is always included
         if chosen_series is not None:
