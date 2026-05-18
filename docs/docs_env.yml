@@ -19,6 +19,8 @@ dependencies:
   - geopandas>=0.13
   - scikit-learn>=1.2
   - livelike
+  - geosnap
+  - duckdb < 1.5
   # testing
   - codecov
   - coverage
