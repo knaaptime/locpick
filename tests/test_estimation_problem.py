@@ -13,7 +13,7 @@ from locpick import (
     EstimationProblem,
     FitResult,
     ModelSpec,
-    MultinomialLogit,
+    MNL,
 )
 
 # ------------------------------------------------------------------
@@ -182,7 +182,7 @@ class TestMultinomialLogitWithEstimationProblem:
         """MultinomialLogit.fit() works with EstimationProblem."""
         ct = make_choice_table()
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
-        model = MultinomialLogit(data=ct, problem=problem)
+        model = MNL(data=ct, problem=problem)
         result = model.fit()
         assert isinstance(result, FitResult)
         assert result.coefficients.shape[0] == 2
@@ -193,12 +193,12 @@ class TestMultinomialLogitWithEstimationProblem:
         ct = make_choice_table()
 
         # Legacy path
-        model_legacy = MultinomialLogit(ct, formula="cost + time")
+        model_legacy = MNL(ct, formula="cost + time")
         result_legacy = model_legacy.fit()
 
         # Problem path
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
-        model_problem = MultinomialLogit(data=ct, problem=problem)
+        model_problem = MNL(data=ct, problem=problem)
         result_problem = model_problem.fit()
 
         # Coefficients should be very close (same data, same solver)
@@ -223,7 +223,7 @@ class TestMultinomialLogitWithEstimationProblem:
             param_names=problem.param_names,
             param_initial=[0.1, -0.1],
         )
-        model = MultinomialLogit(data=ct, problem=problem)
+        model = MNL(data=ct, problem=problem)
         result = model.fit()
         assert isinstance(result, FitResult)
         assert np.isfinite(result.log_likelihood)
@@ -234,7 +234,7 @@ class TestMultinomialLogitWithEstimationProblem:
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
 
         # Pass problem + formula — formula should be ignored
-        model = MultinomialLogit(data=ct, problem=problem, formula="ignored ~ x")
+        model = MNL(data=ct, problem=problem, formula="ignored ~ x")
         result = model.fit()
         # Should still have 2 params (from problem), not whatever "ignored ~ x" would give
         assert result.coefficients.shape[0] == 2
@@ -244,7 +244,7 @@ class TestMultinomialLogitWithEstimationProblem:
         ct = make_choice_table()
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
         # data is still required (it's positional)
-        model = MultinomialLogit(data=ct, problem=problem)
+        model = MNL(data=ct, problem=problem)
         assert model._problem is problem
 
 
@@ -267,7 +267,7 @@ class TestSolverBoundsAndFixed:
             param_initial=[0.5, 0.0],
             param_fixed=[True, False],
         )
-        model = MultinomialLogit(data=ct, problem=problem)
+        model = MNL(data=ct, problem=problem)
         result = model.fit()
         # The first parameter (cost) should be close to 0.5 (fixed)
         assert abs(result.coefficients.iloc[0] - 0.5) < 1e-6
@@ -282,7 +282,7 @@ class TestSolverBoundsAndFixed:
             param_names=problem.param_names,
             param_bounds=[(-5.0, 5.0), (-10.0, 10.0)],
         )
-        model = MultinomialLogit(data=ct, problem=problem)
+        model = MNL(data=ct, problem=problem)
         result = model.fit()
         # Should converge within bounds
         assert -5.0 <= result.coefficients.iloc[0] <= 5.0
@@ -301,7 +301,7 @@ class TestSolverBoundsAndFixed:
             param_fixed=[True, False],
         )
 
-        model = MultinomialLogit(data=ct, problem=problem, solver="optimistix")
+        model = MNL(data=ct, problem=problem, solver="optimistix")
         result = model.fit()
 
         assert abs(result.coefficients.iloc[0] - 0.5) < 1e-6

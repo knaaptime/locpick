@@ -37,12 +37,8 @@ Model Specification
    :toctree: generated/
 
    ModelSpec :no-index:
-   ParamRef :no-index:
-   DataRef :no-index:
    InteractionTerm :no-index:
    ScopedTerm :no-index:
-   P :no-index:
-   X :no-index:
    interaction :no-index:
 
 Models

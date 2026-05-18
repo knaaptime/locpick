@@ -7,7 +7,7 @@ from .base import (
     ChoiceModel as ChoiceModel,
 )
 from .mixed import (
-    MixedLogit as MixedLogit,
+    MixedMNL as MixedMNL,
 )
 from .mixed import (
     ParamDistribution as ParamDistribution,
@@ -22,13 +22,16 @@ from .mixed import (
     generate_random_draws as generate_random_draws,
 )
 from .mnl import (
-    MultinomialLogit as MultinomialLogit,
+    MNL as MNL,
+)
+from .mnscl import (
+    MixedNestedSCL as MixedNestedSCL,
 )
 from .mscl import (
-    MixedSpatiallyCorrelatedLogit as MixedSpatiallyCorrelatedLogit,
+    MixedSCL as MixedSCL,
 )
 from .nested import (
-    NestedLogit as NestedLogit,
+    NestedMNL as NestedMNL,
 )
 from .nested import (
     NestingTree as NestingTree,
@@ -42,11 +45,14 @@ from .nested import (
 from .nested import (
     naturalize_nest_params as naturalize_nest_params,
 )
+from .nested_scl import (
+    NestedSCL as NestedSCL,
+)
 from .scl import (
     EdgeStructure as EdgeStructure,
 )
 from .scl import (
-    SpatiallyCorrelatedLogit as SpatiallyCorrelatedLogit,
+    SCL as SCL,
 )
 from .scl import (
     naturalize_rho as naturalize_rho,

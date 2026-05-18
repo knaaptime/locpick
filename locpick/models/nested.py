@@ -39,13 +39,12 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._jax.objective import Objective
+from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel
+from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
 from locpick.results.fit_result import FitResult
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult, get_solver
-from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
 # Nest specification
@@ -257,6 +256,7 @@ def _nested_logit_probs_numpy(
         avail = np.ones((n_obs, n_alts), dtype=np.float64)
 
     from locpick._kernels.constants import NEG_INF
+
     utilities = np.where(avail > 0, utilities, NEG_INF)
 
     # Step 4: scaled utilities V_ij / lambda_m
@@ -450,7 +450,7 @@ def _nested_logit_gradient_numpy(
 # ---------------------------------------------------------------------------
 
 
-class NestedLogit(BaseChoiceModel):
+class NestedMNL(BaseChoiceModel):
     """Nested logit model for location choice estimation.
 
     This model generalises the multinomial logit by grouping alternatives
@@ -487,7 +487,7 @@ class NestedLogit(BaseChoiceModel):
         self,
         data,
         formula: Optional[str] = None,
-        spec: Optional[ModelSpec] = None,
+        spec=None,
         nests: Optional[NestingTree] = None,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
@@ -497,109 +497,44 @@ class NestedLogit(BaseChoiceModel):
     ):
         if nests is None:
             raise ValueError("NestedLogit requires a 'nests' argument (NestingTree).")
-        if formula is None and spec is None:
-            raise ValueError("Either 'formula' or 'spec' must be provided.")
-        if formula is not None and spec is not None:
-            raise ValueError("Provide 'formula' or 'spec', not both.")
 
-        self._data = data
-        self._problem: Optional[EstimationProblem] = None
-        self._formula = formula
+        super().__init__(
+            data=data,
+            formula=formula,
+            spec=spec,
+            solver=solver,
+            solver_options=solver_options,
+            backend=backend,
+            weights=weights,
+            availability=availability,
+        )
         self._nests = nests
-        self._weights = weights
-        self._availability = availability
-        self._solver_options = solver_options or {}
-        self._backend = backend
-
-        # Build ModelSpec from formula if needed
-        if formula is not None:
-            self._spec = ModelSpec(formula=formula)
-        else:
-            self._spec = spec
-
-        # Resolve solver
-        if isinstance(solver, str):
-            self._solver = get_solver(solver, **self._solver_options)
-        else:
-            self._solver = solver
-
-        # Lazy-initialized
-        self._arrays: Optional[ChoiceArrays] = None
-        self._result: Optional[FitResult] = None
-
-        # Caches (cleared on re-estimation)
-        self._hessian_inverse: Optional[np.ndarray] = None
-        self._observation_scores_cache: dict = {}  # keyed by id(arrays)
-        self._probabilities_cache: Optional[np.ndarray] = None
-        self._utilities_cache: Optional[np.ndarray] = None
-        self._covariance_bhhh_cache: Optional[np.ndarray] = None
-        self._covariance_robust_cache: Optional[np.ndarray] = None
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def data(self):
-        """The ChoiceTable data."""
-        return self._data
-
-    @property
-    def spec(self) -> ModelSpec:
-        """The ModelSpec used for estimation."""
-        return self._spec
-
-    @property
-    def solver(self) -> Solver:
-        """The solver used for estimation."""
-        return self._solver
-
-    @property
-    def result(self) -> Optional[FitResult]:
-        """The estimation result, or None if not yet estimated."""
-        return self._result
 
     # ------------------------------------------------------------------
     # Estimation
     # ------------------------------------------------------------------
 
-    def fit(self) -> FitResult:
-        """Estimate the nested logit model and return results.
+    def _pre_fit(self, arrays: ChoiceArrays) -> None:
+        """Build nest matrix before objective construction."""
+        alt_ids = list(range(arrays.n_alts))
+        self._nest_matrix = self._nests.build_nest_matrix(alt_ids)
 
-        Returns
-        -------
-        FitResult
-            Complete estimation results including coefficients, standard
-            errors, nest parameters, and fit statistics.
+    def _get_solver_inputs(self, arrays: ChoiceArrays):
+        """Get initial values, param names, bounds, and fixed mask.
+
+        Extends the base class to include nest parameters.
         """
-        # Build estimation arrays
-        arrays = self._build_arrays()
-        self._arrays = arrays
-
-        objective = self._build_objective(arrays)
-
-        # Initial values: zeros for beta, initial alphas for nest params
         k = arrays.design_matrix.shape[1]
         n_nests = self._nests.n_nests
         x0 = np.concatenate([np.zeros(k), self._nests.initial_alphas()])
-
-        # Solve via unified Objective contract
-        solver_result = self._solver.solve(
-            objective=objective,
-            x0=x0,
-            param_names=list(arrays.param_names)
-            + [f"nest_{name}" for name in self._nests.nest_names],
-        )
-
-        # Build FitResult
-        self._result = self._build_fit_result(solver_result, arrays, k, n_nests)
-        self._clear_caches()
-        return self._result
+        param_names = list(arrays.param_names) + [
+            f"nest_{name}" for name in self._nests.nest_names
+        ]
+        return x0, param_names, None, None
 
     def _build_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build optimization objective for nested logit estimation."""
-        alt_ids = list(range(arrays.n_alts))
-        nest_matrix = self._nests.build_nest_matrix(alt_ids)
+        nest_matrix = self._nest_matrix
 
         # Try JAX backend first (default when available)
         backend = (self._backend or os.environ.get("CHOICEMODELS_NESTED_BACKEND", "")).lower()
@@ -663,31 +598,15 @@ class NestedLogit(BaseChoiceModel):
             + [f"nest_{name}" for name in self._nests.nest_names],
         )
 
-    def _build_arrays(self) -> ChoiceArrays:
-        """Build ChoiceArrays from the data and spec."""
-        if self._problem is None:
-            spec = self._spec if self._formula is None else None
-            self._problem = EstimationProblem.from_choice_table(
-                self._data,
-                spec=spec,
-                formula=self._formula,
-                weights=self._weights,
-                available=self._availability,
-                backend=self._backend or "auto",
-                solver_name=getattr(self._solver, "name", "lbfgs"),
-                solver_options=self._solver_options or None,
-            )
-
-        return self._problem.arrays
-
     def _build_fit_result(
         self,
         solver_result: SolverResult,
         arrays: ChoiceArrays,
-        k: int,
-        n_nests: int,
     ) -> FitResult:
         """Build a FitResult from solver output."""
+        k = arrays.design_matrix.shape[1]
+        n_nests = self._nests.n_nests
+
         # Build a FitResult from solver output.
         # Store naturalized lambda values (not raw alpha) in coefficients.
         all_params = solver_result.coefficients
@@ -718,7 +637,7 @@ class NestedLogit(BaseChoiceModel):
                 std_errors = np.full(len(display_params), np.nan)
         else:
             # Compute Hessian lazily via objective if available
-            if hasattr(self, '_objective') and self._objective is not None:
+            if hasattr(self, "_objective") and self._objective is not None:
                 try:
                     hess = self._objective.hessian(all_params)
                     se_alpha = np.sqrt(np.diag(hess))
@@ -729,127 +648,29 @@ class NestedLogit(BaseChoiceModel):
             else:
                 std_errors = np.full(len(display_params), np.nan)
 
-        # T-values and p-values (using display_params = naturalized values)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_values = np.where(std_errors > 0, display_params / std_errors, np.nan)
-        from scipy import stats
-
-        p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
-
-        # Confidence intervals
-        z_crit = stats.norm.ppf(0.975)
-        conf_lower = display_params - z_crit * std_errors
-        conf_upper = display_params + z_crit * std_errors
-
-        # Log-likelihood
-        ll = solver_result.log_likelihood
-
-        # Null log-likelihood
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        if arrays.available is not None:
-            avail = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, -1)
-            n_avail = avail.sum(axis=1)
-            ll_null = -np.sum(np.log(n_avail))
-        else:
-            ll_null = -n_obs * np.log(n_alts)
-
-        # Number of parameters (including nest params)
-        n_params = len(display_params)
-
-        # Fit statistics
-        aic = 2 * n_params - 2 * ll
-        bic = n_params * np.log(n_obs) - 2 * ll
-        rho_squared = 1 - ll / ll_null
-        rho_bar_squared = 1 - (ll - n_params) / ll_null
-
-        # Build pandas objects
+        # Build result using shared helper
         coefficients = pd.Series(display_params, index=param_names, name="coefficient")
         std_err_series = pd.Series(std_errors, index=param_names, name="std_error")
-        t_series = pd.Series(t_values, index=param_names, name="t_value")
-        p_series = pd.Series(p_values, index=param_names, name="p_value")
-        conf_int = pd.DataFrame(
-            {"lower": conf_lower, "upper": conf_upper},
-            index=param_names,
-        )
+        ll = solver_result.log_likelihood
+        ll_null = _compute_null_ll(arrays)
 
-        # Nest parameter summary
-        pd.DataFrame(
-            {
-                "alpha": alpha,
-                "lambda": lambdas,
-            },
-            index=[f"nest_{name}" for name in self._nests.nest_names],
+        stats = _compute_fit_statistics(
+            ll=ll,
+            ll_null=ll_null,
+            n_obs=arrays.n_obs,
+            n_params=len(display_params),
+            n_alts=arrays.n_alts,
+            coefficients=coefficients,
+            std_errors=std_err_series,
+            model_type="Nested Logit",
+            solver_name=solver_result.solver_name,
+            solver_result_raw=solver_result.raw,
         )
 
         return FitResult(
-            coefficients=coefficients,
-            std_errors=std_err_series,
-            t_values=t_series,
-            p_values=p_series,
-            conf_int=conf_int,
-            log_likelihood=ll,
-            log_likelihood_null=ll_null,
-            n_observations=n_obs,
-            n_parameters=n_params,
-            n_alts=n_alts,
-            aic=aic,
-            bic=bic,
-            rho_squared=rho_squared,
-            rho_bar_squared=rho_bar_squared,
             spec=self._spec,
-            model_type="Nested Logit",
-            solver_name=solver_result.solver_name,
-            solver_result=solver_result.raw,
+            **stats,
         )
-
-    # ------------------------------------------------------------------
-    # Cache management
-    # ------------------------------------------------------------------
-
-    def _clear_caches(self):
-        """Clear all cached computation results."""
-        self._hessian_inverse = None
-        self._observation_scores_cache = {}
-        self._probabilities_cache = None
-        self._utilities_cache = None
-        self._covariance_bhhh_cache = None
-        self._covariance_robust_cache = None
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _get_hessian_inverse(self) -> np.ndarray | None:
-        """Get the inverse Hessian from the solver result.
-
-        Returns
-        -------
-        np.ndarray or None
-            Inverse Hessian matrix, or None if not available.
-        """
-        if self._hessian_inverse is not None:
-            return self._hessian_inverse
-
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
-            scipy_result = self._result.solver_result["scipy_result"]
-            if hasattr(scipy_result, "hess_inv"):
-                try:
-                    self._hessian_inverse = np.asarray(
-                        scipy_result.hess_inv.todense()
-                        if hasattr(scipy_result.hess_inv, "todense")
-                        else scipy_result.hess_inv
-                    )
-                    return self._hessian_inverse
-                except Exception:
-                    pass
-
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
-            variances = self._result.std_errors.values**2
-            self._hessian_inverse = np.diag(variances)
-            return self._hessian_inverse
-
-        return None
 
     def _observation_scores(self, arrays) -> np.ndarray:
         """Compute observation-level score vectors via numerical differentiation.
@@ -887,7 +708,7 @@ class NestedLogit(BaseChoiceModel):
 
         # Base probabilities and per-observation LL
         probs_base = self.probabilities(data=None, beta=beta_hat, alpha=alpha_hat)
-        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1015,9 +836,7 @@ class NestedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array(
-                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
-            )
+            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1061,12 +880,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1109,12 +927,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1161,12 +978,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1210,12 +1026,11 @@ class NestedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1237,41 +1052,6 @@ class NestedLogit(BaseChoiceModel):
     # ------------------------------------------------------------------
     # Covariance estimation
     # ------------------------------------------------------------------
-
-    def covariance_bhhh(self, data=None) -> np.ndarray:
-        """Compute the BHHH covariance matrix.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute covariance on.  If ``None``, uses
-            estimation data.
-
-        Returns
-        -------
-        np.ndarray, shape (n_parameters, n_parameters)
-            BHHH covariance matrix.
-        """
-        from locpick.data.choicetable import ChoiceTable
-
-        if self._arrays is None:
-            raise RuntimeError("Model must be estimated first.")
-
-        arrays = self._arrays
-        if data is not None:
-            if not isinstance(data, ChoiceTable):
-                raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
-                formula=self._spec.formula,
-                spec=self._spec if self._spec.formula is None else None,
-            )
-
-        scores = self._observation_scores(arrays)
-        bhhh = scores.T @ scores
-        try:
-            return np.linalg.inv(bhhh)
-        except np.linalg.LinAlgError:
-            return np.full_like(bhhh, np.nan)
 
     def covariance_robust(self, data=None) -> np.ndarray:
         """Compute the sandwich (Huber-White) robust covariance matrix.
@@ -1366,23 +1146,6 @@ class NestedLogit(BaseChoiceModel):
                 return np.full_like(B_clustered, np.nan)
 
         return H_inv @ B_clustered @ H_inv
-
-    def std_errors_bhhh(self, data=None) -> pd.Series:
-        """Compute BHHH standard errors.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute standard errors on.
-
-        Returns
-        -------
-        pd.Series
-            BHHH standard errors, indexed by parameter name.
-        """
-        cov = self.covariance_bhhh(data=data)
-        se = np.sqrt(np.diag(cov))
-        return pd.Series(se, index=self._result.coefficients.index, name="std_error_bhhh")
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.

@@ -13,7 +13,7 @@ Solvers negotiate with the ``Objective`` to get the interface they need:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
@@ -66,7 +66,7 @@ class Objective:
     """Per-observation log-likelihood contributions (JAX).
 
     Callable: params (jnp) → jnp array of shape (n_obs,).
-    Required by BHHHSolver for the outer-product-of-gradients Hessian.
+    Per-observation log-likelihood contributions.
     """
     transform: Optional[ParamTransform] = None
     param_names: Optional[list[str]] = None
@@ -101,13 +101,11 @@ class Objective:
             If ``loglike_contribs_jax`` is not set.
         """
         if self.loglike_contribs_jax is None:
-            raise ValueError(
-                "score_contribs requires loglike_contribs_jax to be set."
-            )
+            raise ValueError("score_contribs requires loglike_contribs_jax to be set.")
         if not _JAX_AVAILABLE:
             raise RuntimeError("JAX is required for score_contribs.")
         # Cache the JIT'd score function to avoid recompilation on every call
-        if not hasattr(self, '_score_fn_cache'):
+        if not hasattr(self, "_score_fn_cache"):
             self._score_fn_cache = jax.jit(jax.jacrev(self.loglike_contribs_jax))
         return self._score_fn_cache
 
@@ -200,7 +198,7 @@ class Objective:
         n = len(x)
         h = 1e-5
         hess = np.zeros((n, n))
-        f0 = self.fn(x)
+        self.fn(x)
         for i in range(n):
             for j in range(i, n):
                 x_pp = x.copy()
@@ -215,8 +213,9 @@ class Objective:
                 x_mp[j] += h
                 x_mm[i] -= h
                 x_mm[j] -= h
-                hess[i, j] = (self.fn(x_pp) - self.fn(x_pm)
-                              - self.fn(x_mp) + self.fn(x_mm)) / (4 * h * h)
+                hess[i, j] = (self.fn(x_pp) - self.fn(x_pm) - self.fn(x_mp) + self.fn(x_mm)) / (
+                    4 * h * h
+                )
                 hess[j, i] = hess[i, j]
         return hess
 
@@ -249,7 +248,7 @@ class Objective:
             JIT-compiled gradient: jnp array → jnp array.
         loglike_contribs_jax : callable or None
             JIT-compiled per-observation log-likelihood: jnp array → jnp array
-            of shape (n_obs,). Required by BHHHSolver.
+            of shape (n_obs,).
         param_names : list[str] or None
             Parameter names.
         transform : ParamTransform or None

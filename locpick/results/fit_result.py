@@ -48,7 +48,6 @@ class FitResult:
     data_hash: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
 
-
     # ------------------------------------------------------------------
     # Reporting / formatting
     # ------------------------------------------------------------------

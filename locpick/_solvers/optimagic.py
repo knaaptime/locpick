@@ -10,10 +10,6 @@ smooth log-likelihoods with analytic / JAX gradients:
   region (requires ``pip install iminuit``).
 * ``"ipopt"`` — interior-point with exact Hessian; useful for box-
   bounded models (requires ``pip install cyipopt``).
-* ``"bhhh"`` — outer-product-of-gradients Hessian approximation,
-  purpose-built for MLE.  Note: ``bhhh`` consumes per-observation
-  log-likelihood contributions and is **not** supported by this wrapper,
-  which passes a scalar objective.
 * The ``"scipy_*"`` and ``"nlopt_*"`` families ship with the base
   ``optimagic`` install and require no extras.
 

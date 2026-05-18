@@ -23,14 +23,12 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import logsumexp as jax_logsumexp
 from jax.ops import segment_sum
-
+from jax.scipy.special import logsumexp as jax_logsumexp
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
 from locpick._kernels.constants import NEG_INF as _NEG_INF_FLOAT
 
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
@@ -154,8 +152,8 @@ def scl_log_probs(
         return V - log_sum_exp[:, None]
 
     # --- Sparse edge terms (vectorised over edges) ---
-    exp_V_i = exp_V[:, edge_data.edge_i]   # (n_obs, n_edges)
-    exp_V_j = exp_V[:, edge_data.edge_j]   # (n_obs, n_edges)
+    exp_V_i = exp_V[:, edge_data.edge_i]  # (n_obs, n_edges)
+    exp_V_j = exp_V[:, edge_data.edge_j]  # (n_obs, n_edges)
 
     alloc_ij = edge_data.allocation[edge_data.edge_i, edge_data.edge_j]  # (n_edges,)
     alloc_ji = edge_data.allocation[edge_data.edge_j, edge_data.edge_i]  # (n_edges,)
@@ -203,9 +201,7 @@ def scl_log_probs(
 
     flat_segment_ids = jnp.arange(n_obs)[:, None] * n_alts + flat_alt_idx[None, :]
     flat_segment_ids = flat_segment_ids.ravel()
-    flat_exp_contrib = jnp.exp(
-        (contributions - max_contrib[:, flat_alt_idx]).ravel()
-    )
+    flat_exp_contrib = jnp.exp((contributions - max_contrib[:, flat_alt_idx]).ravel())
     flat_sum_exp = segment_sum(flat_exp_contrib, flat_segment_ids, n_obs * n_alts)
     sum_exp = flat_sum_exp.reshape(n_obs, n_alts)
 
@@ -226,6 +222,122 @@ def scl_log_probs(
     log_probs = jnp.where(available > 0, log_probs, _NEG_INF)
 
     return log_probs
+
+
+def scl_log_probs_and_inclusive_value(
+    V: jnp.ndarray,
+    rho: jnp.ndarray,
+    edge_data: "EdgeDataJAX",
+    available: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute SCL log-probabilities and the inclusive value ln G_SCL.
+
+    Identical to :func:`scl_log_probs` but also returns ``log_denom``,
+    which serves as the inclusive value for a nested SCL upper level.
+
+    Parameters
+    ----------
+    V : jnp.ndarray, shape (n_obs, n_alts)
+        Systematic utilities with unavailable alts set to -1e30.
+    rho : jnp.ndarray, scalar
+        Dissimilarity parameter in (0, 1].
+    edge_data : EdgeDataJAX
+        Precomputed spatial edge structure.
+    available : jnp.ndarray, shape (n_obs, n_alts)
+        Binary availability matrix.
+
+    Returns
+    -------
+    log_probs : jnp.ndarray, shape (n_obs, n_alts)
+    log_inclusive_value : jnp.ndarray, shape (n_obs,)
+        ``ln G_SCL`` for each observation.
+    """
+    inv_rho = 1.0 / rho
+    n_obs = V.shape[0]
+    n_alts = V.shape[1]
+    n_edges = edge_data.n_edges
+
+    # Mask unavailable
+    V = jnp.where(available > 0, V, _NEG_INF)
+
+    # exp(V) clipped for numerical stability
+    exp_V = jnp.exp(jnp.clip(V, -500.0, 500.0))
+
+    if n_edges == 0:
+        # MNL fallback — no spatial correlation
+        log_sum_exp = jax_logsumexp(V, axis=1)
+        return V - log_sum_exp[:, None], log_sum_exp
+
+    # --- Sparse edge terms (vectorised over edges) ---
+    exp_V_i = exp_V[:, edge_data.edge_i]  # (n_obs, n_edges)
+    exp_V_j = exp_V[:, edge_data.edge_j]  # (n_obs, n_edges)
+
+    alloc_ij = edge_data.allocation[edge_data.edge_i, edge_data.edge_j]  # (n_edges,)
+    alloc_ji = edge_data.allocation[edge_data.edge_j, edge_data.edge_i]  # (n_edges,)
+
+    term_i = jnp.power(jnp.clip(alloc_ij[None, :] * exp_V_i, 1e-30, 1e30), inv_rho)
+    term_j = jnp.power(jnp.clip(alloc_ji[None, :] * exp_V_j, 1e-30, 1e30), inv_rho)
+
+    # --- Nest values ---
+    nest_vals = jnp.power(term_i + term_j, rho)  # (n_obs, n_edges)
+
+    # --- Denominator ---
+    denom = nest_vals.sum(axis=1)  # (n_obs,)
+    if edge_data.isolated is not None and edge_data.isolated.shape[0] > 0:
+        denom = denom + exp_V[:, edge_data.isolated].sum(axis=1)
+    log_denom = jnp.log(jnp.maximum(denom, 1e-300))
+
+    # --- Log-probabilities via flat alt-edge table (fully vectorised) ---
+    e_idx = edge_data.flat_edge_idx
+    is_first = edge_data.flat_is_first
+
+    my_term = jnp.where(
+        is_first[None, :] > 0,
+        term_i[:, e_idx],
+        term_j[:, e_idx],
+    )
+    other_term = jnp.where(
+        is_first[None, :] > 0,
+        term_j[:, e_idx],
+        term_i[:, e_idx],
+    )
+
+    log_cond = jnp.log(jnp.maximum(my_term, 1e-300)) - jnp.log(
+        jnp.maximum(my_term + other_term, 1e-300)
+    )
+    log_nest = jnp.log(jnp.maximum(nest_vals[:, e_idx], 1e-300)) - log_denom[:, None]
+
+    contributions = log_cond + log_nest  # (n_obs, total_alt_edges)
+
+    # Scatter contributions to alternatives using segment_sum + logsumexp
+    flat_alt_idx = edge_data.flat_alt_idx
+
+    # Numerically stable logsumexp via segment_sum
+    max_contrib = jnp.full((n_obs, n_alts), _NEG_INF, dtype=jnp.float64)
+    max_contrib = max_contrib.at[:, flat_alt_idx].max(contributions)
+
+    flat_segment_ids = jnp.arange(n_obs)[:, None] * n_alts + flat_alt_idx[None, :]
+    flat_segment_ids = flat_segment_ids.ravel()
+    flat_exp_contrib = jnp.exp((contributions - max_contrib[:, flat_alt_idx]).ravel())
+    flat_sum_exp = segment_sum(flat_exp_contrib, flat_segment_ids, n_obs * n_alts)
+    sum_exp = flat_sum_exp.reshape(n_obs, n_alts)
+
+    log_probs = max_contrib + jnp.log(jnp.maximum(sum_exp, 1e-300))
+
+    # Isolated alternatives — vectorised via jnp.where
+    if edge_data.isolated is not None and edge_data.isolated.shape[0] > 0:
+        isolated_mask = jnp.zeros(n_alts, dtype=jnp.float64)
+        isolated_mask = isolated_mask.at[edge_data.isolated].set(1.0)
+        log_probs = jnp.where(
+            isolated_mask[None, :] > 0,
+            V - log_denom[:, None],
+            log_probs,
+        )
+
+    # Mask unavailable
+    log_probs = jnp.where(available > 0, log_probs, _NEG_INF)
+
+    return log_probs, log_denom
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +487,7 @@ def mixed_logit_ll(
         Simulated log-likelihood.
     """
     # Vectorised random coefficient generation
-    means = beta_random_means[None, :]   # (1, k_random)
+    means = beta_random_means[None, :]  # (1, k_random)
     spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     def _ll_single_draw(r):
@@ -389,7 +501,10 @@ def mixed_logit_ll(
         # Transform standard normal draws to uniform via CDF
         t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
         d = 0.3989422804014327
-        poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+        poly = t * (
+            0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+        )
         phi_z = jnp.where(
             z_r >= 0,
             1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
@@ -410,9 +525,11 @@ def mixed_logit_ll(
         # Select distribution per parameter — vectorised
         dist = dist_codes[None, :]  # (1, k_random)
         beta_random_r = jnp.where(
-            dist == 0, beta_normal,
-            jnp.where(dist == 1, beta_lognormal,
-                jnp.where(dist == 2, beta_triangular, beta_uniform)),
+            dist == 0,
+            beta_normal,
+            jnp.where(
+                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+            ),
         )  # (n_obs, k_random)
 
         # Random utility component

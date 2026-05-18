@@ -52,14 +52,14 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
+from locpick._jax.objective import Objective
+from locpick._kernels.constants import NEG_INF
+from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel
+from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
 from locpick.results.fit_result import FitResult
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult, get_solver
-from locpick._kernels.constants import NEG_INF
-from locpick.spec import ModelSpec, ParamRef
+from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
 # Distribution specifications
@@ -75,13 +75,12 @@ class ParamDistribution:
     distribution : str
         Distribution name: ``"normal"``, ``"lognormal"``,
         ``"triangular"``, or ``"uniform"``.
-    param : ParamRef or str
-        The parameter to assign a random distribution to. Can be a
-        ``ParamRef`` or a string (parameter name).
+    param : str
+        The parameter name to assign a random distribution to.
     """
 
     distribution: str
-    param: Union[ParamRef, str]
+    param: str
 
     def __post_init__(self) -> None:
         valid = {"normal", "lognormal", "triangular", "uniform"}
@@ -93,8 +92,6 @@ class ParamDistribution:
     @property
     def param_name(self) -> str:
         """Return the parameter name as a string."""
-        if isinstance(self.param, ParamRef):
-            return self.param.name
         return self.param
 
     @property
@@ -202,7 +199,7 @@ def generate_qmc_draws(
     if engine not in {"sobol", "halton"}:
         raise ValueError(f"Unknown QMC engine: {engine!r}")
 
-    from scipy.stats import qmc, norm
+    from scipy.stats import norm, qmc
 
     n_total = n_obs * n_draws
     dim = n_random_params
@@ -721,7 +718,7 @@ def _mixed_logit_gradient_numpy(
 # ---------------------------------------------------------------------------
 
 
-class MixedLogit(BaseChoiceModel):
+class MixedMNL(BaseChoiceModel):
     """Mixed logit (random coefficients) model for location choice estimation.
 
     This model generalises the multinomial logit by allowing some or all
@@ -771,87 +768,40 @@ class MixedLogit(BaseChoiceModel):
         self,
         data,
         formula: Optional[str] = None,
-        spec: Optional[ModelSpec] = None,
+        spec=None,
         random_params: Optional[dict] = None,
-        n_draws: int = 100,
-        draw_type: str = "halton",
+        n_draws: Optional[int] = None,
+        draw_type: Optional[str] = None,
         seed: int = 42,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
-        solver: Union[str, Solver] = "lbfgs",
+        solver: Union[str, Solver] = None,
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
     ):
+        from locpick.config import config
+
         if random_params is None or len(random_params) == 0:
             raise ValueError(
                 "MixedLogit requires at least one random parameter. "
                 "Use MultinomialLogit for models without random coefficients."
             )
-        if formula is None and spec is None:
-            raise ValueError("Either 'formula' or 'spec' must be provided.")
-        if formula is not None and spec is not None:
-            raise ValueError("Provide 'formula' or 'spec', not both.")
 
-        self._data = data
-        self._problem: Optional[EstimationProblem] = None
-        self._formula = formula
+        super().__init__(
+            data=data,
+            formula=formula,
+            spec=spec,
+            solver=solver,
+            solver_options=solver_options,
+            backend=backend,
+            weights=weights,
+            availability=availability,
+        )
         self._random_params = random_params
-        self._n_draws = n_draws
-        self._draw_type = draw_type
+        self._n_draws = n_draws if n_draws is not None else config.default_n_draws_mixed
+        self._draw_type = draw_type if draw_type is not None else config.default_qmc_engine
         self._seed = seed
-        self._weights = weights
-        self._availability = availability
-        self._solver_options = solver_options or {}
-        self._backend = backend
-
-        # Build ModelSpec from formula if needed
-        if formula is not None:
-            self._spec = ModelSpec(formula=formula)
-        else:
-            self._spec = spec
-
-        # Resolve solver
-        if isinstance(solver, str):
-            self._solver = get_solver(solver, **self._solver_options)
-        else:
-            self._solver = solver
-
-        # Lazy-initialized
-        self._arrays: Optional[ChoiceArrays] = None
-        self._result: Optional[FitResult] = None
-
-        # Caches (cleared on re-estimation)
-        self._hessian_inverse: Optional[np.ndarray] = None
-        self._observation_scores_cache: dict = {}
-        self._probabilities_cache: Optional[np.ndarray] = None
-        self._utilities_cache: Optional[np.ndarray] = None
-        self._covariance_bhhh_cache: Optional[np.ndarray] = None
-        self._covariance_robust_cache: Optional[np.ndarray] = None
         self._draws: Optional[np.ndarray] = None
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def data(self):
-        """The ChoiceTable data."""
-        return self._data
-
-    @property
-    def spec(self) -> ModelSpec:
-        """The ModelSpec used for estimation."""
-        return self._spec
-
-    @property
-    def solver(self) -> Solver:
-        """The solver used for estimation."""
-        return self._solver
-
-    @property
-    def result(self) -> Optional[FitResult]:
-        """The estimation result, or None if not yet estimated."""
-        return self._result
 
     # ------------------------------------------------------------------
     # Estimation
@@ -1034,23 +984,6 @@ class MixedLogit(BaseChoiceModel):
             param_names=full_param_names,
         )
 
-    def _build_arrays(self) -> ChoiceArrays:
-        """Build ChoiceArrays from the data and spec."""
-        if self._problem is None:
-            spec = self._spec if self._formula is None else None
-            self._problem = EstimationProblem.from_choice_table(
-                self._data,
-                spec=spec,
-                formula=self._formula,
-                weights=self._weights,
-                available=self._availability,
-                backend=self._backend or "auto",
-                solver_name=getattr(self._solver, "name", "lbfgs"),
-                solver_options=self._solver_options or None,
-            )
-
-        return self._problem.arrays
-
     def _build_fit_result(
         self,
         solver_result: SolverResult,
@@ -1085,7 +1018,7 @@ class MixedLogit(BaseChoiceModel):
                 std_errors = np.full(len(all_params), np.nan)
         else:
             # Compute Hessian lazily via objective if available
-            if hasattr(self, '_objective') and self._objective is not None:
+            if hasattr(self, "_objective") and self._objective is not None:
                 try:
                     hess = self._objective.hessian(all_params)
                     std_errors = np.sqrt(np.abs(np.diag(hess)))
@@ -1173,50 +1106,6 @@ class MixedLogit(BaseChoiceModel):
     # Cache management
     # ------------------------------------------------------------------
 
-    def _clear_caches(self):
-        """Clear all cached computation results."""
-        self._hessian_inverse = None
-        self._observation_scores_cache = {}
-        self._probabilities_cache = None
-        self._utilities_cache = None
-        self._covariance_bhhh_cache = None
-        self._covariance_robust_cache = None
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _get_hessian_inverse(self) -> np.ndarray | None:
-        """Get the inverse Hessian from the solver result.
-
-        Returns
-        -------
-        np.ndarray or None
-            Inverse Hessian matrix, or None if not available.
-        """
-        if self._hessian_inverse is not None:
-            return self._hessian_inverse
-
-        if self._result is not None and self._result.solver_result and "scipy_result" in self._result.solver_result:
-            scipy_result = self._result.solver_result["scipy_result"]
-            if hasattr(scipy_result, "hess_inv"):
-                try:
-                    self._hessian_inverse = np.asarray(
-                        scipy_result.hess_inv.todense()
-                        if hasattr(scipy_result.hess_inv, "todense")
-                        else scipy_result.hess_inv
-                    )
-                    return self._hessian_inverse
-                except Exception:
-                    pass
-
-        if self._result is not None and self._result.std_errors is not None and not self._result.std_errors.isna().all():
-            variances = self._result.std_errors.values**2
-            self._hessian_inverse = np.diag(variances)
-            return self._hessian_inverse
-
-        return None
-
     def _observation_scores(self, arrays) -> np.ndarray:
         """Compute observation-level score vectors via numerical differentiation.
 
@@ -1264,7 +1153,7 @@ class MixedLogit(BaseChoiceModel):
             beta_random_means=beta_random_means_hat,
             beta_random_spreads=beta_random_spreads_hat,
         )
-        ll_base = np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
+        np.log(np.maximum(np.sum(probs_base * chosen, axis=1), 1e-30))
 
         scores = np.zeros((n_obs, n_params))
 
@@ -1282,10 +1171,16 @@ class MixedLogit(BaseChoiceModel):
             brs_minus = params_minus[k_fixed + k_random :]
 
             probs_plus = self.probabilities(
-                data=None, beta_fixed=bf_plus, beta_random_means=brm_plus, beta_random_spreads=brs_plus
+                data=None,
+                beta_fixed=bf_plus,
+                beta_random_means=brm_plus,
+                beta_random_spreads=brs_plus,
             )
             probs_minus = self.probabilities(
-                data=None, beta_fixed=bf_minus, beta_random_means=brm_minus, beta_random_spreads=brs_minus
+                data=None,
+                beta_fixed=bf_minus,
+                beta_random_means=brm_minus,
+                beta_random_spreads=brs_minus,
             )
 
             ll_plus = np.log(np.maximum(np.sum(probs_plus * chosen, axis=1), 1e-30))
@@ -1422,9 +1317,7 @@ class MixedLogit(BaseChoiceModel):
 
         results = []
         for draw in range(n_draws):
-            chosen_indices = np.array(
-                [rng.choice(n_alts, p=probs[i]) for i in range(n_obs)]
-            )
+            chosen_indices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
             chosen_alts = alt_ids[np.arange(n_obs), chosen_indices]
             chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
@@ -1468,12 +1361,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1515,12 +1407,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1570,12 +1461,11 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
@@ -1585,7 +1475,9 @@ class MixedLogit(BaseChoiceModel):
         df = ct.to_frame()
         x = df[variable].values
         # For random parameters, use the mean coefficient
-        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
+        beta = self._result.coefficients.get(
+            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
+        )
 
         elasticities = (1 - probs.ravel()) * beta * x
 
@@ -1623,19 +1515,20 @@ class MixedLogit(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
 
-        arrays = self._arrays
         ct = self._data
         if data is not None:
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
+            data.to_arrays(
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
             ct = data
 
         probs = self.probabilities(data=data if data is not None else None)
-        beta = self._result.coefficients.get(variable, self._result.coefficients.get(f"mean_{variable}", 0.0))
+        beta = self._result.coefficients.get(
+            variable, self._result.coefficients.get(f"mean_{variable}", 0.0)
+        )
         df = ct.to_frame()
         x = df[variable].values
 
@@ -1650,41 +1543,6 @@ class MixedLogit(BaseChoiceModel):
     # ------------------------------------------------------------------
     # Covariance estimation
     # ------------------------------------------------------------------
-
-    def covariance_bhhh(self, data=None) -> np.ndarray:
-        """Compute the BHHH covariance matrix.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute covariance on.  If ``None``, uses
-            estimation data.
-
-        Returns
-        -------
-        np.ndarray, shape (n_parameters, n_parameters)
-            BHHH covariance matrix.
-        """
-        from locpick.data.choicetable import ChoiceTable
-
-        if self._arrays is None:
-            raise RuntimeError("Model must be estimated first.")
-
-        arrays = self._arrays
-        if data is not None:
-            if not isinstance(data, ChoiceTable):
-                raise TypeError("data must be a ChoiceTable")
-            arrays = data.to_arrays(
-                formula=self._spec.formula,
-                spec=self._spec if self._spec.formula is None else None,
-            )
-
-        scores = self._observation_scores(arrays)
-        bhhh = scores.T @ scores
-        try:
-            return np.linalg.inv(bhhh)
-        except np.linalg.LinAlgError:
-            return np.full_like(bhhh, np.nan)
 
     def covariance_robust(self, data=None) -> np.ndarray:
         """Compute the sandwich (Huber-White) robust covariance matrix.
@@ -1779,23 +1637,6 @@ class MixedLogit(BaseChoiceModel):
                 return np.full_like(B_clustered, np.nan)
 
         return H_inv @ B_clustered @ H_inv
-
-    def std_errors_bhhh(self, data=None) -> pd.Series:
-        """Compute BHHH standard errors.
-
-        Parameters
-        ----------
-        data : ChoiceTable or None
-            Data to compute standard errors on.
-
-        Returns
-        -------
-        pd.Series
-            BHHH standard errors, indexed by parameter name.
-        """
-        cov = self.covariance_bhhh(data=data)
-        se = np.sqrt(np.diag(cov))
-        return pd.Series(se, index=self._result.coefficients.index, name="std_error_bhhh")
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.

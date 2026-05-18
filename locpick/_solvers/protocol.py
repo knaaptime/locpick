@@ -99,14 +99,6 @@ def _register_builtins() -> None:
 
     _SOLVERS.setdefault("lbfgs", LBFGSSolver)
 
-    # BHHH (optional — requires JAX)
-    try:
-        from .bhhh import BHHHSolver
-
-        _SOLVERS.setdefault("bhhh", BHHHSolver)
-    except ImportError:
-        pass
-
     # Trust-region Newton (optional — requires JAX + scipy)
     try:
         from .trust_ncg import TrustKrylovSolver, TrustNCGSolver

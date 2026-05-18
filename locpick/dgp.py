@@ -9,6 +9,7 @@ Supported DGPs
 - MNL (multinomial logit)
 - Nested logit
 - SCL (spatially correlated logit)
+- Nested SCL (spatially correlated logit with nesting)
 - Mixed logit (random coefficients)
 - MSCL (mixed spatially correlated logit)
 """
@@ -20,6 +21,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.special import logsumexp
 
 # ---------------------------------------------------------------------------
 # Shared dataclasses
@@ -64,7 +66,7 @@ class MNLDataset:
 
 
 @dataclass
-class NestedLogitDataset:
+class NestedMNLDataset:
     """Synthetic dataset drawn from a known nested logit DGP.
 
     Attributes
@@ -132,7 +134,7 @@ class SCLDataset:
 
 
 @dataclass
-class MixedLogitDataset:
+class MixedMNLDataset:
     """Synthetic dataset drawn from a known mixed logit DGP.
 
     Attributes
@@ -196,6 +198,95 @@ class MSCLDataset:
     true_rho: float
     adjacency: np.ndarray
     random_params: dict[str, str]
+    choice_table: Any
+    n_obs: int
+    n_alts: int
+    seed: int
+
+
+@dataclass
+class NestedSCLDataset:
+    """Synthetic dataset drawn from a known Nested SCL DGP.
+
+    Attributes
+    ----------
+    choosers : pd.DataFrame
+        Obs-id-indexed DataFrame with chooser attributes and ``choice`` column.
+    alternatives : pd.DataFrame
+        Alt-id-indexed DataFrame with alternative attributes.
+    true_params : dict[str, float]
+        Ground-truth beta coefficients.
+    true_rhos : dict[str, float]
+        Ground-truth spatial dissimilarity parameters ρ_m ∈ (0, 1] per nest.
+    true_lambdas : dict[str, float]
+        Ground-truth nest dissimilarity parameters λ_m ∈ (0, 1] per nest.
+    nests : NestingTree
+        The nesting structure used to generate the data.
+    adjacency : np.ndarray
+        Binary adjacency matrix used for the spatial graph.
+    choice_table : object
+        Assembled ``ChoiceTable``.
+    n_obs : int
+    n_alts : int
+    seed : int
+    """
+
+    choosers: pd.DataFrame
+    alternatives: pd.DataFrame
+    true_params: dict[str, float]
+    true_rhos: dict[str, float]
+    true_lambdas: dict[str, float]
+    nests: Any
+    adjacency: np.ndarray
+    choice_table: Any
+    n_obs: int
+    n_alts: int
+    seed: int
+
+
+@dataclass
+class MNSCLDataset:
+    """Synthetic dataset drawn from a known MNSCL DGP.
+
+    Attributes
+    ----------
+    choosers : pd.DataFrame
+        Obs-id-indexed DataFrame with chooser attributes and ``choice`` column.
+    alternatives : pd.DataFrame
+        Alt-id-indexed DataFrame with alternative attributes.
+    true_params : dict[str, float]
+        Ground-truth fixed beta coefficients.
+    true_rhos : dict[str, float]
+        Ground-truth spatial dissimilarity parameters ρ_m ∈ (0, 1] per nest.
+    true_lambdas : dict[str, float]
+        Ground-truth nest dissimilarity parameters λ_m ∈ (0, 1] per nest.
+    true_random_means : dict[str, float]
+        Ground-truth random coefficient means.
+    true_random_spreads : dict[str, float]
+        Ground-truth random coefficient spreads (std devs).
+    random_params : dict[str, str]
+        Mapping of random parameter name → distribution name.
+    nests : NestingTree
+        The nesting structure used to generate the data.
+    adjacency : np.ndarray
+        Binary adjacency matrix used for the spatial graph.
+    choice_table : object
+        Assembled ``ChoiceTable``.
+    n_obs : int
+    n_alts : int
+    seed : int
+    """
+
+    choosers: pd.DataFrame
+    alternatives: pd.DataFrame
+    true_params: dict[str, float]
+    true_rhos: dict[str, float]
+    true_lambdas: dict[str, float]
+    true_random_means: dict[str, float]
+    true_random_spreads: dict[str, float]
+    random_params: dict[str, str]
+    nests: Any
+    adjacency: np.ndarray
     choice_table: Any
     n_obs: int
     n_alts: int
@@ -336,7 +427,7 @@ def simulate_nested_logit(
     alt_params: dict[str, float] | None = None,
     nest_lambdas: dict[str, float] | None = None,
     seed: int = 1234,
-) -> NestedLogitDataset:
+) -> NestedMNLDataset:
     """Generate synthetic nested logit choice data with known parameters.
 
     The default DGP creates two nests with 2 alternatives each, includes
@@ -439,11 +530,26 @@ def simulate_nested_logit(
     alpha_values = np.log(lambda_values / (1.0 - lambda_values + 1e-30))
 
     # Compute nested logit probabilities
+    # Build design matrix including interaction terms so all utility
+    # components are captured in the probability calculation.
     beta = np.array([alt_params[col] for col in alternatives.columns])
+    design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
+    # Append interaction columns
+    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
+    income_x_time_vals = interactions["income_x_time"].to_numpy().reshape(n_obs, n_alts)
+    design_matrix = np.column_stack(
+        [
+            design_matrix,
+            income_x_cost_vals.ravel(),
+            income_x_time_vals.ravel(),
+        ]
+    )
+    beta = np.append(beta, [0.05, -0.02])  # true coefficients for interactions
+
     probs = _nested_logit_probs_numpy(
         beta,
         alpha_values,
-        np.tile(alternatives.to_numpy(), (n_obs, 1)),  # design matrix
+        design_matrix,
         nest_matrix,
         n_obs,
         n_alts,
@@ -462,7 +568,7 @@ def simulate_nested_logit(
     true_params["income_x_cost"] = 0.05
     true_params["income_x_time"] = -0.02
 
-    return NestedLogitDataset(
+    return NestedMNLDataset(
         choosers=choosers,
         alternatives=alternatives,
         true_params=true_params,
@@ -565,8 +671,14 @@ def simulate_scl(
     det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
 
     # --- Compute SCL probabilities and simulate choices ------------------
+    # Build design matrix including interaction terms so all utility
+    # components are captured in the probability calculation.
     beta = np.array([alt_params[col] for col in alternatives.columns])
     design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
+    # Append interaction column
+    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
+    design_matrix = np.column_stack([design_matrix, income_x_cost_vals.ravel()])
+    beta = np.append(beta, 0.05)  # true coefficient for income_x_cost
 
     log_probs = _scl_log_probs_numpy(
         beta, rho, design_matrix, allocation, edge_list, n_obs, n_alts
@@ -609,7 +721,7 @@ def simulate_mixed_logit(
     alt_params: dict[str, float] | None = None,
     random_params: dict[str, tuple[str, float, float]] | None = None,
     seed: int = 1234,
-) -> MixedLogitDataset:
+) -> MixedMNLDataset:
     """Generate synthetic mixed logit choice data with known parameters.
 
     The default DGP creates one fixed and one random coefficient, includes
@@ -709,7 +821,7 @@ def simulate_mixed_logit(
     # --- Build ChoiceTable -----------------------------------------------
     choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
 
-    return MixedLogitDataset(
+    return MixedMNLDataset(
         choosers=choosers,
         alternatives=alternatives,
         true_params=true_params,
@@ -853,6 +965,541 @@ def simulate_mscl(
         true_rho=rho,
         adjacency=adjacency,
         random_params=random_params_dict,
+        choice_table=choice_table,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        seed=seed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Nested SCL DGP
+# ---------------------------------------------------------------------------
+
+
+def simulate_nested_scl(
+    n_obs: int = 10000,
+    n_alts: int = 12,
+    alt_params: dict[str, float] | None = None,
+    nest_rhos: dict[str, float] | None = None,
+    nest_lambdas: dict[str, float] | None = None,
+    adjacency: np.ndarray | None = None,
+    seed: int = 1234,
+) -> NestedSCLDataset:
+    """Generate synthetic Nested SCL choice data with known parameters.
+
+    The default DGP creates a circular adjacency graph with 12 zones
+    partitioned into two nests (e.g., inner / outer ring), includes both
+    alternative-level and chooser×alternative interaction terms, and
+    simulates choices using the Nested SCL probability formula.
+
+    Parameters
+    ----------
+    n_obs : int, default 10000
+        Number of observations (decision-makers).
+    n_alts : int, default 12
+        Number of alternatives (zones).
+    alt_params : dict, optional
+        Mapping of alternative-level column name → true coefficient.
+        Default: ``{"cost": -0.5, "time": -0.1}``.
+    nest_rhos : dict, optional
+        Mapping of nest name → true spatial dissimilarity ρ_m ∈ (0, 1].
+        Default: ``{"inner": 0.6, "outer": 0.8}``.
+    nest_lambdas : dict, optional
+        Mapping of nest name → true nest dissimilarity λ_m ∈ (0, 1].
+        Default: ``{"inner": 0.7, "outer": 0.9}``.
+    adjacency : np.ndarray, optional
+        Binary adjacency matrix of shape ``(n_alts, n_alts)``.
+        Default: circular graph where zone *i* is adjacent to
+        ``(i-1) % n_alts`` and ``(i+1) % n_alts``.
+    seed : int, default 1234
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    NestedSCLDataset
+    """
+    from locpick.models.nested import NestingTree, NestSpec
+    from locpick.models.scl import (
+        _resolve_spatial_graph,
+    )
+
+    if alt_params is None:
+        alt_params = {"cost": -0.5, "time": -0.1}
+    if nest_rhos is None:
+        nest_rhos = {"inner": 0.6, "outer": 0.8}
+    if nest_lambdas is None:
+        nest_lambdas = {"inner": 0.7, "outer": 0.9}
+
+    rng = np.random.default_rng(seed)
+
+    # --- Build adjacency matrix -----------------------------------------
+    if adjacency is None:
+        adjacency = np.zeros((n_alts, n_alts), dtype=np.float64)
+        for i in range(n_alts):
+            adjacency[i, (i - 1) % n_alts] = 1.0
+            adjacency[i, (i + 1) % n_alts] = 1.0
+
+    omega, allocation, edge_list, _ = _resolve_spatial_graph(adjacency)
+
+    # --- Build nesting structure ----------------------------------------
+    nest_names = list(nest_rhos.keys())
+    alts_per_nest = n_alts // len(nest_names)
+    if n_alts % len(nest_names) != 0:
+        raise ValueError(
+            f"n_alts ({n_alts}) must be evenly divisible by the number of "
+            f"nests ({len(nest_names)})."
+        )
+
+    nest_specs = []
+    alt_id = 0
+    for name in nest_names:
+        nest_specs.append(NestSpec(name, alt_ids=list(range(alt_id, alt_id + alts_per_nest))))
+        alt_id += alts_per_nest
+    nests = NestingTree(nest_specs)
+
+    # --- Choosers and alternatives --------------------------------------
+    obs_ids = pd.Index(np.arange(n_obs), name="oid")
+    income = rng.standard_normal(n_obs)
+    choosers = pd.DataFrame({"income": income}, index=obs_ids)
+
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    alternatives = pd.DataFrame(
+        {
+            "cost": rng.uniform(1, 10, n_alts),
+            "time": rng.uniform(5, 30, n_alts),
+        },
+        index=alt_ids,
+    )
+
+    # --- Interactions (chooser × alternative) --------------------------
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
+    income_tiled = np.repeat(income, n_alts)
+    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
+    interactions = {
+        "income_x_cost": pd.Series(
+            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
+        ),
+    }
+
+    # --- Deterministic utility ------------------------------------------
+    det_utility = np.zeros((n_obs, n_alts))
+    for col, coef in alt_params.items():
+        alt_vals = alternatives[col].to_numpy()
+        det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
+    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+
+    # --- Compute Nested SCL probabilities and simulate choices --------
+    np.array([alt_params[col] for col in alternatives.columns])
+    np.tile(alternatives.to_numpy(), (n_obs, 1))
+
+    nest_matrix = nests.build_nest_matrix(list(range(n_alts)))
+    n_nests = len(nest_names)
+
+    # Per-nest SCL probabilities and inclusive values
+    nest_log_G = np.zeros((n_obs, n_nests), dtype=np.float64)
+    log_probs_per_nest = []
+
+    for m, name in enumerate(nest_names):
+        nest_mask = nest_matrix[:, m] > 0
+        nest_alts = np.where(nest_mask)[0]
+        len(nest_alts)
+
+        # Extract subgraph for this nest
+        nest_adj = adjacency[np.ix_(nest_alts, nest_alts)]
+        _, nest_alloc, nest_edges, _ = _resolve_spatial_graph(nest_adj)
+
+        # _resolve_spatial_graph returns edges in local coordinates (0..n_nest_alts-1)
+        # because it operates on the extracted subgraph matrix
+        local_edges = nest_edges
+
+        # Extract utilities for this nest (includes all terms: cost, time, interactions)
+        V_nest = det_utility[:, nest_alts]
+
+        log_probs_nest, log_G_nest = _scl_log_probs_from_utility_numpy(
+            V_nest,
+            nest_rhos[name],
+            nest_alloc,
+            local_edges,
+        )
+
+        # Store inclusive value
+        nest_log_G[:, m] = log_G_nest
+
+        # Store probabilities in full array positions
+        full_log_probs = np.full((n_obs, n_alts), -np.inf, dtype=np.float64)
+        full_log_probs[:, nest_alts] = log_probs_nest
+        log_probs_per_nest.append(full_log_probs)
+
+    # Top-level NL: compute nest probabilities
+    lambda_values = np.array([nest_lambdas[name] for name in nest_names])
+    nest_exponents = lambda_values[None, :] * nest_log_G  # (n_obs, n_nests)
+    log_denom_top = logsumexp(nest_exponents, axis=1)  # (n_obs,)
+    log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
+
+    # Combine: P_i = P_SCL(i|m) * P_NL(m)
+    log_probs_full = np.full((n_obs, n_alts), -np.inf, dtype=np.float64)
+    for m, name in enumerate(nest_names):
+        nest_mask = nest_matrix[:, m] > 0
+        # log P_i = log P_SCL(i|m) + log P_NL(m)
+        log_probs_full[:, nest_mask] = (
+            log_probs_per_nest[m][:, nest_mask] + log_P_nest[:, m][:, None]
+        )
+
+    probs = np.exp(log_probs_full)
+    probs = np.maximum(probs, 0.0)
+    probs = probs / probs.sum(axis=1, keepdims=True)
+
+    # Simulate choices
+    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choosers = choosers.copy()
+    choosers["choice"] = choices
+
+    # --- Build true_params dict ------------------------------------------
+    true_params = dict(alt_params)
+    true_params["income_x_cost"] = 0.05
+
+    # --- Build ChoiceTable -----------------------------------------------
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+
+    return NestedSCLDataset(
+        choosers=choosers,
+        alternatives=alternatives,
+        true_params=true_params,
+        true_rhos=dict(nest_rhos),
+        true_lambdas=dict(nest_lambdas),
+        nests=nests,
+        adjacency=adjacency,
+        choice_table=choice_table,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        seed=seed,
+    )
+
+
+def _scl_log_probs_from_utility_numpy(
+    V: np.ndarray,
+    rho: float,
+    allocation: np.ndarray,
+    edge_list: list[tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute SCL log-probabilities and inclusive value from precomputed utilities.
+
+    Parameters
+    ----------
+    V : np.ndarray, shape (n_obs, n_alts)
+        Precomputed utility matrix.
+    rho : float
+        Dissimilarity parameter in (0, 1].
+    allocation : np.ndarray
+        Spatial allocation matrix.
+    edge_list : list[tuple[int, int]]
+        List of edge tuples.
+
+    Returns
+    -------
+    log_probs : np.ndarray, shape (n_obs, n_alts)
+    log_inclusive_value : np.ndarray, shape (n_obs,)
+    """
+    n_obs, n_alts = V.shape
+    inv_rho = 1.0 / rho
+    exp_V = np.exp(np.clip(V, -500, 500))
+
+    alloc_exp_V = allocation[None, :, :] * exp_V[:, :, None]
+    alloc_exp_V = np.clip(alloc_exp_V, 1e-30, 1e30)
+    alloc_exp_V_inv_rho = np.power(alloc_exp_V, inv_rho)
+
+    n_edges = len(edge_list)
+    if n_edges == 0:
+        log_sum_exp_V = logsumexp(V, axis=1)
+        log_probs = V - log_sum_exp_V[:, None]
+        return log_probs, log_sum_exp_V
+
+    connected = set()
+    for i, j in edge_list:
+        connected.add(i)
+        connected.add(j)
+    isolated = sorted(set(range(n_alts)) - connected)
+
+    nest_vals = np.zeros((n_obs, n_edges), dtype=np.float64)
+    for idx, (i, j) in enumerate(edge_list):
+        term_i = alloc_exp_V_inv_rho[:, i, j]
+        term_j = alloc_exp_V_inv_rho[:, j, i]
+        nest_vals[:, idx] = np.power(term_i + term_j, rho)
+
+    if isolated:
+        iso_exp_V = exp_V[:, isolated]
+        denom_components = np.column_stack([nest_vals, iso_exp_V])
+    else:
+        denom_components = nest_vals
+
+    log_denom = np.log(np.maximum(denom_components.sum(axis=1), 1e-300))
+
+    log_probs = np.full((n_obs, n_alts), -np.inf, dtype=np.float64)
+
+    alt_to_edges: dict[int, list[tuple[int, bool]]] = {}
+    for idx, (i, j) in enumerate(edge_list):
+        alt_to_edges.setdefault(i, []).append((idx, True))
+        alt_to_edges.setdefault(j, []).append((idx, False))
+
+    for alt_i in connected:
+        edge_contributions = []
+        for edge_idx, is_first in alt_to_edges[alt_i]:
+            i, j = edge_list[edge_idx]
+            if is_first:
+                my_term = alloc_exp_V_inv_rho[:, alt_i, j]
+                other_term = alloc_exp_V_inv_rho[:, j, alt_i]
+            else:
+                my_term = alloc_exp_V_inv_rho[:, alt_i, i]
+                other_term = alloc_exp_V_inv_rho[:, i, alt_i]
+
+            log_cond = np.log(np.maximum(my_term, 1e-300)) - np.log(
+                np.maximum(my_term + other_term, 1e-300)
+            )
+            log_nest = np.log(np.maximum(nest_vals[:, edge_idx], 1e-300)) - log_denom
+            edge_contributions.append(log_cond + log_nest)
+
+        if len(edge_contributions) == 1:
+            log_probs[:, alt_i] = edge_contributions[0]
+        else:
+            log_probs[:, alt_i] = logsumexp(np.column_stack(edge_contributions), axis=1)
+
+    for alt_i in isolated:
+        log_probs[:, alt_i] = V[:, alt_i] - log_denom
+
+    return log_probs, log_denom
+
+
+def simulate_mnscl(
+    n_obs: int = 5000,
+    n_alts: int = 12,
+    alt_params: dict[str, float] | None = None,
+    nest_rhos: dict[str, float] | None = None,
+    nest_lambdas: dict[str, float] | None = None,
+    random_params: dict[str, tuple[str, float, float]] | None = None,
+    adjacency: np.ndarray | None = None,
+    seed: int = 1234,
+) -> MNSCLDataset:
+    """Generate synthetic MNSCL choice data with known parameters.
+
+    The default DGP creates a circular adjacency graph with 12 zones
+    partitioned into two nests, includes both alternative-level and
+    chooser×alternative interaction terms, and simulates choices using
+    the MNSCL probability formula with random coefficients.
+
+    Parameters
+    ----------
+    n_obs : int, default 5000
+        Number of observations (decision-makers).
+    n_alts : int, default 12
+        Number of alternatives (zones).
+    alt_params : dict, optional
+        Mapping of alternative-level column name → true coefficient.
+        Default: ``{"cost": -0.5, "time": -0.1}``.
+    nest_rhos : dict, optional
+        Mapping of nest name → true spatial dissimilarity ρ_m ∈ (0, 1].
+        Default: ``{"inner": 0.6, "outer": 0.8}``.
+    nest_lambdas : dict, optional
+        Mapping of nest name → true nest dissimilarity λ_m ∈ (0, 1].
+        Default: ``{"inner": 0.7, "outer": 0.9}``.
+    random_params : dict, optional
+        Mapping of parameter name → (distribution, mean, spread).
+        E.g. ``{"time": ("normal", -0.1, 0.05)}``.
+        Default: ``{"time": ("normal", -0.1, 0.05)}``.
+    adjacency : np.ndarray, optional
+        Binary adjacency matrix of shape ``(n_alts, n_alts)``.
+        Default: circular graph.
+    seed : int, default 1234
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    MNSCLDataset
+    """
+    from locpick.models.nested import NestingTree, NestSpec
+    from locpick.models.scl import (
+        _resolve_spatial_graph,
+    )
+
+    if alt_params is None:
+        alt_params = {"cost": -0.5, "time": -0.1}
+    if nest_rhos is None:
+        nest_rhos = {"inner": 0.6, "outer": 0.8}
+    if nest_lambdas is None:
+        nest_lambdas = {"inner": 0.7, "outer": 0.9}
+    if random_params is None:
+        random_params = {"time": ("normal", -0.1, 0.05)}
+
+    rng = np.random.default_rng(seed)
+
+    # --- Build adjacency matrix -----------------------------------------
+    if adjacency is None:
+        adjacency = np.zeros((n_alts, n_alts), dtype=np.float64)
+        for i in range(n_alts):
+            adjacency[i, (i - 1) % n_alts] = 1.0
+            adjacency[i, (i + 1) % n_alts] = 1.0
+
+    omega, allocation, edge_list, _ = _resolve_spatial_graph(adjacency)
+
+    # --- Build nesting structure ----------------------------------------
+    nest_names = list(nest_rhos.keys())
+    alts_per_nest = n_alts // len(nest_names)
+    if n_alts % len(nest_names) != 0:
+        raise ValueError(
+            f"n_alts ({n_alts}) must be evenly divisible by the number of "
+            f"nests ({len(nest_names)})."
+        )
+
+    nest_specs = []
+    alt_id = 0
+    for name in nest_names:
+        nest_specs.append(NestSpec(name, alt_ids=list(range(alt_id, alt_id + alts_per_nest))))
+        alt_id += alts_per_nest
+    nests = NestingTree(nest_specs)
+
+    # --- Choosers and alternatives --------------------------------------
+    obs_ids = pd.Index(np.arange(n_obs), name="oid")
+    income = rng.standard_normal(n_obs)
+    choosers = pd.DataFrame({"income": income}, index=obs_ids)
+
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    alternatives = pd.DataFrame(
+        {
+            "cost": rng.uniform(1, 10, n_alts),
+            "time": rng.uniform(5, 30, n_alts),
+        },
+        index=alt_ids,
+    )
+
+    # --- Interactions (chooser × alternative) -------------------------
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
+    income_tiled = np.repeat(income, n_alts)
+    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
+    interactions = {
+        "income_x_cost": pd.Series(
+            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
+        ),
+    }
+
+    # --- Deterministic utility -----------------------------------------
+    det_utility = np.zeros((n_obs, n_alts))
+    for col, coef in alt_params.items():
+        alt_vals = alternatives[col].to_numpy()
+        det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
+    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+
+    # --- Add random coefficient variation ------------------------------
+    np.array([alt_params[col] for col in alternatives.columns])
+    np.tile(alternatives.to_numpy(), (n_obs, 1))
+
+    # For each random parameter, add random variation multiplied by attribute
+    for param_name, (dist, mean, spread) in random_params.items():
+        list(alternatives.columns).index(param_name)
+        alt_vals = alternatives[param_name].to_numpy()  # shape (n_alts,)
+        z = rng.standard_normal((n_obs, n_alts))
+        if dist == "normal":
+            random_component = (mean + spread * z) * alt_vals[None, :]
+        elif dist == "lognormal":
+            random_component = np.exp(mean + spread * z) * alt_vals[None, :]
+        elif dist == "uniform":
+            random_component = (mean + spread * (2 * rng.random((n_obs, n_alts)) - 1)) * alt_vals[
+                None, :
+            ]
+        elif dist == "triangular":
+            u = rng.random((n_obs, n_alts))
+            random_component = np.where(
+                u <= 0.5,
+                (mean + spread * (np.sqrt(2 * u) - 1)) * alt_vals[None, :],
+                (mean + spread * (1 - np.sqrt(2 * (1 - u)))) * alt_vals[None, :],
+            )
+        else:
+            raise ValueError(f"Unknown distribution: {dist}")
+        det_utility += random_component
+
+    # --- Compute MNSCL probabilities and simulate choices --------------
+    nest_matrix = nests.build_nest_matrix(list(range(n_alts)))
+    n_nests = len(nest_names)
+
+    # Per-nest SCL probabilities and inclusive values
+    nest_log_G = np.zeros((n_obs, n_nests), dtype=np.float64)
+    log_probs_per_nest = []
+
+    for m, name in enumerate(nest_names):
+        nest_mask = nest_matrix[:, m] > 0
+        nest_alts = np.where(nest_mask)[0]
+        len(nest_alts)
+
+        # Extract subgraph for this nest
+        nest_adj = adjacency[np.ix_(nest_alts, nest_alts)]
+        _, nest_alloc, nest_edges, _ = _resolve_spatial_graph(nest_adj)
+
+        # Extract utilities for this nest (with random variation)
+        V_nest = det_utility[:, nest_alts]
+
+        log_probs_nest, log_G_nest = _scl_log_probs_from_utility_numpy(
+            V_nest,
+            nest_rhos[name],
+            nest_alloc,
+            nest_edges,
+        )
+
+        # Store inclusive value
+        nest_log_G[:, m] = log_G_nest
+
+        # Store probabilities in full array positions
+        full_log_probs = np.full((n_obs, n_alts), -np.inf, dtype=np.float64)
+        full_log_probs[:, nest_alts] = log_probs_nest
+        log_probs_per_nest.append(full_log_probs)
+
+    # Top-level NL: compute nest probabilities
+    lambda_values = np.array([nest_lambdas[name] for name in nest_names])
+    nest_exponents = lambda_values[None, :] * nest_log_G  # (n_obs, n_nests)
+    log_denom_top = logsumexp(nest_exponents, axis=1)  # (n_obs,)
+    log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
+
+    # Combine: P_i = P_SCL(i|m) * P_NL(m)
+    log_probs_full = np.full((n_obs, n_alts), -np.inf, dtype=np.float64)
+    for m, name in enumerate(nest_names):
+        nest_mask = nest_matrix[:, m] > 0
+        log_probs_full[:, nest_mask] = (
+            log_probs_per_nest[m][:, nest_mask] + log_P_nest[:, m][:, None]
+        )
+
+    probs = np.exp(log_probs_full)
+    probs = np.maximum(probs, 0.0)
+    probs = probs / probs.sum(axis=1, keepdims=True)
+
+    # Simulate choices
+    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choosers = choosers.copy()
+    choosers["choice"] = choices
+
+    # --- Build true_params dict -----------------------------------------
+    true_params = dict(alt_params)
+    true_params["income_x_cost"] = 0.05
+
+    true_random_means = {}
+    true_random_spreads = {}
+    random_param_dict = {}
+    for param_name, (dist, mean, spread) in random_params.items():
+        true_random_means[param_name] = mean
+        true_random_spreads[param_name] = spread
+        random_param_dict[param_name] = dist
+
+    # --- Build ChoiceTable ----------------------------------------------
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+
+    return MNSCLDataset(
+        choosers=choosers,
+        alternatives=alternatives,
+        true_params=true_params,
+        true_rhos=dict(nest_rhos),
+        true_lambdas=dict(nest_lambdas),
+        true_random_means=true_random_means,
+        true_random_spreads=true_random_spreads,
+        random_params=random_param_dict,
+        nests=nests,
+        adjacency=adjacency,
         choice_table=choice_table,
         n_obs=n_obs,
         n_alts=n_alts,

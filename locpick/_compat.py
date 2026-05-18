@@ -4,12 +4,12 @@ Centralizes availability checks for optional dependencies (JAX, Numba)
 to avoid repeated try/except blocks across the codebase.
 """
 
-import os
+from locpick.config import config
 
 try:
     import jax
 
-    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_enable_x64", config.jax_enable_x64)
     _JAX_AVAILABLE = True
 except ImportError:
     _JAX_AVAILABLE = False
@@ -22,6 +22,6 @@ except ImportError:
     _NUMBA_AVAILABLE = False
 
 # Conditional parallel flag for Numba-accelerated models
-_NUMBA_PARALLEL = _NUMBA_AVAILABLE and os.environ.get("NUMBA_PARALLEL", "1") != "0"
+_NUMBA_PARALLEL = _NUMBA_AVAILABLE and config.numba_parallel
 
 __all__ = ["_JAX_AVAILABLE", "_NUMBA_AVAILABLE", "_NUMBA_PARALLEL"]

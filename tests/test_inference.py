@@ -1,14 +1,14 @@
-"""Tests for inference: BHHH, sandwich, and cluster-robust covariance estimators.
+"""Tests for inference: sandwich and cluster-robust covariance estimators.
 
-Covers: observation-level scores, BHHH covariance, sandwich (robust)
-covariance, cluster-robust covariance, and standard error convenience methods.
+Covers: observation-level scores, sandwich (robust) covariance,
+cluster-robust covariance, and standard error convenience methods.
 """
 
 import numpy as np
 import numpy.testing as npt
 import pandas as pd
 
-from locpick import ChoiceTable, MultinomialLogit
+from locpick import ChoiceTable, MNL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -64,8 +64,8 @@ class TestObservationScores:
     def test_scores_shape(self):
         """Observation scores should have shape (n_obs, n_params)."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -75,8 +75,8 @@ class TestObservationScores:
     def test_scores_sum_to_gradient(self):
         """Sum of observation scores should equal the full gradient."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -88,8 +88,8 @@ class TestObservationScores:
     def test_scores_are_finite(self):
         """All observation scores should be finite."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         arrays = ct.to_arrays(formula="cost + time - 1")
         scores = model._observation_scores(arrays)
@@ -98,55 +98,9 @@ class TestObservationScores:
 
 
 # ---------------------------------------------------------------------------
-# Test: BHHH covariance
 # ---------------------------------------------------------------------------
-
-
-class TestBHHHCovariance:
-    """Tests for the BHHH covariance estimator."""
-
-    def test_bhhh_covariance_shape(self):
-        """BHHH covariance should be (n_params, n_params)."""
-        ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
-
-        cov = model.covariance_bhhh(ct)
-
-        assert cov.shape == (2, 2)
-
-    def test_bhhh_covariance_positive_diagonal(self):
-        """BHHH covariance diagonal should be positive (variances)."""
-        ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
-
-        cov = model.covariance_bhhh(ct)
-
-        assert np.all(np.diag(cov) > 0)
-
-    def test_bhhh_covariance_symmetric(self):
-        """BHHH covariance should be symmetric."""
-        ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
-
-        cov = model.covariance_bhhh(ct)
-
-        npt.assert_allclose(cov, cov.T, atol=1e-10)
-
-    def test_bhhh_standard_errors(self):
-        """BHHH standard errors should be positive and finite."""
-        ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
-
-        se = model.std_errors_bhhh(ct)
-
-        assert isinstance(se, pd.Series)
-        assert len(se) == 2
-        assert np.all(se > 0)
-        assert np.all(np.isfinite(se))
+# Test: Sandwich (robust) covariance
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +114,8 @@ class TestRobustCovariance:
     def test_robust_covariance_shape(self):
         """Robust covariance should be (n_params, n_params)."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -170,8 +124,8 @@ class TestRobustCovariance:
     def test_robust_covariance_positive_diagonal(self):
         """Robust covariance diagonal should be positive (variances)."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -180,8 +134,8 @@ class TestRobustCovariance:
     def test_robust_covariance_symmetric(self):
         """Robust covariance should be approximately symmetric."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         cov = model.covariance_robust(ct)
 
@@ -190,8 +144,8 @@ class TestRobustCovariance:
     def test_robust_standard_errors(self):
         """Robust standard errors should be positive and finite."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         se = model.std_errors_robust(ct)
 
@@ -212,8 +166,8 @@ class TestClusteredCovariance:
     def test_clustered_covariance_shape(self):
         """Cluster-robust covariance should be (n_params, n_params)."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         # Create cluster groups
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
@@ -225,8 +179,8 @@ class TestClusteredCovariance:
     def test_clustered_covariance_positive_diagonal(self):
         """Cluster-robust covariance diagonal should be positive."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
 
@@ -237,8 +191,8 @@ class TestClusteredCovariance:
     def test_clustered_standard_errors(self):
         """Cluster-robust standard errors should be positive and finite."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
 
         groups = np.repeat([0, 1, 2, 3, 4], ct.n_observations // 5)
 
@@ -253,7 +207,7 @@ class TestClusteredCovariance:
         """Cluster-robust SEs should typically be >= default SEs
         (due to within-cluster correlation)."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
+        model = MNL(ct, formula="cost + time - 1")
         result = model.fit()
 
         # With many small clusters, clustered SEs should be similar to default
@@ -274,23 +228,10 @@ class TestClusteredCovariance:
 class TestCovarianceComparison:
     """Tests comparing different covariance estimators."""
 
-    def test_bhhh_vs_default_se_order(self):
-        """BHHH SEs should be in the same order of magnitude as default SEs."""
-        ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
-        result = model.fit()
-
-        se_default = result.std_errors.values
-        se_bhhh = model.std_errors_bhhh(ct).values
-
-        # BHHH SEs should be within 5x of default SEs
-        ratio = se_bhhh / se_default
-        assert np.all(ratio > 0.2) and np.all(ratio < 5.0)
-
     def test_robust_vs_default_se_order(self):
         """Robust SEs should be in the same order of magnitude as default SEs."""
         ct, _, _ = _make_simple_data()
-        model = MultinomialLogit(ct, formula="cost + time - 1")
+        model = MNL(ct, formula="cost + time - 1")
         result = model.fit()
 
         se_default = result.std_errors.values

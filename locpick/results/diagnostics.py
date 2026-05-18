@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 from scipy import stats
 
 if TYPE_CHECKING:

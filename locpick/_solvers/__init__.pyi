@@ -1,13 +1,9 @@
-from . import bhhh as bhhh
 from . import lbfgs as lbfgs
 from . import optax as optax
 from . import optimagic as optimagic
 from . import optimistix as optimistix
 from . import protocol as protocol
 from . import trust_ncg as trust_ncg
-from .bhhh import (
-    BHHHSolver as BHHHSolver,
-)
 from .lbfgs import (
     LBFGSSolver as LBFGSSolver,
 )
