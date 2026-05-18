@@ -1023,7 +1023,8 @@ class MixedMNL(BaseChoiceModel):
             # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
             if solver_result.hessian is not None:
                 try:
-                    std_errors = np.sqrt(np.abs(np.diag(solver_result.hessian)))
+                    std_errors = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                    std_errors[std_errors == 0] = np.nan
                 except Exception:
                     pass
 
@@ -1652,7 +1653,8 @@ class MixedMNL(BaseChoiceModel):
             Robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_robust(data=data)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_robust")
 
     def std_errors_clustered(self, data=None, groups=None) -> pd.Series:
@@ -1671,7 +1673,8 @@ class MixedMNL(BaseChoiceModel):
             Cluster-robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_clustered(data=data, groups=groups)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_clustered")
 
     def probabilities(

@@ -450,7 +450,12 @@ class BaseChoiceModel(ABC):
         """
         try:
             cov = np.linalg.inv(-hess)
-            se = np.sqrt(np.maximum(np.diag(cov), 0))
+            diag_cov = np.diag(cov)
+            # Clamp tiny negative values (numerical noise) to zero,
+            # but treat zero-variance parameters as unidentified (SE=0
+            # is never meaningful) and mark them NaN instead.
+            se = np.sqrt(np.maximum(diag_cov, 0))
+            se[se == 0] = np.nan
             return se
         except np.linalg.LinAlgError:
             return np.full(hess.shape[0], np.nan)

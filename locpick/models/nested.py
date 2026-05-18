@@ -641,7 +641,8 @@ class NestedMNL(BaseChoiceModel):
             # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
             if solver_result.hessian is not None:
                 try:
-                    se_alpha = np.sqrt(np.diag(solver_result.hessian))
+                    se_alpha = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                    se_alpha[se_alpha == 0] = np.nan
                     se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
                     std_errors = np.concatenate([se_alpha[:k], se_lambda])
                 except Exception:
@@ -1160,7 +1161,8 @@ class NestedMNL(BaseChoiceModel):
             Robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_robust(data=data)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_robust")
 
     def std_errors_clustered(self, data=None, groups=None) -> pd.Series:
@@ -1179,7 +1181,8 @@ class NestedMNL(BaseChoiceModel):
             Cluster-robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_clustered(data=data, groups=groups)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_clustered")
 
     def probabilities(self, data=None, beta=None, alpha=None):

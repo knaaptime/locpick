@@ -1690,7 +1690,8 @@ class SCL(BaseChoiceModel, SpatialMixin):
             # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
             if solver_result.hessian is not None:
                 try:
-                    se_all = np.sqrt(np.abs(np.diag(solver_result.hessian)))
+                    se_all = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                    se_all[se_all == 0] = np.nan
                     se_parts = [se_all[:k_fixed]]
 
                     if has_nests:
@@ -2260,7 +2261,8 @@ class SCL(BaseChoiceModel, SpatialMixin):
             Robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_robust(data=data)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_robust")
 
     def std_errors_clustered(self, data=None, groups=None) -> pd.Series:
@@ -2279,7 +2281,8 @@ class SCL(BaseChoiceModel, SpatialMixin):
             Cluster-robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_clustered(data=data, groups=groups)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_clustered")
 
     def probabilities(self, data=None, beta=None, rho=None):

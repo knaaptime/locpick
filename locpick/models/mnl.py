@@ -611,7 +611,8 @@ class MNL(BaseChoiceModel):
             Robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_robust(data=data)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_robust")
 
     def std_errors_clustered(self, data=None, groups=None) -> pd.Series:
@@ -630,7 +631,8 @@ class MNL(BaseChoiceModel):
             Cluster-robust standard errors, indexed by parameter name.
         """
         cov = self.covariance_clustered(data=data, groups=groups)
-        se = np.sqrt(np.abs(np.diag(cov)))
+        se = np.sqrt(np.maximum(np.diag(cov), 0))
+        se[se == 0] = np.nan
         return pd.Series(se, index=self._result.coefficients.index, name="std_error_clustered")
 
     # ------------------------------------------------------------------
@@ -813,7 +815,9 @@ class MNL(BaseChoiceModel):
                                 for j, fj in enumerate(free_idx):
                                     full_hess[fi, fj] = hess[i, j]
                             hess = full_hess
-                    std_errors = np.sqrt(np.maximum(np.diag(hess), 0))
+                    se = np.sqrt(np.maximum(np.diag(hess), 0))
+                    se[se == 0] = np.nan
+                    std_errors = se
                 except Exception:
                     pass
 
