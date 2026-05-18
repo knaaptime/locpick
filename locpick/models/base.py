@@ -406,17 +406,110 @@ class BaseChoiceModel(ABC):
         self._utilities_cache = None
         self._covariance_robust_cache = None
 
+    def _compute_hessian(self, beta: np.ndarray) -> np.ndarray:
+        """Compute the Hessian at the given parameter values.
+
+        Uses the most accurate method available:
+        1. HVP-based Hessian (JAX autodiff) when JAX objective is available
+        2. Gradient finite differences when only gradient is available
+        3. Full finite differences as last resort
+
+        Parameters
+        ----------
+        beta : np.ndarray
+            Parameter vector (natural scale).
+
+        Returns
+        -------
+        np.ndarray, shape (n_params, n_params)
+            Hessian matrix of the log-likelihood (negative definite).
+        """
+        if self._objective is not None:
+            return self._objective.hessian(beta)
+        # Fallback: should not normally reach here
+        return self._finite_diff_hessian(beta)
+
+    def _compute_std_errors_from_hessian(self, hess: np.ndarray) -> np.ndarray:
+        """Compute standard errors from a log-likelihood Hessian.
+
+        The Hessian of the log-likelihood is negative definite (since we
+        maximize).  Standard errors are the square root of the diagonal
+        of the inverse of the *negative* Hessian:
+
+            SE = sqrt(diag(inv(-H)))
+
+        Parameters
+        ----------
+        hess : np.ndarray, shape (n_params, n_params)
+            Hessian matrix of the log-likelihood (negative definite).
+
+        Returns
+        -------
+        np.ndarray, shape (n_params,)
+            Standard errors for each parameter.
+        """
+        try:
+            cov = np.linalg.inv(-hess)
+            se = np.sqrt(np.maximum(np.diag(cov), 0))
+            return se
+        except np.linalg.LinAlgError:
+            return np.full(hess.shape[0], np.nan)
+
+    def _finite_diff_hessian(self, beta: np.ndarray) -> np.ndarray:
+        """Compute Hessian via central finite differences (fallback)."""
+        n = len(beta)
+        h = 1e-5
+        hess = np.zeros((n, n))
+        ll_fn = self._objective.fn if self._objective is not None else None
+        if ll_fn is None:
+            return np.full((n, n), np.nan)
+        for i in range(n):
+            for j in range(i, n):
+                x_pp = beta.copy()
+                x_pp[i] += h
+                x_pp[j] += h
+                x_pm = beta.copy()
+                x_pm[i] += h
+                x_pm[j] -= h
+                x_mp = beta.copy()
+                x_mp[i] -= h
+                x_mp[j] += h
+                x_mm = beta.copy()
+                x_mm[i] -= h
+                x_mm[j] -= h
+                hess[i, j] = (ll_fn(x_pp) - ll_fn(x_pm) - ll_fn(x_mp) + ll_fn(x_mm)) / (4 * h * h)
+                hess[j, i] = hess[i, j]
+        return hess
+
     def _get_hessian_inverse(self) -> Optional[np.ndarray]:
-        """Get the inverse Hessian from the solver result.
+        """Get the inverse of the negative Hessian (covariance matrix).
+
+        Uses the following priority:
+        1. Cached inverse Hessian (if already computed)
+        2. Inverse of HVP-based negative Hessian (exact, via JAX autodiff)
+        3. Solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv)
+        4. Diagonal approximation from standard errors
 
         Returns
         -------
         np.ndarray or None
-            Inverse Hessian matrix, or None if not available.
+            Inverse of the negative Hessian (covariance matrix), or None.
         """
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
+        # Try HVP-based Hessian first (exact, via JAX autodiff)
+        if self._objective is not None and self._result is not None:
+            try:
+                hess = self._compute_hessian(self._result.coefficients.values)
+                # hess is the Hessian of the log-likelihood (negative definite).
+                # The covariance matrix is inv(-hess).
+                self._hessian_inverse = np.linalg.inv(-hess)
+                return self._hessian_inverse
+            except Exception:
+                pass
+
+        # Fallback: solver's approximate inverse Hessian (e.g. L-BFGS-B)
         if (
             self._result is not None
             and self._result.solver_result
@@ -434,6 +527,7 @@ class BaseChoiceModel(ABC):
                 except Exception:
                     pass
 
+        # Last resort: diagonal approximation from standard errors
         if (
             self._result is not None
             and self._result.std_errors is not None

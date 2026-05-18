@@ -619,31 +619,33 @@ class NestedMNL(BaseChoiceModel):
         # Store naturalized values: beta + lambda (not alpha)
         display_params = np.concatenate([beta, lambdas])
 
-        # Standard errors from inverse Hessian
+        # Standard errors from Hessian with delta method for transformed parameters.
+        # Prefer HVP-based Hessian (exact, via JAX autodiff) over the
+        # solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv).
+        # Note: _compute_hessian returns the Hessian of the log-likelihood
+        # (negative definite), so we use _compute_std_errors_from_hessian
+        # which negates and inverts it.
         # The Hessian is in the alpha (unconstrained) space, so we need
         # to transform the nest-parameter standard errors via the delta method:
         #   SE(lambda) = |d(lambda)/d(alpha)| * SE(alpha)
         #   d(lambda)/d(alpha) = lambda * (1 - lambda) for logistic transform
-        if solver_result.hessian is not None:
-            try:
-                se_alpha = np.sqrt(np.diag(solver_result.hessian))
-                # Delta method: transform SE for nest parameters
-                se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
-                std_errors = np.concatenate([se_alpha[:k], se_lambda])
-            except Exception:
-                std_errors = np.full(len(display_params), np.nan)
-        else:
-            # Compute Hessian lazily via objective if available
-            if hasattr(self, "_objective") and self._objective is not None:
+        std_errors = np.full(len(display_params), np.nan)
+        try:
+            hess = self._compute_hessian(all_params)
+            se_alpha = self._compute_std_errors_from_hessian(hess)
+            se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
+            std_errors = np.concatenate([se_alpha[:k], se_lambda])
+        except Exception:
+            # Fallback: try solver's Hessian (approximate, e.g. L-BFGS-B hess_inv)
+            # Note: solver_result.hessian is the *inverse* of the negative Hessian
+            # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
+            if solver_result.hessian is not None:
                 try:
-                    hess = self._objective.hessian(all_params)
-                    se_alpha = np.sqrt(np.diag(hess))
+                    se_alpha = np.sqrt(np.diag(solver_result.hessian))
                     se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
                     std_errors = np.concatenate([se_alpha[:k], se_lambda])
                 except Exception:
-                    std_errors = np.full(len(display_params), np.nan)
-            else:
-                std_errors = np.full(len(display_params), np.nan)
+                    pass
 
         # Build result using shared helper
         coefficients = pd.Series(display_params, index=param_names, name="coefficient")

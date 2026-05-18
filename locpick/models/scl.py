@@ -1652,43 +1652,45 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
         display_params = np.concatenate(display_values)
 
-        # Standard errors with delta method for transformed parameters
-        if solver_result.hessian is not None:
-            try:
-                se_all = np.sqrt(np.abs(np.diag(solver_result.hessian)))
-                se_parts = [se_all[:k_fixed]]
+        # Standard errors with delta method for transformed parameters.
+        # Prefer HVP-based Hessian (exact, via JAX autodiff) over the
+        # solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv).
+        # Note: _compute_hessian returns the Hessian of the log-likelihood
+        # (negative definite), so we negate and invert for standard errors.
+        std_errors = np.full(len(display_params), np.nan)
+        try:
+            hess = self._compute_hessian(all_params)
+            se_all = self._compute_std_errors_from_hessian(hess)
+            se_parts = [se_all[:k_fixed]]
 
-                if has_nests:
-                    # Delta method for rho_m: SE(rho_m) = rho_m * (1 - rho_m) * SE(alpha_rho_m)
-                    se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
-                    # Delta method for lambda_m: SE(lambda_m) = lambda_m * (1 - lambda_m) * SE(alpha_lambda_m)
-                    se_lambda = (
-                        lambdas
-                        * (1.0 - lambdas)
-                        * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
-                    )
-                    se_parts.append(se_rho)
-                    se_parts.append(se_lambda)
-                else:
-                    # Delta method for rho: SE(rho) = rho * (1 - rho) * SE(alpha_rho)
-                    se_rho = rho * (1.0 - rho) * se_all[rho_offset]
-                    se_parts.append([se_rho])
+            if has_nests:
+                # Delta method for rho_m: SE(rho_m) = rho_m * (1 - rho_m) * SE(alpha_rho_m)
+                se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
+                # Delta method for lambda_m: SE(lambda_m) = lambda_m * (1 - lambda_m) * SE(alpha_lambda_m)
+                se_lambda = (
+                    lambdas
+                    * (1.0 - lambdas)
+                    * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                )
+                se_parts.append(se_rho)
+                se_parts.append(se_lambda)
+            else:
+                # Delta method for rho: SE(rho) = rho * (1 - rho) * SE(alpha_rho)
+                se_rho = rho * (1.0 - rho) * se_all[rho_offset]
+                se_parts.append([se_rho])
 
-                if has_random:
-                    se_parts.append(se_all[random_offset : random_offset + k_random])
-                    se_parts.append(
-                        se_all[random_offset + k_random : random_offset + 2 * k_random]
-                    )
+            if has_random:
+                se_parts.append(se_all[random_offset : random_offset + k_random])
+                se_parts.append(se_all[random_offset + k_random : random_offset + 2 * k_random])
 
-                std_errors = np.concatenate(se_parts)
-            except Exception:
-                std_errors = np.full(len(display_params), np.nan)
-        else:
-            # Compute Hessian lazily via objective if available
-            if hasattr(self, "_objective") and self._objective is not None:
+            std_errors = np.concatenate(se_parts)
+        except Exception:
+            # Fallback: try solver's Hessian (approximate, e.g. L-BFGS-B hess_inv)
+            # Note: solver_result.hessian is the *inverse* of the negative Hessian
+            # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
+            if solver_result.hessian is not None:
                 try:
-                    hess = self._objective.hessian(all_params)
-                    se_all = np.sqrt(np.abs(np.diag(hess)))
+                    se_all = np.sqrt(np.abs(np.diag(solver_result.hessian)))
                     se_parts = [se_all[:k_fixed]]
 
                     if has_nests:
@@ -1712,9 +1714,7 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
                     std_errors = np.concatenate(se_parts)
                 except Exception:
-                    std_errors = np.full(len(display_params), np.nan)
-            else:
-                std_errors = np.full(len(display_params), np.nan)
+                    pass
 
         # Determine model type name
         if has_nests and has_random:

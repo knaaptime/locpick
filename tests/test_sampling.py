@@ -499,7 +499,6 @@ class TestSamplingCorrectionRecovery:
 """Tests for locpick._sampling.correction module."""
 
 
-
 from locpick._sampling.correction import apply_sampling_correction, get_sampling_correction
 from locpick.data.arrays import ChoiceArrays
 
@@ -608,7 +607,6 @@ class TestApplySamplingCorrection:
 
 
 """Tests for locpick._sampling.inclusion module."""
-
 
 
 from locpick._sampling.inclusion import compute_inclusion_probs, validate_inclusion_probs

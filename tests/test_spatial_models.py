@@ -690,7 +690,6 @@ These tests verify:
 """
 
 
-
 from locpick._compat import _JAX_AVAILABLE
 
 if _JAX_AVAILABLE:

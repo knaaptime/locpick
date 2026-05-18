@@ -1008,22 +1008,24 @@ class MixedMNL(BaseChoiceModel):
         random_spread_names = [f"sd_{n}" for n in random_param_names]
         full_param_names = fixed_names + random_mean_names + random_spread_names
 
-        # Standard errors
-        if solver_result.hessian is not None:
-            try:
-                std_errors = np.sqrt(np.abs(np.diag(solver_result.hessian)))
-            except Exception:
-                std_errors = np.full(len(all_params), np.nan)
-        else:
-            # Compute Hessian lazily via objective if available
-            if hasattr(self, "_objective") and self._objective is not None:
+        # Standard errors — prefer HVP-based Hessian (exact, via JAX autodiff)
+        # over the solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv).
+        # Note: _compute_hessian returns the Hessian of the log-likelihood
+        # (negative definite), so we use _compute_std_errors_from_hessian
+        # which negates and inverts it.
+        std_errors = np.full(len(all_params), np.nan)
+        try:
+            hess = self._compute_hessian(all_params)
+            std_errors = self._compute_std_errors_from_hessian(hess)
+        except Exception:
+            # Fallback: try solver's Hessian (approximate, e.g. L-BFGS-B hess_inv)
+            # Note: solver_result.hessian is the *inverse* of the negative Hessian
+            # (positive definite), so sqrt(diag(hess)) gives standard errors directly.
+            if solver_result.hessian is not None:
                 try:
-                    hess = self._objective.hessian(all_params)
-                    std_errors = np.sqrt(np.abs(np.diag(hess)))
+                    std_errors = np.sqrt(np.abs(np.diag(solver_result.hessian)))
                 except Exception:
-                    std_errors = np.full(len(all_params), np.nan)
-            else:
-                std_errors = np.full(len(all_params), np.nan)
+                    pass
 
         # T-values and p-values
         with np.errstate(divide="ignore", invalid="ignore"):
