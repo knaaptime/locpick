@@ -16,17 +16,17 @@ The `ChoiceTable` class is the primary data container for location choice modeli
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MultinomialLogit
+from locpick import ChoiceTable, MNL
 
 # Create a ChoiceTable from chooser and alternative data
 ct = ChoiceTable.from_tables(
     choosers=choosers_df,
     alternatives=alternatives_df,
-    choice_column="choice",
+    chosen_alternatives=choices_series,
 )
 
 # Estimate an MNL model
-model = MultinomialLogit(ct, formula="choice ~ cost + time - 1")
+model = MNL(ct, formula="cost + time - 1")
 result = model.fit()
 print(result.summary())
 ```
@@ -39,7 +39,7 @@ When the full choice set is large, you can sample a subset of alternatives:
 ct_sampled = ChoiceTable.from_tables(
     choosers=choosers_df,
     alternatives=alternatives_df,
-    choice_column="choice",
+    chosen_alternatives=choices_series,
     sample_size=25,
     seed=42,
 )

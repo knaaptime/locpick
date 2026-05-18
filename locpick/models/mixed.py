@@ -56,10 +56,8 @@ from locpick._jax.objective import Objective
 from locpick._kernels.constants import NEG_INF
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
+from locpick.models.base import BaseChoiceModel
 from locpick.results.fit_result import FitResult
-from locpick.spec import ModelSpec
 
 # ---------------------------------------------------------------------------
 # Distribution specifications

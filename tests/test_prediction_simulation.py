@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 import pandas as pd
 
-from locpick import ChoiceTable, MNL, NestedMNL, NestSpec
+from locpick import MNL, ChoiceTable, NestedMNL, NestSpec
 from locpick.models.nested import NestingTree
 
 # ---------------------------------------------------------------------------

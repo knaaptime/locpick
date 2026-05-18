@@ -1,9 +1,12 @@
+# ruff: noqa: E402
 """MNL tests: correctness, recovery, pipeline, and edge cases."""
 
-from locpick import MNL, dgp
 import importlib.util
+
 import numpy.testing as npt
 import pytest
+
+from locpick import MNL, dgp
 
 """
 These are tests for the refactored locpick MNL codebase.
@@ -12,9 +15,8 @@ These are tests for the refactored locpick MNL codebase.
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from locpick import ChoiceTable, MNL
+from locpick import ChoiceTable
 
 
 @pytest.fixture
@@ -69,6 +71,7 @@ def test_mnl_prediction(obs, alts):
     probs = m.probabilities(ct)
     prob_sums = probs.sum(axis=1)
     assert np.allclose(prob_sums, 1.0, atol=1e-8)
+
 
 FORMULA = "alt_feature + obs_x_alt - 1"
 
@@ -125,6 +128,7 @@ def test_mnl_backend_coefficient_consistency(monkeypatch):
             atol=1e-6,
         )
 
+
 """MNL correctness tests for Phase 2: availability, sampling correction,
 weights, and probability kernel consistency.
 
@@ -136,13 +140,9 @@ These tests verify that the MNL kernel correctly handles:
 5. Null log-likelihood with varying availability
 """
 
-import importlib.util
 
-import numpy as np
-import pandas as pd
 import pytest
 
-from locpick import ChoiceTable, MNL
 from locpick.data import ChoiceArrays
 
 # ---------------------------------------------------------------------------
@@ -671,6 +671,7 @@ class TestGradientCorrectness:
 
         assert np.allclose(analytical_grad, numerical_grad, atol=1e-4, rtol=1e-4)
 
+
 """Extended MNL correctness tests for LocPick.
 
 These tests cover:
@@ -685,15 +686,10 @@ These tests cover:
 8. Comprehensive DGP parameter recovery
 """
 
-import importlib.util
 
-import numpy as np
-import numpy.testing as npt
-import pandas as pd
 import pytest
 
-from locpick import ChoiceTable, EstimationProblem, ModelSpec, MNL
-from locpick.data import ChoiceArrays
+from locpick import EstimationProblem, ModelSpec
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1614,9 +1610,7 @@ class TestEstimationProblemIntegration:
         dataset = simulate_mnl(n_obs=2000, n_alts=5, seed=901)
 
         # Formula path
-        model_formula = MNL(
-            dataset.choice_table, formula="alt_feature + obs_x_alt - 1"
-        )
+        model_formula = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result_formula = model_formula.fit()
 
         # Problem path
@@ -1688,19 +1682,15 @@ class TestEstimationProblemIntegration:
         # alt_feature should be within bounds
         assert -1.0 <= result.coefficients.iloc[0] <= 0.0
 
+
 """Tests for the v2 MultinomialLogit pipeline (data, spec, estimation, results).
 
 Covers: ChoiceTable, ModelSpec, MultinomialLogit, FitResult, reporting, sampling.
 """
 
-import numpy as np
-import pandas as pd
 
 from locpick import (
-    ChoiceTable,
     FitResult,
-    ModelSpec,
-    MNL,
     format_coefficient_table,
     format_fit_statistics,
     sample_alternatives,
@@ -1901,4 +1891,3 @@ def test_modelspec_grouped_scope_masks_by_alt_groups():
     expected_late = frame["time"].where(frame["alt_id"].isin([12, 13]), 0.0).to_numpy()
     assert np.allclose(arrays.design_matrix[:, 0], expected_early)
     assert np.allclose(arrays.design_matrix[:, 1], expected_late)
-

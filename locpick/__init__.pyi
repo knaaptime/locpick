@@ -90,6 +90,12 @@ from .dgp import (
     simulate_scl as simulate_scl,
 )
 from .models import (
+    MNL as MNL,
+)
+from .models import (
+    SCL as SCL,
+)
+from .models import (
     ChoiceModel as ChoiceModel,
 )
 from .models import (
@@ -100,9 +106,6 @@ from .models import (
 )
 from .models import (
     MixedSCL as MixedSCL,
-)
-from .models import (
-    MNL as MNL,
 )
 from .models import (
     NestedMNL as NestedMNL,
@@ -118,9 +121,6 @@ from .models import (
 )
 from .models import (
     ParamDistribution as ParamDistribution,
-)
-from .models import (
-    SCL as SCL,
 )
 from .models import (
     naturalize_nest_params as naturalize_nest_params,

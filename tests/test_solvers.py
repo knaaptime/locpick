@@ -1,5 +1,5 @@
+# ruff: noqa: E402, F811
 """Solver tests: protocol, trust-ncg, optimagic."""
-
 
 """Tests for the unified Objective-first solver interface."""
 
@@ -76,14 +76,14 @@ def test_optax_solver_emits_diagnostics_in_raw_payload():
     assert "optax" in result.solver_name.lower()
     assert result.n_iterations > 0
 
+
 """Tests for the trust-region Newton-CG solvers."""
 
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from locpick import ChoiceTable, MNL
+from locpick import MNL, ChoiceTable
 from locpick._solvers.lbfgs import LBFGSSolver
 from locpick._solvers.protocol import get_solver, list_solvers
 from locpick._solvers.trust_ncg import TrustKrylovSolver, TrustNCGSolver
@@ -206,19 +206,16 @@ def test_trust_ncg_rejects_bounds():
             bounds=[(-1.0, 1.0)] * 3,
         )
 
+
 """Tests for the OptimagicSolver wrapper around ``optimagic.minimize``."""
 
 
-import numpy as np
-import pandas as pd
 import pytest
 
 pytest.importorskip("optimagic")
 
-from locpick import ChoiceTable, MNL
 from locpick._solvers.lbfgs import LBFGSSolver
 from locpick._solvers.optimagic import OptimagicSolver
-from locpick._solvers.protocol import get_solver, list_solvers
 
 
 @pytest.fixture(scope="module")
@@ -285,4 +282,3 @@ def test_optimagic_unknown_algorithm_raises(mnl_table):
     model = MNL(mnl_table, formula="rent + jobs", solver=solver)
     with pytest.raises(Exception):
         model.fit()
-

@@ -5,7 +5,7 @@ import numpy.testing as npt
 import pandas as pd
 import pytest
 
-from locpick import ChoiceTable, MNL
+from locpick import MNL, ChoiceTable
 
 # ---------------------------------------------------------------------------
 # Helpers

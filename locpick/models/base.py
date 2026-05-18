@@ -439,7 +439,7 @@ class BaseChoiceModel(ABC):
             and self._result.std_errors is not None
             and not self._result.std_errors.isna().all()
         ):
-            variances = self._result.std_errors.values ** 2
+            variances = self._result.std_errors.values**2
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
 
@@ -488,8 +488,8 @@ class SpatialMixin:
         n_alts : int
             Number of alternatives (dimension of the graph).
         """
-        from locpick.models.scl import EdgeStructure, _resolve_spatial_graph
         from locpick._compat import _NUMBA_AVAILABLE
+        from locpick.models.scl import EdgeStructure, _resolve_spatial_graph
 
         omega, allocation, edge_list, n_alts = _resolve_spatial_graph(self._graph_input)
         self._omega = omega

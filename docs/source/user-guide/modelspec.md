@@ -14,18 +14,18 @@ locpick uses formula/scoped-term specification for model structure:
 ## Formula Strings
 
 ```python
-from locpick import ChoiceTable, MultinomialLogit
+from locpick import ChoiceTable, MNL
 
-model = MultinomialLogit(ct, formula="choice ~ cost + time - 1")
+model = MNL(ct, formula="cost + time - 1")
 ```
 
 ## Scoped Terms
 
 ```python
-from locpick import ModelSpec, MultinomialLogit
+from locpick import ModelSpec, MNL
 
-spec = ModelSpec().generic("cost").alternative_specific("time", reference="walk")
-model = MultinomialLogit(ct, spec=spec)
+spec = ModelSpec(formula="cost + time - 1").alternative_specific("time", reference="walk")
+model = MNL(ct, spec=spec)
 ```
 
 ## Generated Interactions

@@ -1,5 +1,5 @@
+# ruff: noqa: E402
 """Nested and Mixed logit tests."""
-
 
 """Tests for the nested logit model.
 
@@ -612,18 +612,14 @@ class TestNestedLogitModel:
 
         assert np.isfinite(result.log_likelihood)
 
+
 """Tests for the mixed logit model.
 
 Covers: ParamDistribution, draw generation, probability computation,
 log-likelihood, parameter recovery, and MixedLogit model class.
 """
 
-import numpy as np
-import numpy.testing as npt
-import pandas as pd
-import pytest
 
-from locpick import ChoiceTable
 from locpick.models.mixed import (
     MixedMNL,
     ParamDistribution,
@@ -1152,4 +1148,3 @@ class TestMixedLogitModel:
         assert np.isfinite(result.log_likelihood)
         assert "mean_time" in result.coefficients.index
         assert "sd_time" in result.coefficients.index
-

@@ -25,11 +25,13 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 import numpy as np
+from scipy.special import logsumexp
 
 from locpick._compat import _NUMBA_AVAILABLE, _NUMBA_PARALLEL
+from locpick._kernels.constants import NEG_INF
 from locpick._solvers import Solver
 from locpick.models.mixed import ParamDistribution
-from locpick.models.scl import SCL
+from locpick.models.scl import SCL, EdgeStructure, naturalize_rho
 
 # ---------------------------------------------------------------------------
 # MSCL probability kernel (Numba-JIT)
@@ -660,4 +662,3 @@ class MixedSCL(SCL):
             solver_options=solver_options,
             backend=backend,
         )
-

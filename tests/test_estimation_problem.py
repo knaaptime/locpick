@@ -9,11 +9,11 @@ import pandas as pd
 import pytest
 
 from locpick import (
+    MNL,
     ChoiceTable,
     EstimationProblem,
     FitResult,
     ModelSpec,
-    MNL,
 )
 
 # ------------------------------------------------------------------

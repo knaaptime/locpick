@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `MixedSpatiallyCorrelatedLogit` class estimates the MSCL model proposed by Bhat & Guo (2004), which combines a GEV-based Spatially Correlated Logit (SCL) structure with random taste variation (mixed logit). The SCL component captures spatial correlation in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
+The `MixedSCL` class estimates the MSCL model proposed by Bhat & Guo (2004), which combines a GEV-based Spatially Correlated Logit (SCL) structure with random taste variation (mixed logit). The SCL component captures spatial correlation in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
 
 ```{warning}
 The MSCL model does **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
@@ -31,7 +31,7 @@ The SCL structure handles spatial correlation in closed form, so the simulation 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MixedSpatiallyCorrelatedLogit
+from locpick import ChoiceTable, MixedSCL
 from locpick.models.mixed import ParamDistribution
 from libpysal import graph
 
@@ -44,7 +44,7 @@ random_params = {
 }
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
-model = MixedSpatiallyCorrelatedLogit(
+model = MixedSCL(
     ct,
     formula="commute_time + density + shopping_access",
     graph=g,
@@ -81,7 +81,7 @@ Supported distributions:
 
 ```python
 # Halton draws (default, quasi-random — more efficient)
-model = MixedSpatiallyCorrelatedLogit(
+model = MixedSCL(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=250,
@@ -89,7 +89,7 @@ model = MixedSpatiallyCorrelatedLogit(
 )
 
 # Pseudo-random draws
-model = MixedSpatiallyCorrelatedLogit(
+model = MixedSCL(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=500,
@@ -104,14 +104,14 @@ Halton draws provide better coverage of the mixing distribution with fewer draws
 When `random_params` is empty, the MSCL model reduces to the SCL model:
 
 ```python
-model = MixedSpatiallyCorrelatedLogit(
+model = MixedSCL(
     ct, formula="cost + time", graph=g,
     random_params={},
     n_draws=50,
 )
 ```
 
-For pure SCL estimation, prefer the `SpatiallyCorrelatedLogit` class directly — it avoids the overhead of the simulation loop.
+For pure SCL estimation, prefer the `SCL` class directly — it avoids the overhead of the simulation loop.
 
 ## References
 

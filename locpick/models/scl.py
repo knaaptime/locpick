@@ -31,8 +31,12 @@ from locpick._kernels.constants import NEG_INF
 from locpick._sampling.correction import get_sampling_correction
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel, SpatialMixin, _compute_fit_statistics, _compute_null_ll
+from locpick.models.base import (
+    BaseChoiceModel,
+    SpatialMixin,
+    _compute_fit_statistics,
+    _compute_null_ll,
+)
 from locpick.models.mixed import ParamDistribution, _resolve_draws
 from locpick.models.nested import NestingTree, naturalize_nest_params
 from locpick.results.fit_result import FitResult
@@ -1351,7 +1355,9 @@ class SCL(BaseChoiceModel, SpatialMixin):
             random_param_names = list(self._random_params.keys())
             k_random = len(random_param_names)
             k_fixed = k_total - k_random
-            fixed_param_names = [name for name in param_names_all if name not in random_param_names]
+            fixed_param_names = [
+                name for name in param_names_all if name not in random_param_names
+            ]
         else:
             k_random = 0
             k_fixed = k_total
@@ -1582,7 +1588,9 @@ class SCL(BaseChoiceModel, SpatialMixin):
             random_param_names = list(self._random_params.keys())
             k_random = len(random_param_names)
             k_fixed = k_total - k_random
-            fixed_param_names = [name for name in param_names_all if name not in random_param_names]
+            fixed_param_names = [
+                name for name in param_names_all if name not in random_param_names
+            ]
         else:
             random_param_names = []
             k_random = 0
@@ -1654,7 +1662,11 @@ class SCL(BaseChoiceModel, SpatialMixin):
                     # Delta method for rho_m: SE(rho_m) = rho_m * (1 - rho_m) * SE(alpha_rho_m)
                     se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
                     # Delta method for lambda_m: SE(lambda_m) = lambda_m * (1 - lambda_m) * SE(alpha_lambda_m)
-                    se_lambda = lambdas * (1.0 - lambdas) * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                    se_lambda = (
+                        lambdas
+                        * (1.0 - lambdas)
+                        * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                    )
                     se_parts.append(se_rho)
                     se_parts.append(se_lambda)
                 else:
@@ -1664,7 +1676,9 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
                 if has_random:
                     se_parts.append(se_all[random_offset : random_offset + k_random])
-                    se_parts.append(se_all[random_offset + k_random : random_offset + 2 * k_random])
+                    se_parts.append(
+                        se_all[random_offset + k_random : random_offset + 2 * k_random]
+                    )
 
                 std_errors = np.concatenate(se_parts)
             except Exception:
@@ -1679,7 +1693,11 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
                     if has_nests:
                         se_rho = rhos * (1.0 - rhos) * se_all[rho_offset : rho_offset + n_nests]
-                        se_lambda = lambdas * (1.0 - lambdas) * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                        se_lambda = (
+                            lambdas
+                            * (1.0 - lambdas)
+                            * se_all[rho_offset + n_nests : rho_offset + 2 * n_nests]
+                        )
                         se_parts.append(se_rho)
                         se_parts.append(se_lambda)
                     else:
@@ -1688,7 +1706,9 @@ class SCL(BaseChoiceModel, SpatialMixin):
 
                     if has_random:
                         se_parts.append(se_all[random_offset : random_offset + k_random])
-                        se_parts.append(se_all[random_offset + k_random : random_offset + 2 * k_random])
+                        se_parts.append(
+                            se_all[random_offset + k_random : random_offset + 2 * k_random]
+                        )
 
                     std_errors = np.concatenate(se_parts)
                 except Exception:

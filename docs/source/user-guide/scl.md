@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `SpatiallyCorrelatedLogit` class estimates the SCL model proposed by Bhat & Guo (2004), which captures spatial correlation between contiguous alternatives using a paired Generalised Nested Logit (PGNL) structure with a single dissimilarity parameter $\rho$.
+The `SCL` class estimates the SCL model proposed by Bhat & Guo (2004), which captures spatial correlation between contiguous alternatives using a paired Generalised Nested Logit (PGNL) structure with a single dissimilarity parameter $\rho$.
 
 When $\rho = 1$, the model reduces to the Multinomial Logit (MNL). Values of $\rho < 1$ indicate positive spatial correlation between adjacent alternatives — decision-makers view nearby zones as closer substitutes than distant ones.
 
@@ -47,7 +47,7 @@ All inputs are binarised (any non-zero entry becomes 1) and the diagonal is zero
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, SpatiallyCorrelatedLogit
+from locpick import ChoiceTable, SCL
 from libpysal import graph
 
 # Build spatial adjacency from zone geometries
@@ -55,7 +55,7 @@ g = graph.Graph.build_contiguity(tracts_gdf, rook=False)
 
 # Estimate SCL model
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
-model = SpatiallyCorrelatedLogit(ct, formula="cost + time", graph=g)
+model = SCL(ct, formula="cost + time", graph=g)
 result = model.fit()
 print(result.summary())
 ```
@@ -68,7 +68,7 @@ import scipy.sparse as sp
 # Build adjacency manually
 adj = sp.csr_array(my_adjacency_matrix)
 
-model = SpatiallyCorrelatedLogit(ct, formula="cost + time", graph=adj)
+model = SCL(ct, formula="cost + time", graph=adj)
 result = model.fit()
 ```
 

@@ -212,6 +212,3 @@ class TestEstimationProblemMetadata:
         assert problem.param_bounds == [(-10, 0), (-1e6, 1e6)]
         assert problem.param_fixed == [True, False]
         assert problem.param_initial == [-0.5, 0.0]
-
-
-

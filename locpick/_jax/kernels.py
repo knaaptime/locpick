@@ -109,7 +109,7 @@ def mnl_probs(
 def scl_log_probs(
     V: jnp.ndarray,
     rho: jnp.ndarray,
-    edge_data: "EdgeDataJAX",
+    edge_data: "EdgeDataJAX",  # noqa: F821
     available: jnp.ndarray,
 ) -> jnp.ndarray:
     """Compute SCL log-probabilities from systematic utilities.
@@ -227,7 +227,7 @@ def scl_log_probs(
 def scl_log_probs_and_inclusive_value(
     V: jnp.ndarray,
     rho: jnp.ndarray,
-    edge_data: "EdgeDataJAX",
+    edge_data: "EdgeDataJAX",  # noqa: F821
     available: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Compute SCL log-probabilities and the inclusive value ln G_SCL.

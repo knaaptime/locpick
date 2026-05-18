@@ -1,5 +1,5 @@
+# ruff: noqa: E402
 """Spatial model tests: SCL, MSCL, NestedSCL, MNSCL."""
-
 
 """Tests for the Spatially Correlated Logit (SCL) model.
 
@@ -480,18 +480,14 @@ class TestSpatiallyCorrelatedLogitClass:
         assert result is not None
         assert "rho" in result.coefficients.index
 
+
 """Tests for the Mixed Spatially Correlated Logit (MSCL) model.
 
 Covers: MSCL estimation, ρ=1 with no random params reduces to MNL,
 parameter recovery, and integration with SCL components.
 """
 
-import numpy as np
-import pandas as pd
-import pytest
-from scipy.special import logsumexp
 
-from locpick import ChoiceTable
 from locpick.models.mixed import ParamDistribution
 from locpick.models.mscl import MixedSCL
 
@@ -683,6 +679,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         result_random = model_random.fit()
         assert result_random is not None
 
+
 """Tests for the Nested Spatially Correlated Logit (Nested SCL) model.
 
 These tests verify:
@@ -693,9 +690,6 @@ These tests verify:
 """
 
 
-import numpy as np
-import numpy.testing as npt
-import pytest
 
 from locpick._compat import _JAX_AVAILABLE
 
@@ -1130,6 +1124,7 @@ def test_nested_scl_invalid_inputs():
             graph=dataset.adjacency,
         )
 
+
 """Tests for the Mixed Nested Spatially Correlated Logit (MNSCL) model.
 
 These tests verify:
@@ -1140,8 +1135,6 @@ These tests verify:
 """
 
 
-import numpy as np
-import numpy.testing as npt
 import pytest
 
 from locpick._compat import _JAX_AVAILABLE
@@ -1157,7 +1150,6 @@ if _JAX_AVAILABLE:
     from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
 
 from locpick.dgp import simulate_mnscl
-from locpick.models.mixed import ParamDistribution
 from locpick.models.mnscl import MixedNestedSCL
 
 # ---------------------------------------------------------------------------
@@ -1616,4 +1608,3 @@ def test_mnscl_invalid_inputs():
             graph=dataset.adjacency,
             random_params={"time": ParamDistribution("normal", "time")},
         )
-

@@ -15,7 +15,7 @@ except ImportError:
     _JAX_AVAILABLE = False
 
 try:
-    import numba
+    import numba  # noqa: F401
 
     _NUMBA_AVAILABLE = True
 except ImportError:

@@ -18,6 +18,11 @@ Model Specification <user-guide/modelspec>
 MNL Estimation <user-guide/mnl>
 Nested Logit <user-guide/nested>
 Mixed Logit <user-guide/mixed>
+SCL <user-guide/scl>
+MSCL <user-guide/mscl>
+NestedSCL <user-guide/nscl>
+MixedNestedSCL <user-guide/mnscl>
+Spatial Models Demo <user-guide/spatial_models_demo>
 Sampling Correction <user-guide/sampling>
 Prediction & Simulation <user-guide/prediction>
 Inference <user-guide/inference>

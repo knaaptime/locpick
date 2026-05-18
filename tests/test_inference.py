@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 import pandas as pd
 
-from locpick import ChoiceTable, MNL
+from locpick import MNL, ChoiceTable
 
 # ---------------------------------------------------------------------------
 # Fixtures

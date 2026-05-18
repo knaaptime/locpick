@@ -129,6 +129,8 @@ def test_choice_data_jax_dense_disables_auto_sparse():
     # With only ~1% nonzeros, auto-sparse may still trigger; this test
     # verifies the API works end-to-end regardless of the auto-sparse decision.
     assert data is not None
+
+
 def test_distance_matrix():
     import numpy as np
     import pandas as pd

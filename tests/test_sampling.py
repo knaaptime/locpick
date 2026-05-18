@@ -1,5 +1,5 @@
+# ruff: noqa: E402, F811
 """Sampling tests: correction, inclusion, and module-level."""
-
 
 """Tests for sampling correction and inclusion probabilities.
 
@@ -13,7 +13,7 @@ import numpy.testing as npt
 import pandas as pd
 import pytest
 
-from locpick import ChoiceTable, EstimationProblem, MNL
+from locpick import MNL, ChoiceTable, EstimationProblem
 from locpick.data import ChoiceArrays
 
 # ---------------------------------------------------------------------------
@@ -495,11 +495,10 @@ class TestSamplingCorrectionRecovery:
         # Note: with sampled choice sets, some estimation error is expected
         assert abs(result.coefficients["altval"] - beta_alt) / abs(beta_alt) < 0.30
 
+
 """Tests for locpick._sampling.correction module."""
 
 
-import numpy as np
-import numpy.testing as npt
 
 from locpick._sampling.correction import apply_sampling_correction, get_sampling_correction
 from locpick.data.arrays import ChoiceArrays
@@ -607,12 +606,10 @@ class TestApplySamplingCorrection:
         result = apply_sampling_correction(V, arrays)
         assert result.shape == V.shape
 
+
 """Tests for locpick._sampling.inclusion module."""
 
 
-import numpy as np
-import numpy.testing as npt
-import pytest
 
 from locpick._sampling.inclusion import compute_inclusion_probs, validate_inclusion_probs
 
@@ -721,4 +718,3 @@ class TestValidateInclusionProbs:
         probs[0, 0] = 1.1
         with pytest.raises(ValueError, match="inclusion_probs must be in"):
             validate_inclusion_probs(probs, n_obs=10, n_alts=5)
-

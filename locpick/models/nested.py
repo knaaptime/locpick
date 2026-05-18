@@ -42,7 +42,6 @@ import pandas as pd
 from locpick._jax.objective import Objective
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
 from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
 from locpick.results.fit_result import FitResult
 
@@ -525,7 +524,6 @@ class NestedMNL(BaseChoiceModel):
         Extends the base class to include nest parameters.
         """
         k = arrays.design_matrix.shape[1]
-        n_nests = self._nests.n_nests
         x0 = np.concatenate([np.zeros(k), self._nests.initial_alphas()])
         param_names = list(arrays.param_names) + [
             f"nest_{name}" for name in self._nests.nest_names
@@ -605,7 +603,6 @@ class NestedMNL(BaseChoiceModel):
     ) -> FitResult:
         """Build a FitResult from solver output."""
         k = arrays.design_matrix.shape[1]
-        n_nests = self._nests.n_nests
 
         # Build a FitResult from solver output.
         # Store naturalized lambda values (not raw alpha) in coefficients.

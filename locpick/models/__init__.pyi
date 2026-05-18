@@ -49,10 +49,10 @@ from .nested_scl import (
     NestedSCL as NestedSCL,
 )
 from .scl import (
-    EdgeStructure as EdgeStructure,
+    SCL as SCL,
 )
 from .scl import (
-    SCL as SCL,
+    EdgeStructure as EdgeStructure,
 )
 from .scl import (
     naturalize_rho as naturalize_rho,

@@ -215,7 +215,7 @@ class OptimistixSolver:
         try:
             import jax
             import jax.numpy as jnp
-            import optimistix as optx
+            import optimistix as optx  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "OptimistixSolver requires jax and optimistix. "

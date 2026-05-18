@@ -129,7 +129,6 @@ class EstimationProblem:
         -------
         EstimationProblem
         """
-        from locpick.config import config
         from locpick.spec import ModelSpec
 
         # Resolve spec

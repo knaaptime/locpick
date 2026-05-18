@@ -105,6 +105,3 @@ def interaction(
         op=op,
         missing_policy=missing_policy,
     )
-
-
-

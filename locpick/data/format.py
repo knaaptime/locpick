@@ -226,7 +226,7 @@ def _format_side_by_side_text(results: list, labels: list[str]) -> str:
 
     len(results)
     col_width = 12
-    header = f"{'Parameter':<20}" + "".join(f" {l:>{col_width}}" for l in labels)
+    header = f"{'Parameter':<20}" + "".join(f" {label:>{col_width}}" for label in labels)
     lines = [header, "-" * len(header)]
 
     for param in all_params:
@@ -264,7 +264,7 @@ def _format_side_by_side_html(results: list, labels: list[str]) -> str:
             if p not in all_params:
                 all_params.append(p)
 
-    header = "<tr><th>Parameter</th>" + "".join(f"<th>{l}</th>" for l in labels) + "</tr>"
+    header = "<tr><th>Parameter</th>" + "".join(f"<th>{label}</th>" for label in labels) + "</tr>"
     rows = []
     for param in all_params:
         row = f"<tr><td>{param}</td>"

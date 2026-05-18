@@ -6,19 +6,21 @@ This user guide is a placeholder. Full content will be added in a future release
 
 ## Overview
 
-The `MixedLogit` class estimates mixed logit (random coefficients) models, which generalize MNL by allowing coefficients to follow random distributions.
+The `MixedMNL` class estimates mixed logit (random coefficients) models, which generalize MNL by allowing coefficients to follow random distributions.
 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MixedLogit, ParamDistribution
+from locpick import ChoiceTable, MixedMNL
+from locpick.models.mixed import ParamDistribution
 
-ct = ChoiceTable.from_tables(choosers, alternatives, choice_column="choice")
+ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
 
-distributions = [
-    ParamDistribution(distribution="normal", param="beta_cost"),
-]
+random_params = {
+    "cost": ParamDistribution(distribution="normal", param="cost"),
+}
 
-model = MixedLogit(ct, formula="choice ~ cost + time - 1", distributions=distributions)
+model = MixedMNL(ct, formula="cost + time - 1", random_params=random_params, n_draws=100)
 result = model.fit()
+print(result.summary())
 ```

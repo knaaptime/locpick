@@ -18,15 +18,12 @@ locpick provides multiple covariance estimators for inference:
 ```python
 result = model.fit()
 
-# Default standard errors
+# Default standard errors (from FitResult)
 print(result.std_errors)
 
-# BHHH standard errors
-print(result.std_errors_bhhh)
-
-# Robust standard errors
-print(result.std_errors_robust)
+# Robust (Huber-White/sandwich) standard errors
+print(model.std_errors_robust(ct))
 
 # Clustered standard errors
-print(result.std_errors_clustered(groups))
+print(model.std_errors_clustered(ct, groups=clusters))
 ```

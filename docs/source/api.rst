@@ -49,23 +49,52 @@ Models
 .. autosummary::
    :toctree: generated/
 
-   MultinomialLogit :no-index:
+   MNL :no-index:
 
 .. currentmodule:: locpick.models.nested
 
 .. autosummary::
    :toctree: generated/
 
-   NestedLogit :no-index:
+   NestedMNL :no-index:
    NestSpec :no-index:
    NestingTree :no-index:
+
+.. currentmodule:: locpick.models.scl
+
+.. autosummary::
+   :toctree: generated/
+
+   SCL :no-index:
+   EdgeStructure :no-index:
+
+.. currentmodule:: locpick.models.mscl
+
+.. autosummary::
+   :toctree: generated/
+
+   MixedSCL :no-index:
+
+.. currentmodule:: locpick.models.nested_scl
+
+.. autosummary::
+   :toctree: generated/
+
+   NestedSCL :no-index:
+
+.. currentmodule:: locpick.models.mnscl
+
+.. autosummary::
+   :toctree: generated/
+
+   MixedNestedSCL :no-index:
 
 .. currentmodule:: locpick.models.mixed
 
 .. autosummary::
    :toctree: generated/
 
-   MixedLogit :no-index:
+   MixedMNL :no-index:
    ParamDistribution :no-index:
 
 Results
@@ -122,4 +151,25 @@ DGP Utilities
    :toctree: generated/
 
    simulate_mnl :no-index:
+   simulate_nested_logit :no-index:
+   simulate_scl :no-index:
+   simulate_mscl :no-index:
+   simulate_nested_scl :no-index:
+   simulate_mnscl :no-index:
    MNLDataset :no-index:
+   NestedMNLDataset :no-index:
+   SCLDataset :no-index:
+   MSCLDataset :no-index:
+   NestedSCLDataset :no-index:
+   MNSCLDataset :no-index:
+
+Configuration
+-------------
+
+.. currentmodule:: locpick.config
+
+.. autosummary::
+   :toctree: generated/
+
+   Config :no-index:
+   config :no-index:
