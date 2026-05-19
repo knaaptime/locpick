@@ -45,7 +45,9 @@ def _resolve_pairwise(
         present in that observation's alternative set.
     """
     if not isinstance(series.index, pd.MultiIndex) or series.index.nlevels != 2:
-        raise ValueError("Pairwise variable series must have a MultiIndex with levels (obs_id, alt_id).")
+        raise ValueError(
+            "Pairwise variable series must have a MultiIndex with levels (obs_id, alt_id)."
+        )
 
     n_obs, n_alts = alt_ids_matrix.shape
     values = np.full((n_obs, n_alts), np.nan, dtype=np.float64)

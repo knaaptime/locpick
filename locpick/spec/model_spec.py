@@ -56,7 +56,9 @@ class ModelSpec:
         return ModelSpec(
             formula=self.formula,
             availability=self.availability,
-            interaction_terms=self.interaction_terms if interaction_terms is None else interaction_terms,
+            interaction_terms=self.interaction_terms
+            if interaction_terms is None
+            else interaction_terms,
             scoped_terms=self.scoped_terms if scoped_terms is None else scoped_terms,
             random_params=self.random_params,
             correlation=self.correlation,

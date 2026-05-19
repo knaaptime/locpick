@@ -483,7 +483,9 @@ class ChoiceTable:
                 continue
             provided_alts = set(series.xs(obs_id, level=0).index.tolist())
             if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-                raise KeyError(f"Pairwise variable contains no alt_ids present for obs_id {obs_id!r}.")
+                raise KeyError(
+                    f"Pairwise variable contains no alt_ids present for obs_id {obs_id!r}."
+                )
 
         matrix_data = dict(self._matrix_data)
         matrix_data[name] = series
