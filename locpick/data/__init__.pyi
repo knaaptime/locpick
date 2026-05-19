@@ -11,7 +11,7 @@ from .choicetable import (
     ChoiceTable as ChoiceTable,
 )
 from .dataset import (
-    _resolve_interaction as _resolve_interaction,
+    _resolve_pairwise as _resolve_pairwise,
 )
 from .dataset import (
     build_choice_dataset as build_choice_dataset,

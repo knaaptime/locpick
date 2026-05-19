@@ -298,7 +298,7 @@ class MNSCLDataset:
 # ---------------------------------------------------------------------------
 
 
-def _build_choice_table(choosers, alternatives, choices, interactions=None):
+def _build_choice_table(choosers, alternatives, choices, matrix_data=None):
     """Build a ChoiceTable from component DataFrames."""
     from locpick.data.choicetable import ChoiceTable
 
@@ -306,7 +306,7 @@ def _build_choice_table(choosers, alternatives, choices, interactions=None):
         choosers=choosers.drop(columns="choice", errors="ignore"),
         alternatives=alternatives,
         chosen_alternatives=choices,
-        interactions=interactions,
+        matrix_data=matrix_data,
     )
 
 
@@ -402,7 +402,7 @@ def simulate_mnl(
     true_params.update(interaction_params)
 
     # --- v2 ChoiceTable -------------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     return MNLDataset(
         choosers=choosers,
@@ -561,7 +561,7 @@ def simulate_nested_logit(
     choosers["choice"] = choices
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     # Include interaction params in true_params
     true_params = dict(alt_params)
@@ -691,7 +691,7 @@ def simulate_scl(
     choosers["choice"] = choices
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     # Include interaction param in true_params
     true_params = dict(alt_params)
@@ -819,7 +819,7 @@ def simulate_mixed_logit(
     random_params_dict = {col: dist for col, (dist, _, _) in random_params.items()}
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     return MixedMNLDataset(
         choosers=choosers,
@@ -956,7 +956,7 @@ def simulate_mscl(
     random_params_dict = {col: dist for col, (dist, _, _) in random_params.items()}
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     return MSCLDataset(
         choosers=choosers,
@@ -1160,7 +1160,7 @@ def simulate_nested_scl(
     true_params["income_x_cost"] = 0.05
 
     # --- Build ChoiceTable -----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     return NestedSCLDataset(
         choosers=choosers,
@@ -1487,7 +1487,7 @@ def simulate_mnscl(
         random_param_dict[param_name] = dist
 
     # --- Build ChoiceTable ----------------------------------------------
-    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], interactions)
+    choice_table = _build_choice_table(choosers, alternatives, choosers["choice"], matrix_data=interactions)
 
     return MNSCLDataset(
         choosers=choosers,

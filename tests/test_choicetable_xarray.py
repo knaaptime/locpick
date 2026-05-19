@@ -111,7 +111,7 @@ def test_from_tables_chosen_dataframe_sampled_allows_alt_id_column_name():
     pd.testing.assert_frame_equal(chosen_rows.reset_index(drop=True), expected)
 
 
-def test_add_interaction_alignment_census_order_independent():
+def test_add_pairwise_variable_alignment_census_order_independent():
     choosers, alternatives = _make_tables()
     ct = ChoiceTable.from_tables(
         choosers,
@@ -125,14 +125,14 @@ def test_add_interaction_alignment_census_order_independent():
     vals = pd.Series([obs * 100 + alt for obs, alt in idx], index=idx)
     vals = vals.sample(frac=1.0, random_state=99)
 
-    ct2 = ct.add_interaction("distance", vals)
+    ct2 = ct.add_pairwise_variable("distance", vals)
     frame = ct2.to_frame()
     expected = [vals.loc[(obs, alt)] for obs, alt in zip(frame["obs_id"], frame["alt_id"])]
 
     assert np.allclose(frame["distance"].to_numpy(dtype=float), np.asarray(expected, dtype=float))
 
 
-def test_add_interaction_is_lazy_until_materialization():
+def test_add_pairwise_variable_is_lazy_until_materialization():
     choosers, alternatives = _make_tables()
     ct = ChoiceTable.from_tables(
         choosers,
@@ -145,7 +145,7 @@ def test_add_interaction_is_lazy_until_materialization():
     )
     vals = pd.Series([obs * 10 + alt for obs, alt in idx], index=idx)
 
-    ct2 = ct.add_interaction("distance", vals)
+    ct2 = ct.add_pairwise_variable("distance", vals)
     assert "distance" not in ct2._ds.data_vars
 
     frame = ct2.to_frame()
@@ -156,7 +156,7 @@ def test_add_interaction_is_lazy_until_materialization():
     assert np.allclose(frame["distance"].to_numpy(dtype=float), expected)
 
 
-def test_add_interaction_alignment_sampled():
+def test_add_pairwise_variable_alignment_sampled():
     choosers, alternatives = _make_tables()
     ct = ChoiceTable.from_tables(
         choosers,
@@ -172,7 +172,7 @@ def test_add_interaction_alignment_sampled():
     )
     vals = pd.Series([obs * 10 + alt for obs, alt in idx], index=idx)
 
-    ct2 = ct.add_interaction("distance", vals)
+    ct2 = ct.add_pairwise_variable("distance", vals)
     frame = ct2.to_frame()
 
     expected = np.asarray(
@@ -182,7 +182,7 @@ def test_add_interaction_alignment_sampled():
     assert np.allclose(frame["distance"].to_numpy(dtype=float), expected)
 
 
-def test_add_interaction_expression_product_broadcasts_sources():
+def test_add_interaction_product_broadcasts_sources():
     choosers, alternatives = _make_tables()
     ct = ChoiceTable.from_tables(
         choosers,
@@ -190,7 +190,7 @@ def test_add_interaction_expression_product_broadcasts_sources():
         chosen_alternatives="chosen_alt",
     )
 
-    ct2 = ct.add_interaction_expression(
+    ct2 = ct.add_interaction(
         "obs_x_alt",
         "obs_feature",
         "alt_feature",
@@ -201,7 +201,7 @@ def test_add_interaction_expression_product_broadcasts_sources():
     assert np.allclose(frame["obs_x_alt"].to_numpy(), expected)
 
 
-def test_add_interaction_expression_missing_available_rows_raise():
+def test_add_interaction_missing_available_rows_raise():
     choosers, alternatives = _make_tables()
     alternatives = alternatives.copy()
     alternatives.loc[11, "alt_feature"] = np.nan
@@ -215,7 +215,7 @@ def test_add_interaction_expression_missing_available_rows_raise():
     )
 
     with pytest.raises(ValueError, match="available alternatives"):
-        ct.add_interaction_expression(
+        ct.add_interaction(
             "obs_x_alt",
             "obs_feature",
             "alt_feature",
@@ -223,7 +223,7 @@ def test_add_interaction_expression_missing_available_rows_raise():
         )
 
 
-def test_add_interaction_expression_allows_missing_unavailable_rows():
+def test_add_interaction_allows_missing_unavailable_rows():
     choosers, alternatives = _make_tables()
     alternatives = alternatives.copy()
     alternatives.loc[13, "alt_feature"] = np.nan
@@ -236,7 +236,7 @@ def test_add_interaction_expression_allows_missing_unavailable_rows():
         available="available",
     )
 
-    ct2 = ct.add_interaction_expression(
+    ct2 = ct.add_interaction(
         "obs_x_alt",
         "obs_feature",
         "alt_feature",
@@ -248,7 +248,7 @@ def test_add_interaction_expression_allows_missing_unavailable_rows():
     assert np.isnan(frame.loc[unavailable, "obs_x_alt"]).all()
 
 
-def test_add_interaction_raises_for_missing_sampled_alt():
+def test_add_pairwise_variable_raises_for_missing_sampled_alt():
     choosers, alternatives = _make_tables()
     ct = ChoiceTable.from_tables(
         choosers,
@@ -266,7 +266,7 @@ def test_add_interaction_raises_for_missing_sampled_alt():
     )
 
     with pytest.raises(KeyError):
-        ct.add_interaction("distance", bad_series)
+        ct.add_pairwise_variable("distance", bad_series)
 
 
 def test_from_tables_to_frame_and_from_long_round_trip():
@@ -282,7 +282,7 @@ def test_from_tables_to_frame_and_from_long_round_trip():
     )
     vals = pd.Series([obs + alt / 1000.0 for obs, alt in idx], index=idx)
 
-    ct = ct.add_interaction("distance", vals)
+    ct = ct.add_pairwise_variable("distance", vals)
     frame = ct.to_frame()
 
     round_trip = ChoiceTable.from_long(
@@ -313,7 +313,7 @@ def test_to_arrays_shapes():
     assert arrays.chosen.shape == (ct.n_observations, ct.n_alternatives)
 
 
-def test_from_tables_interactions_alignment_sampled():
+def test_from_tables_matrix_data_multiindex_alignment_sampled():
     choosers, alternatives = _make_tables()
 
     idx = pd.MultiIndex.from_product(
@@ -328,7 +328,7 @@ def test_from_tables_interactions_alignment_sampled():
         sample_size=2,
         replace=False,
         seed=21,
-        interactions={"distance": distance},
+        matrix_data={"distance": distance},
     )
 
     frame = ct.to_frame()

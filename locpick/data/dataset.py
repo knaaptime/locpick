@@ -15,7 +15,7 @@ import pandas as pd
 import xarray as xr
 
 
-def _resolve_interaction(
+def _resolve_pairwise(
     series: pd.Series,
     obs_ids: np.ndarray,
     alt_ids_matrix: np.ndarray,
@@ -25,7 +25,7 @@ def _resolve_interaction(
     Parameters
     ----------
     series : pd.Series
-        Interaction values with a two-level MultiIndex of (obs_id, alt_id).
+        Pairwise variable values with a two-level MultiIndex of (obs_id, alt_id).
     obs_ids : ndarray
         Observation ids in canonical order.
     alt_ids_matrix : ndarray
@@ -34,7 +34,7 @@ def _resolve_interaction(
     Returns
     -------
     xr.DataArray
-        Interaction values aligned to ``(obs_id, alt_pos)``.
+        Pairwise variable values aligned to ``(obs_id, alt_pos)``.
 
     Raises
     ------
@@ -45,7 +45,7 @@ def _resolve_interaction(
         present in that observation's alternative set.
     """
     if not isinstance(series.index, pd.MultiIndex) or series.index.nlevels != 2:
-        raise ValueError("Interaction series must have a MultiIndex with levels (obs_id, alt_id).")
+        raise ValueError("Pairwise variable series must have a MultiIndex with levels (obs_id, alt_id).")
 
     n_obs, n_alts = alt_ids_matrix.shape
     values = np.full((n_obs, n_alts), np.nan, dtype=np.float64)
@@ -59,7 +59,7 @@ def _resolve_interaction(
             continue
         provided_alts = set(series.xs(obs_id, level=0).index.tolist())
         if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-            raise KeyError(f"Interaction contains no alt_ids present for obs_id {obs_id!r}.")
+            raise KeyError(f"Pairwise variable contains no alt_ids present for obs_id {obs_id!r}.")
 
     for (obs_id, alt_id), value in series.items():
         row = obs_to_row.get(obs_id)
@@ -149,7 +149,7 @@ def build_choice_dataset(
     chooser_df: pd.DataFrame,
     alt_df: pd.DataFrame,
     chosen_arr: Optional[np.ndarray] = None,
-    interaction_data: Optional[dict[str, pd.Series]] = None,
+    pairwise_data: Optional[dict[str, pd.Series]] = None,
     available_arr: Optional[np.ndarray] = None,
     sample_size: Optional[int] = None,
     obs_id_name: str = "obs_id",
@@ -226,9 +226,9 @@ def build_choice_dataset(
         }
     )
 
-    if interaction_data:
-        for name, series in interaction_data.items():
-            ds[name] = _resolve_interaction(series, obs_ids, alt_ids_matrix)
+    if pairwise_data:
+        for name, series in pairwise_data.items():
+            ds[name] = _resolve_pairwise(series, obs_ids, alt_ids_matrix)
 
     validate_choice_dataset(ds)
     return ds

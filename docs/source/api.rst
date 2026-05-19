@@ -25,7 +25,7 @@ Data Pipeline
    ChoiceTable.from_tables :no-index:
    ChoiceTable.from_long :no-index:
    ChoiceTable.to_arrays :no-index:
-   ChoiceTable.add_interaction :no-index:
+   ChoiceTable.add_pairwise_variable :no-index:
 
 Model Specification
 -------------------

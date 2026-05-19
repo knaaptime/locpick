@@ -86,7 +86,7 @@ def _fit_v2(dataset, backend, monkeypatch):
     return result.coefficients
 
 
-def test_mnl_parameter_recovery_with_interaction_term():
+def test_mnl_parameter_recovery_with_pairwise_variable():
     dataset = dgp.simulate_mnl(
         n_obs=4000,
         n_alts=5,
