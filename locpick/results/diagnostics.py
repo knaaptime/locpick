@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import stats
+from scipy.linalg import cho_factor, cho_solve
 
 if TYPE_CHECKING:
     from locpick.results.fit_result import FitResult
@@ -112,7 +113,12 @@ def wald_test(
     """
     r_beta = r_matrix @ coefficients
     middle = r_matrix @ variance_covariance @ r_matrix.T
-    statistic = float(r_beta.T @ np.linalg.inv(middle) @ r_beta)
+    # middle is PSD (sandwich of PSD covariance), so use Cholesky
+    try:
+        statistic = float(r_beta @ cho_solve(cho_factor(middle), r_beta))
+    except np.linalg.LinAlgError:
+        # Fall back to general inverse if not PD
+        statistic = float(r_beta.T @ np.linalg.inv(middle) @ r_beta)
     df = r_matrix.shape[0]
     p_value = float(stats.chi2.sf(statistic, df))
     return WaldTest(statistic=statistic, df=df, p_value=p_value)

@@ -56,7 +56,7 @@ from locpick._jax.objective import Objective
 from locpick._kernels.constants import NEG_INF
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
-from locpick.models.base import BaseChoiceModel
+from locpick.models.base import BaseChoiceModel, _safe_inv, _sandwich_inv
 from locpick.results.fit_result import FitResult
 
 # ---------------------------------------------------------------------------
@@ -1578,12 +1578,9 @@ class MixedMNL(BaseChoiceModel):
         H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
-            try:
-                return np.linalg.inv(B)
-            except np.linalg.LinAlgError:
-                return np.full_like(B, np.nan)
+            return _safe_inv(B)
 
-        return H_inv @ B @ H_inv
+        return _sandwich_inv(H_inv, B)  # H⁻¹ B H⁻¹ via Cholesky on H_neg
 
     def covariance_clustered(self, data=None, groups=None) -> np.ndarray:
         """Compute cluster-robust (Rogers) covariance matrix.
@@ -1632,12 +1629,9 @@ class MixedMNL(BaseChoiceModel):
         H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
-            try:
-                return np.linalg.inv(B_clustered)
-            except np.linalg.LinAlgError:
-                return np.full_like(B_clustered, np.nan)
+            return _safe_inv(B_clustered)
 
-        return H_inv @ B_clustered @ H_inv
+        return _sandwich_inv(H_inv, B_clustered)  # H⁻¹ B H⁻¹ via Cholesky
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.
