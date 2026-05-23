@@ -1,7 +1,7 @@
 """Model specification primitives for location choice models.
 
 This module provides ``ModelSpec`` with formula/scoped-term specification
-and generated interactions.
+and generated interaction variables.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ class ModelSpec:
     """Complete specification of a location choice model.
 
     Use formula strings for model terms, optionally augmented with
-    scoped-term metadata and generated interactions.
+    scoped-term metadata and generated interaction variables.
 
     Parameters
     ----------
@@ -35,7 +35,7 @@ class ModelSpec:
 
     formula: Optional[str] = None
     availability: Optional[str] = None
-    interactions: tuple[InteractionTerm, ...] = field(default_factory=tuple)
+    interaction_terms: tuple[InteractionTerm, ...] = field(default_factory=tuple)
     scoped_terms: tuple[ScopedTerm, ...] = field(default_factory=tuple)
     random_params: Optional[dict[str, Any]] = None  # ParamDistribution (future)
     correlation: Optional[Any] = None
@@ -44,19 +44,21 @@ class ModelSpec:
     _design_info: Any = field(default=None, repr=False)
 
     def __post_init__(self):
-        self.interactions = tuple(self.interactions or ())
+        self.interaction_terms = tuple(self.interaction_terms or ())
         self.scoped_terms = tuple(self.scoped_terms or ())
 
     def _copy_with(
         self,
         *,
-        interactions: Optional[tuple[InteractionTerm, ...]] = None,
+        interaction_terms: Optional[tuple[InteractionTerm, ...]] = None,
         scoped_terms: Optional[tuple[ScopedTerm, ...]] = None,
     ) -> "ModelSpec":
         return ModelSpec(
             formula=self.formula,
             availability=self.availability,
-            interactions=self.interactions if interactions is None else interactions,
+            interaction_terms=self.interaction_terms
+            if interaction_terms is None
+            else interaction_terms,
             scoped_terms=self.scoped_terms if scoped_terms is None else scoped_terms,
             random_params=self.random_params,
             correlation=self.correlation,
@@ -71,8 +73,8 @@ class ModelSpec:
         op: Literal["product"] = "product",
         missing_policy: Literal["error", "allow_unavailable"] = "error",
     ) -> "ModelSpec":
-        """Return a copy of the spec with a generated interaction term."""
-        terms = self.interactions + (
+        """Return a copy of the spec with a generated interaction variable."""
+        terms = self.interaction_terms + (
             interaction(
                 name,
                 left,
@@ -81,7 +83,7 @@ class ModelSpec:
                 missing_policy=missing_policy,
             ),
         )
-        return self._copy_with(interactions=terms)
+        return self._copy_with(interaction_terms=terms)
 
     def generic(self, variable: str, *, name: Optional[str] = None) -> "ModelSpec":
         """Return a copy with a generic coefficient for ``variable``."""
@@ -174,15 +176,15 @@ class ModelSpec:
         raise ValueError("No formula or scoped terms provided.")
 
     def prepare_data(self, data):
-        """Return data with this spec's generated interactions applied."""
+        """Return data with this spec's interaction variables applied."""
         prepared = data
-        for term in self.interactions:
-            if not hasattr(prepared, "add_interaction_expression"):
+        for term in self.interaction_terms:
+            if not hasattr(prepared, "add_interaction"):
                 raise TypeError(
-                    "ModelSpec interactions require a ChoiceTable-like object "
-                    "with add_interaction_expression()."
+                    "ModelSpec interaction terms require a ChoiceTable-like object "
+                    "with add_interaction()."
                 )
-            prepared = prepared.add_interaction_expression(
+            prepared = prepared.add_interaction(
                 term.name,
                 term.left,
                 term.right,

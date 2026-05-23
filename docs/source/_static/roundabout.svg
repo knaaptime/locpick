@@ -1,0 +1,29 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g fill="#000000">
+    <!-- Map pin / key head -->
+    <path d="M512 128C394.8 128 300 222.8 300 340C300 466.7 403.2 559.6 512 744C620.8 559.6 724 466.7 724 340C724 222.8 629.2 128 512 128Z"/>
+    
+    <!-- Inner negative-space circle suggestion via cutout rendered as background in transparency is not possible in pure SVG with black-only fill,
+         so this icon uses a solid silhouette with a key-like upper body and tapered lower stem. -->
+    
+    <!-- Key shaft / lower stem -->
+    <path d="M470 620H554V842H470Z"/>
+    
+    <!-- Key teeth -->
+    <path d="M554 676H628V734H554Z"/>
+    <path d="M554 740H606V798H554Z"/>
+    
+    <!-- Pointed key tip -->
+    <path d="M470 842L512 912L554 842Z"/>
+    
+    <!-- Subtle top-right key bow extension fused into pin outline -->
+    <path d="M642 240C696 240 740 284 740 338C740 392 696 436 642 436C588 436 544 392 544 338C544 284 588 240 642 240Z"/>
+    <path d="M642 290C615.5 290 594 311.5 594 338C594 364.5 615.5 386 642 386C668.5 386 690 364.5 690 338C690 311.5 668.5 290 642 290Z"/>
+    
+    <!-- Connect bow to pin -->
+    <path d="M560 356L640 276L682 318L602 398Z"/>
+    
+    <!-- Pin-to-shaft neck -->
+    <path d="M470 604H554V644H470Z"/>
+  </g>
+</svg>

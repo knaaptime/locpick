@@ -10,7 +10,7 @@ The `ChoiceTable` class is the primary data container for location choice modeli
 
 - Merging chooser and alternative data
 - Sampling alternatives from large choice sets
-- Generating chooser×alternative interaction terms
+- Generating chooser-alternative pairwise variables
 - Producing estimation-ready `ChoiceArrays`
 
 ## Quick Start
@@ -45,12 +45,12 @@ ct_sampled = ChoiceTable.from_tables(
 )
 ```
 
-## Interaction Terms
+## Pairwise Variables
 
-Chooser×alternative interactions are created with `add_interaction()`:
+Chooser-alternative pairwise variables are created with `add_pairwise_variable()`:
 
 ```python
-ct_with_interactions = ct.add_interaction(
+ct_with_pairwise = ct.add_pairwise_variable(
     name="dist",
     series=distance_series,
 )

@@ -31,13 +31,11 @@ dependencies = [
     "scipy >= 1.9",
     "numba >= 0.59",
     "lazy_loader >= 0.4",
+    "jax >=0.4"
 ]
 
 [project.optional-dependencies]
-jax = [
-    "jax >= 0.4",
-    "jaxlib >= 0.4",
-]
+
 optax = [
     "optax >= 0.1",
 ]

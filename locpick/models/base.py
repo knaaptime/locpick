@@ -12,6 +12,7 @@ from typing import Any, Optional, Protocol, Union, runtime_checkable
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.linalg import cho_factor, cho_solve
 
 from locpick._jax.objective import Objective
 from locpick._solvers.protocol import Solver, SolverResult, get_solver
@@ -19,6 +20,52 @@ from locpick.data.arrays import ChoiceArrays
 from locpick.data.choicetable import ChoiceTable
 from locpick.data.problem import EstimationProblem
 from locpick.results.fit_result import FitResult
+
+# ------------------------------------------------------------------
+# Cholesky-based linear-algebra helpers
+# ------------------------------------------------------------------
+# These replace np.linalg.inv calls with Cholesky decomposition, which
+# is both faster and more numerically stable for positive-definite (PD)
+# and positive-semidefinite (PSD) matrices.
+
+
+def _safe_inv(A: np.ndarray) -> np.ndarray:
+    """Invert a symmetric positive-(semi)definite matrix via Cholesky.
+
+    Falls back to LU decomposition if the matrix is not PD.
+    Returns an array of NaN on failure.
+    """
+    n = A.shape[0]
+    try:
+        return cho_solve(cho_factor(A), np.eye(n))
+    except np.linalg.LinAlgError:
+        # Not PD — fall back to general inverse
+        try:
+            return np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            return np.full_like(A, np.nan)
+
+
+def _sandwich_inv(H_inv: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Compute the sandwich covariance H⁻¹ B H⁻¹.
+
+    When ``H_inv`` is already available (cached from the Hessian inverse),
+    the sandwich is computed directly as a matrix product.  This is the
+    common path after model estimation.
+
+    Parameters
+    ----------
+    H_inv : np.ndarray
+        Inverse of the negative Hessian (covariance matrix), already computed.
+    B : np.ndarray
+        Bread matrix (positive semi-definite), e.g. scores.T @ scores.
+
+    Returns
+    -------
+    np.ndarray
+        H⁻¹ B H⁻¹, the sandwich covariance.
+    """
+    return H_inv @ B @ H_inv
 
 
 @runtime_checkable
@@ -449,7 +496,8 @@ class BaseChoiceModel(ABC):
             Standard errors for each parameter.
         """
         try:
-            cov = np.linalg.inv(-hess)
+            neg_hess = -hess
+            cov = cho_solve(cho_factor(neg_hess), np.eye(neg_hess.shape[0]))
             diag_cov = np.diag(cov)
             # Clamp tiny negative values (numerical noise) to zero,
             # but treat zero-variance parameters as unidentified (SE=0
@@ -458,7 +506,15 @@ class BaseChoiceModel(ABC):
             se[se == 0] = np.nan
             return se
         except np.linalg.LinAlgError:
-            return np.full(hess.shape[0], np.nan)
+            # Not PD — fall back to general inverse
+            try:
+                cov = np.linalg.inv(-hess)
+                diag_cov = np.diag(cov)
+                se = np.sqrt(np.maximum(diag_cov, 0))
+                se[se == 0] = np.nan
+                return se
+            except np.linalg.LinAlgError:
+                return np.full(hess.shape[0], np.nan)
 
     def _finite_diff_hessian(self, beta: np.ndarray) -> np.ndarray:
         """Compute Hessian via central finite differences (fallback)."""
@@ -509,8 +565,16 @@ class BaseChoiceModel(ABC):
                 hess = self._compute_hessian(self._result.coefficients.values)
                 # hess is the Hessian of the log-likelihood (negative definite).
                 # The covariance matrix is inv(-hess).
-                self._hessian_inverse = np.linalg.inv(-hess)
+                neg_hess = -hess
+                self._hessian_inverse = cho_solve(cho_factor(neg_hess), np.eye(neg_hess.shape[0]))
                 return self._hessian_inverse
+            except np.linalg.LinAlgError:
+                # Not PD — fall back to general inverse
+                try:
+                    self._hessian_inverse = np.linalg.inv(-hess)
+                    return self._hessian_inverse
+                except Exception:
+                    pass
             except Exception:
                 pass
 

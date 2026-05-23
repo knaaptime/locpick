@@ -20,7 +20,7 @@ from locpick._sampling.kernels import (
 )
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.dataset import (
-    _resolve_interaction,
+    _resolve_pairwise,
     build_choice_dataset,
     build_choice_dataset_from_long,
     dataset_to_long_frame,
@@ -90,7 +90,6 @@ class ChoiceTable:
         alternatives: pd.DataFrame,
         chosen_alternatives: Union[str, pd.Series, None] = None,
         sample_size: Optional[int] = None,
-        interactions: Optional[dict[str, pd.Series]] = None,
         matrix_data: Optional[dict[str, Union[pd.Series, np.ndarray]]] = None,
         weights: Union[str, pd.Series, None] = None,
         available: Union[str, pd.Series, None] = None,
@@ -111,11 +110,17 @@ class ChoiceTable:
         sample_size : int or None
             Number of alternatives to sample per chooser. None means use all
             alternatives (census). The chosen alternative is always included.
-        interactions : dict[str, pd.Series] or None
-            Dict mapping column names to (obs_id, alt_id)-indexed Series.
-            These are chooser×alternative-specific variables like distance.
         matrix_data : dict[str, pd.Series | np.ndarray] or None
-            Lazily resolved chooser×alternative matrices.
+            Lazily resolved chooser×alternative matrices. Accepts several
+            formats for each value:
+
+            - ``pd.Series`` with a ``(obs_id, alt_id)`` MultiIndex — pairwise
+              variables like distance.
+            - ``pd.Series`` with a single ``alt_id`` index — alternative-
+              specific values broadcast across choosers.
+            - ``np.ndarray`` with shape ``(n_obs, n_alts)``,
+              ``(n_obs, n_alts_full)``, or ``(n_alts_full,)`` — dense
+              matrices over the full alternative universe.
         weights : str or pd.Series or None
             Sampling weights. If str, column name in ``alternatives``.
             If Series, either alt_id-indexed (1D) or (obs_id, alt_id)-indexed (2D).
@@ -244,7 +249,7 @@ class ChoiceTable:
                     isinstance(available_series.index, pd.MultiIndex)
                     and available_series.index.nlevels == 2
                 ):
-                    available_arr = _resolve_interaction(
+                    available_arr = _resolve_pairwise(
                         available_series,
                         obs_ids,
                         alt_ids_matrix,
@@ -253,17 +258,7 @@ class ChoiceTable:
                     mapped = available_series.reindex(alt_ids_matrix.reshape(-1)).to_numpy()
                     available_arr = mapped.reshape(n_obs, n_alts_eff)
 
-        combined_matrix_data: dict[str, Union[pd.Series, np.ndarray]] = {}
-        if interactions:
-            combined_matrix_data.update(interactions)
-        if matrix_data:
-            overlap = set(combined_matrix_data).intersection(matrix_data)
-            if overlap:
-                overlap_list = ", ".join(sorted(overlap))
-                raise ValueError(
-                    f"Duplicate matrix_data names provided via interactions and matrix_data: {overlap_list}"
-                )
-            combined_matrix_data.update(matrix_data)
+        combined_matrix_data: dict[str, Union[pd.Series, np.ndarray]] = dict(matrix_data or {})
 
         ds = build_choice_dataset(
             obs_ids=obs_ids,
@@ -271,7 +266,7 @@ class ChoiceTable:
             chooser_df=choosers,
             alt_df=alternatives,
             chosen_arr=chosen_arr,
-            interaction_data=None,
+            pairwise_data=None,
             available_arr=available_arr,
             sample_size=sample_size,
             obs_id_name=oid_name,
@@ -455,24 +450,24 @@ class ChoiceTable:
     # Methods
     # ------------------------------------------------------------------
 
-    def add_interaction(self, name: str, series: pd.Series) -> "ChoiceTable":
+    def add_pairwise_variable(self, name: str, series: pd.Series) -> "ChoiceTable":
         """Merge an (obs_id, alt_id)-indexed Series as a new column.
 
         Parameters
         ----------
         name : str
-            Column name for the interaction variable.
+            Column name for the pairwise variable.
         series : pd.Series
             Series with a MultiIndex of (obs_id, alt_id).
 
         Returns
         -------
         ChoiceTable
-            A new ChoiceTable with the interaction column added.
+            A new ChoiceTable with the pairwise variable column added.
         """
         if not isinstance(series.index, pd.MultiIndex) or series.index.nlevels != 2:
             raise ValueError(
-                "Interaction series must have a MultiIndex with levels (obs_id, alt_id)."
+                "Pairwise variable series must have a MultiIndex with levels (obs_id, alt_id)."
             )
 
         obs_ids = np.asarray(self._ds.coords["obs_id"].values)
@@ -488,7 +483,9 @@ class ChoiceTable:
                 continue
             provided_alts = set(series.xs(obs_id, level=0).index.tolist())
             if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-                raise KeyError(f"Interaction contains no alt_ids present for obs_id {obs_id!r}.")
+                raise KeyError(
+                    f"Pairwise variable contains no alt_ids present for obs_id {obs_id!r}."
+                )
 
         matrix_data = dict(self._matrix_data)
         matrix_data[name] = series
@@ -510,7 +507,7 @@ class ChoiceTable:
             interaction_expressions=interaction_expressions,
         )
 
-    def add_interaction_expression(
+    def add_interaction(
         self,
         name: str,
         left: str,
@@ -519,12 +516,17 @@ class ChoiceTable:
         op: str = "product",
         missing_policy: str = "error",
     ) -> "ChoiceTable":
-        """Generate a chooser-alternative interaction from existing columns.
+        """Generate an interaction variable from two existing columns.
+
+        An interaction variable is a pairwise variable computed as the product
+        of two existing columns (e.g., ``income * rent``). Unlike
+        :meth:`add_pairwise_variable`, which adds a pre-computed chooser-alternative
+        Series, this method lazily computes the product at materialization time.
 
         Parameters
         ----------
         name : str
-            Name of the generated interaction column.
+            Name of the generated interaction variable column.
         left, right : str
             Source columns in the current choice table. Columns may be chooser,
             alternative, or already-aligned chooser-alternative variables.
@@ -537,7 +539,7 @@ class ChoiceTable:
         Returns
         -------
         ChoiceTable
-            A new ChoiceTable with the generated interaction column added.
+            A new ChoiceTable with the generated interaction variable column added.
         """
         if op != "product":
             raise ValueError("Only product interactions are currently supported.")
@@ -674,7 +676,7 @@ class ChoiceTable:
 
         if isinstance(source, pd.Series):
             if isinstance(source.index, pd.MultiIndex) and source.index.nlevels == 2:
-                return _resolve_interaction(source, obs_ids, alt_ids_matrix).to_numpy()
+                return _resolve_pairwise(source, obs_ids, alt_ids_matrix).to_numpy()
             if source.index.nlevels == 1:
                 mapped = source.reindex(alt_ids_matrix.reshape(-1)).to_numpy(dtype=np.float64)
                 return mapped.reshape(n_obs, n_alts)

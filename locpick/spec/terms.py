@@ -1,8 +1,8 @@
-"""Model specification DSL: scoped terms and interactions.
+"""Model specification DSL: scoped terms and interaction variables.
 
 This module provides the core specification helpers for location choice models:
 
-- ``InteractionTerm`` — chooser-alternative interaction variable
+- ``InteractionTerm`` — interaction variable (product of two columns)
 - ``ScopedTerm`` — variable with explicit coefficient scope
 - ``interaction()`` — convenience constructor for InteractionTerm
 """
@@ -15,17 +15,17 @@ from typing import Any, Literal, Optional
 
 @dataclass(frozen=True)
 class InteractionTerm:
-    """Specification for a chooser-alternative interaction variable.
+    """Specification for an interaction variable (product of two columns).
 
-    Interaction terms describe variables whose values are built before
-    estimation from existing columns in a ``ChoiceTable``. The first supported
-    operation is a product, which covers common formulas such as household
-    income times rent or worker sector times job density.
+    Interaction terms describe pairwise variables whose values are computed
+    before estimation from existing columns in a ``ChoiceTable``. The first
+    supported operation is a product, which covers common formulas such as
+    household income times rent or worker sector times job density.
 
     Parameters
     ----------
     name : str
-        Name of the generated interaction column.
+        Name of the generated interaction variable column.
     left : str
         Name of the first source column.
     right : str

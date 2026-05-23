@@ -23,7 +23,7 @@ __all__ = [  # noqa: F811
     # choicetable
     "ChoiceTable",
     # dataset
-    "_resolve_interaction",
+    "_resolve_pairwise",
     "build_choice_dataset",
     "build_choice_dataset_from_long",
     "dataset_to_long_frame",

@@ -15,7 +15,13 @@ import pandas as pd
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
-from locpick.models.base import BaseChoiceModel, _compute_fit_statistics, _compute_null_ll
+from locpick.models.base import (
+    BaseChoiceModel,
+    _compute_fit_statistics,
+    _compute_null_ll,
+    _safe_inv,
+    _sandwich_inv,
+)
 from locpick.results.fit_result import FitResult
 
 
@@ -536,12 +542,9 @@ class MNL(BaseChoiceModel):
         H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
-            try:
-                return np.linalg.inv(B)
-            except np.linalg.LinAlgError:
-                return np.full_like(B, np.nan)
+            return _safe_inv(B)
 
-        return H_inv @ B @ H_inv
+        return _sandwich_inv(H_inv, B)  # H⁻¹ B H⁻¹ via Cholesky on H_neg
 
     def covariance_clustered(self, data=None, groups=None) -> np.ndarray:
         """Compute cluster-robust (Rogers) covariance matrix.
@@ -590,12 +593,9 @@ class MNL(BaseChoiceModel):
         H_inv = self._get_hessian_inverse()
 
         if H_inv is None:
-            try:
-                return np.linalg.inv(B_clustered)
-            except np.linalg.LinAlgError:
-                return np.full_like(B_clustered, np.nan)
+            return _safe_inv(B_clustered)
 
-        return H_inv @ B_clustered @ H_inv
+        return _sandwich_inv(H_inv, B_clustered)  # H⁻¹ B H⁻¹ via Cholesky
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors.
@@ -698,7 +698,7 @@ class MNL(BaseChoiceModel):
         """
         import os
 
-        backend = (self._backend or os.environ.get("CHOICEMODELS_MNL_BACKEND", "")).lower()
+        backend = (self._backend or os.environ.get("LOCPICK_MNL_BACKEND", "")).lower()
         if backend == "numpy":
             return self._build_objective_numpy(arrays)
         try:
@@ -851,6 +851,7 @@ class MNL(BaseChoiceModel):
         This is used as a fallback when the solver doesn't provide an
         inverse Hessian approximation.
         """
+        from scipy.linalg import cho_factor, cho_solve
         from scipy.optimize import approx_fprime
 
         objective = self._build_objective(arrays)
@@ -876,10 +877,16 @@ class MNL(BaseChoiceModel):
             hessian[:, i] = (grad_plus - grad_minus) / (2 * h)
 
         try:
-            inv_hessian = np.linalg.inv(hessian)
+            neg_hess = -hessian
+            inv_hessian = cho_solve(cho_factor(neg_hess), np.eye(n))
             return np.sqrt(np.diag(np.abs(inv_hessian)))
         except np.linalg.LinAlgError:
-            return np.full(n, np.nan)
+            # Not PD — fall back to general inverse
+            try:
+                inv_hessian = np.linalg.inv(hessian)
+                return np.sqrt(np.diag(np.abs(inv_hessian)))
+            except np.linalg.LinAlgError:
+                return np.full(n, np.nan)
 
     # ------------------------------------------------------------------
     # Convenience
