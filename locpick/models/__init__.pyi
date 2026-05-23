@@ -1,4 +1,5 @@
 from . import mixed as mixed
+from . import mixed_nested as mixed_nested
 from . import mnl as mnl
 from . import mscl as mscl
 from . import nested as nested
@@ -20,6 +21,9 @@ from .mixed import (
 )
 from .mixed import (
     generate_random_draws as generate_random_draws,
+)
+from .mixed_nested import (
+    MixedNestedMNL as MixedNestedMNL,
 )
 from .mnl import (
     MNL as MNL,

@@ -51,6 +51,9 @@ from .dgp import (
     MixedMNLDataset as MixedMNLDataset,
 )
 from .dgp import (
+    MixedNestedMNLDataset as MixedNestedMNLDataset,
+)
+from .dgp import (
     MNLDataset as MNLDataset,
 )
 from .dgp import (
@@ -70,6 +73,9 @@ from .dgp import (
 )
 from .dgp import (
     simulate_mixed_logit as simulate_mixed_logit,
+)
+from .dgp import (
+    simulate_mixed_nested_logit as simulate_mixed_nested_logit,
 )
 from .dgp import (
     simulate_mnl as simulate_mnl,
@@ -100,6 +106,9 @@ from .models import (
 )
 from .models import (
     MixedMNL as MixedMNL,
+)
+from .models import (
+    MixedNestedMNL as MixedNestedMNL,
 )
 from .models import (
     MixedNestedSCL as MixedNestedSCL,
