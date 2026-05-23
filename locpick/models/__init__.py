@@ -6,6 +6,7 @@ This package provides:
 - :mod:`locpick.models.mnl` — ``MultinomialLogit`` class
 - :mod:`locpick.models.nested` — ``NestedLogit``, ``NestSpec``, ``NestingTree``
 - :mod:`locpick.models.mixed` — ``MixedLogit``, ``ParamDistribution``
+- :mod:`locpick.models.mixed_nested` — ``MixedNestedMNL``
 - :mod:`locpick.models.scl` — ``SpatiallyCorrelatedLogit``
 - :mod:`locpick.models.mscl` — ``MixedSpatiallyCorrelatedLogit``
 

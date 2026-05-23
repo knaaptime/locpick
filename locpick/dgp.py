@@ -167,6 +167,49 @@ class MixedMNLDataset:
 
 
 @dataclass
+class MixedNestedMNLDataset:
+    """Synthetic dataset drawn from a known mixed nested logit DGP.
+
+    Attributes
+    ----------
+    choosers : pd.DataFrame
+        Obs-id-indexed DataFrame with chooser attributes and ``choice`` column.
+    alternatives : pd.DataFrame
+        Alt-id-indexed DataFrame with alternative attributes.
+    true_params : dict[str, float]
+        Ground-truth fixed beta coefficients.
+    true_lambdas : dict[str, float]
+        Ground-truth nest dissimilarity parameters λ_m ∈ (0, 1].
+    true_random_means : dict[str, float]
+        Ground-truth random coefficient means.
+    true_random_spreads : dict[str, float]
+        Ground-truth random coefficient spreads (std devs).
+    random_params : dict[str, str]
+        Mapping of random parameter name → distribution name.
+    nests : NestingTree
+        The nesting structure used to generate the data.
+    choice_table : object
+        Assembled ``ChoiceTable``.
+    n_obs : int
+    n_alts : int
+    seed : int
+    """
+
+    choosers: pd.DataFrame
+    alternatives: pd.DataFrame
+    true_params: dict[str, float]
+    true_lambdas: dict[str, float]
+    true_random_means: dict[str, float]
+    true_random_spreads: dict[str, float]
+    random_params: dict[str, str]
+    nests: Any
+    choice_table: Any
+    n_obs: int
+    n_alts: int
+    seed: int
+
+
+@dataclass
 class MSCLDataset:
     """Synthetic dataset drawn from a known MSCL DGP.
 
@@ -1514,6 +1557,205 @@ def simulate_mnscl(
         random_params=random_param_dict,
         nests=nests,
         adjacency=adjacency,
+        choice_table=choice_table,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        seed=seed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mixed Nested Logit DGP
+# ---------------------------------------------------------------------------
+
+
+def simulate_mixed_nested_logit(
+    n_obs: int = 10000,
+    n_alts: int = 4,
+    alt_params: dict[str, float] | None = None,
+    nest_lambdas: dict[str, float] | None = None,
+    random_params: dict[str, tuple[str, float, float]] | None = None,
+    seed: int = 1234,
+) -> MixedNestedMNLDataset:
+    """Generate synthetic mixed nested logit choice data with known parameters.
+
+    The default DGP creates two nests with 2 alternatives each, includes
+    both alternative-level and chooser×alternative interaction terms,
+    and simulates choices using the mixed nested logit probability formula
+    with random coefficients.
+
+    Parameters
+    ----------
+    n_obs : int, default 10000
+        Number of observations (decision-makers).
+    n_alts : int, default 4
+        Number of alternatives.  Must be evenly divisible by the number of
+        nests in ``nest_lambdas``.
+    alt_params : dict, optional
+        Mapping of alternative-level column name → true fixed coefficient.
+        Default: ``{"cost": -0.5}``.
+    nest_lambdas : dict, optional
+        Mapping of nest name → true dissimilarity parameter λ ∈ (0, 1].
+        Default: ``{"transit": 0.7, "auto": 0.8}``.
+    random_params : dict, optional
+        Mapping of column name → ``(distribution, mean, sd)`` for random
+        coefficients.  Default: ``{"time": ("normal", -0.3, 0.5)}``.
+    seed : int, default 1234
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    MixedNestedMNLDataset
+    """
+    from locpick.models.nested import (
+        NestingTree,
+        NestSpec,
+        _nested_logit_probs_numpy,
+    )
+
+    if alt_params is None:
+        alt_params = {"cost": -0.5}
+    if nest_lambdas is None:
+        nest_lambdas = {"transit": 0.7, "auto": 0.8}
+    if random_params is None:
+        random_params = {"time": ("normal", -0.3, 0.5)}
+
+    rng = np.random.default_rng(seed)
+
+    # --- Build nesting structure ----------------------------------------
+    nest_names = list(nest_lambdas.keys())
+    alts_per_nest = n_alts // len(nest_names)
+    if n_alts % len(nest_names) != 0:
+        raise ValueError(
+            f"n_alts ({n_alts}) must be evenly divisible by the number of "
+            f"nests ({len(nest_names)})."
+        )
+
+    nest_specs = []
+    alt_id = 0
+    for name in nest_names:
+        nest_specs.append(NestSpec(name, alt_ids=list(range(alt_id, alt_id + alts_per_nest))))
+        alt_id += alts_per_nest
+    nests = NestingTree(nest_specs)
+
+    # --- Choosers and alternatives --------------------------------------
+    obs_ids = pd.Index(np.arange(n_obs), name="oid")
+    income = rng.standard_normal(n_obs)
+    choosers = pd.DataFrame({"income": income}, index=obs_ids)
+
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    alternatives = pd.DataFrame(
+        {
+            "cost": rng.uniform(1, 10, n_alts),
+            "time": rng.uniform(5, 30, n_alts),
+        },
+        index=alt_ids,
+    )
+
+    # --- Interactions (chooser × alternative) --------------------------
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
+    income_tiled = np.repeat(income, n_alts)
+    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
+    interactions = {
+        "income_x_cost": pd.Series(
+            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
+        ),
+    }
+
+    # --- Deterministic utility (fixed part) ----------------------------
+    det_utility = np.zeros((n_obs, n_alts))
+    for col, coef in alt_params.items():
+        alt_vals = alternatives[col].to_numpy()
+        det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
+    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+
+    # --- Add random coefficient variation ------------------------------
+    for param_name, (dist, mean, spread) in random_params.items():
+        alt_vals = alternatives[param_name].to_numpy()
+        z = rng.standard_normal((n_obs, n_alts))
+        if dist == "normal":
+            random_component = (mean + spread * z) * alt_vals[None, :]
+        elif dist == "lognormal":
+            random_component = np.exp(mean + spread * z) * alt_vals[None, :]
+        elif dist == "uniform":
+            random_component = (mean + spread * (2 * rng.random((n_obs, n_alts)) - 1)) * alt_vals[
+                None, :
+            ]
+        elif dist == "triangular":
+            u = rng.random((n_obs, n_alts))
+            random_component = np.where(
+                u <= 0.5,
+                (mean + spread * (np.sqrt(2 * u) - 1)) * alt_vals[None, :],
+                (mean + spread * (1 - np.sqrt(2 * (1 - u)))) * alt_vals[None, :],
+            )
+        else:
+            raise ValueError(f"Unknown distribution: {dist}")
+        det_utility += random_component
+
+    # --- Build nest matrix and simulate choices -------------------------
+    alt_id_list = list(range(n_alts))
+    nest_matrix = nests.build_nest_matrix(alt_id_list)
+
+    # Convert lambdas to alpha (unconstrained) for the probability kernel
+    lambda_values = np.array([nest_lambdas[name] for name in nest_names])
+    alpha_values = np.log(lambda_values / (1.0 - lambda_values + 1e-30))
+
+    # Build design matrix including interaction terms
+    # Fixed coefficients: alt_params columns + interaction columns
+    # Random coefficients are already included in det_utility
+    fixed_cols = [col for col in alternatives.columns if col in alt_params]
+    beta = np.array([alt_params[col] for col in fixed_cols])
+    design_matrix = np.tile(alternatives[fixed_cols].to_numpy(), (n_obs, 1))
+    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
+    design_matrix = np.column_stack(
+        [
+            design_matrix,
+            income_x_cost_vals.ravel(),
+        ]
+    )
+    beta = np.append(beta, [0.05])  # true coefficient for interaction
+
+    # Compute nested logit probabilities
+    probs = _nested_logit_probs_numpy(
+        beta,
+        alpha_values,
+        design_matrix,
+        nest_matrix,
+        n_obs,
+        n_alts,
+    )
+
+    # Simulate choices from probabilities
+    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choosers = choosers.copy()
+    choosers["choice"] = choices
+
+    # --- Build true_params dict ------------------------------------------
+    true_params = dict(alt_params)
+    true_params["income_x_cost"] = 0.05
+
+    true_random_means = {}
+    true_random_spreads = {}
+    random_param_dict = {}
+    for param_name, (dist, mean, spread) in random_params.items():
+        true_random_means[param_name] = mean
+        true_random_spreads[param_name] = spread
+        random_param_dict[param_name] = dist
+
+    # --- Build ChoiceTable -----------------------------------------------
+    choice_table = _build_choice_table(
+        choosers, alternatives, choosers["choice"], matrix_data=interactions
+    )
+
+    return MixedNestedMNLDataset(
+        choosers=choosers,
+        alternatives=alternatives,
+        true_params=true_params,
+        true_lambdas=dict(nest_lambdas),
+        true_random_means=true_random_means,
+        true_random_spreads=true_random_spreads,
+        random_params=random_param_dict,
+        nests=nests,
         choice_table=choice_table,
         n_obs=n_obs,
         n_alts=n_alts,

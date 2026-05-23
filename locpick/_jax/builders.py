@@ -1076,3 +1076,196 @@ def build_mixed_logit_objective(
         param_names=display_param_names,
         transform=transform,
     )
+
+
+# ---------------------------------------------------------------------------
+# Mixed Nested Logit objective
+# ---------------------------------------------------------------------------
+
+
+# Top-level JIT'd kernels — cached across all mixed nested objectives
+@functools.partial(jax.jit, static_argnums=(3, 4, 5, 6, 7))
+def _mixed_nested_ll_kernel(
+    params,
+    data,
+    nest_matrix,
+    k_fixed,
+    n_nests,
+    k_random,
+    n_draws,
+    nest_alt_indices,
+):
+    """Pure JAX mixed nested logit simulated log-likelihood (top-level for JIT caching).
+
+    Parameters
+    ----------
+    params : jnp.ndarray
+        [beta_fixed, alpha_nest_1..M, beta_random_means, beta_random_spreads_raw]
+    data : ChoiceDataJAX
+    nest_matrix : jnp.ndarray, shape (n_alts, n_nests)
+    k_fixed : int
+        Number of fixed utility coefficients (static arg).
+    n_nests : int
+        Number of nests (static arg).
+    k_random : int
+        Number of random coefficients (static arg).
+    n_draws : int
+        Number of simulation draws (static arg).
+    nest_alt_indices : tuple of tuple of int
+        Precomputed nest alt indices.
+    """
+    from locpick._jax.kernels import mixed_nested_logit_ll
+
+    beta_fixed = params[:k_fixed]
+    alpha_nest = params[k_fixed : k_fixed + n_nests]
+    beta_random_means = params[k_fixed + n_nests : k_fixed + n_nests + k_random]
+    beta_random_spreads_raw = params[k_fixed + n_nests + k_random :]
+
+    # Naturalize nest parameters: alpha -> lambda
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_nest))
+
+    # Enforce non-negative spreads via softplus
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    # Fixed utility component
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    # Sampling correction
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    return mixed_nested_logit_ll(
+        V_fixed=v_fixed,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        lambdas=lambdas,
+        nest_matrix=nest_matrix,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=data.n_obs,
+        n_alts=data.n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+        n_nests=n_nests,
+    )
+
+
+# Pre-compute gradient of the kernel (also cached)
+_mixed_nested_grad_kernel = jax.jit(
+    jax.grad(_mixed_nested_ll_kernel, argnums=0),
+    static_argnums=(3, 4, 5, 6, 7),
+)
+
+
+def build_mixed_nested_objective(
+    arrays,
+    nest_matrix,
+    random_col_indices,
+    random_distributions,
+    draws,
+) -> Objective:
+    """Build an Objective for mixed nested logit estimation using JAX.
+
+    Parameters
+    ----------
+    arrays : ChoiceArrays
+        Estimation data arrays.
+    nest_matrix : np.ndarray, shape (n_alts, n_nests)
+        Alternative-to-nest membership matrix.
+    random_col_indices : list[int]
+        Column indices of random parameters in the design matrix.
+    random_distributions : list[str]
+        Distribution names for random parameters ('normal', 'lognormal',
+        'triangular', 'uniform').
+    draws : np.ndarray, shape (n_obs, n_draws, k_random)
+        Standard normal draws for simulated integration.
+
+    Returns
+    -------
+    Objective
+        Objective with JIT-compiled LL, gradient, and Hessian.
+        Includes Sigmoid transforms for nest parameters and SoftPlus
+        for random parameter spreads.
+    """
+    if not _JAX_AVAILABLE:
+        raise ImportError("JAX is required for mixed nested logit objective")
+
+    data = ChoiceDataJAX.from_arrays(
+        arrays,
+        draws=draws,
+        random_col_indices=random_col_indices,
+        random_distributions=random_distributions,
+    )
+
+    nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
+    n_nests = nest_matrix.shape[1]
+    k = arrays.design_matrix.shape[1]
+    k_random = len(random_col_indices)
+    k_fixed = k - k_random
+    n_draws = draws.shape[1]
+
+    # Precompute nest alt indices (static, known at compile time)
+    nest_alt_indices = tuple(
+        tuple(int(i) for i in np.where(nest_matrix[:, m] > 0)[0]) for m in range(n_nests)
+    )
+
+    def _ll_jax(params):
+        return _mixed_nested_ll_kernel(
+            params,
+            data,
+            nest_matrix_jax,
+            k_fixed,
+            n_nests,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
+    def _grad_jax(params):
+        return _mixed_nested_grad_kernel(
+            params,
+            data,
+            nest_matrix_jax,
+            k_fixed,
+            n_nests,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
+    param_names_list = list(arrays.param_names)
+    fixed_param_names = [
+        name
+        for name in param_names_list
+        if name not in [param_names_list[i] for i in random_col_indices]
+    ]
+    random_param_names = [param_names_list[i] for i in random_col_indices]
+    display_param_names = (
+        fixed_param_names
+        + [f"lambda_{i}" for i in range(n_nests)]
+        + [f"mean_{name}" for name in random_param_names]
+        + [f"sd_{name}" for name in random_param_names]
+    )
+
+    # Transforms: identity for fixed beta, sigmoid for nest params, identity for means, softplus for spreads
+    transforms = (
+        [Identity() for _ in range(k_fixed)]
+        + [Sigmoid() for _ in range(n_nests)]
+        + [Identity() for _ in range(k_random)]
+        + [SoftPlus() for _ in range(k_random)]
+    )
+    transform = ParamTransform(transforms=transforms)
+
+    return Objective.from_jax(
+        ll_fn=_ll_jax,
+        grad_fn=_grad_jax,
+        param_names=display_param_names,
+        transform=transform,
+    )

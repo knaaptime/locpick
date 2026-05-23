@@ -559,6 +559,136 @@ def mixed_logit_ll(
 
 
 # ---------------------------------------------------------------------------
+# Mixed nested logit kernel
+# ---------------------------------------------------------------------------
+
+
+def mixed_nested_logit_ll(
+    V_fixed: jnp.ndarray,
+    dm_random: jnp.ndarray,
+    beta_random_means: jnp.ndarray,
+    beta_random_spreads: jnp.ndarray,
+    dist_codes: jnp.ndarray,
+    draws: jnp.ndarray,
+    lambdas: jnp.ndarray,
+    nest_matrix: jnp.ndarray,
+    chosen: jnp.ndarray,
+    weights: jnp.ndarray,
+    available: jnp.ndarray,
+    n_obs: int,
+    n_alts: int,
+    k_random: int,
+    n_draws: int,
+    n_nests: int,
+) -> jnp.ndarray:
+    """Compute mixed nested logit simulated log-likelihood.
+
+    For each draw, generates random coefficients, computes utilities,
+    then applies nested logit probabilities. Averages across draws
+    for simulated maximum likelihood.
+
+    Parameters
+    ----------
+    V_fixed : jnp.ndarray, shape (n_obs, n_alts)
+        Fixed utility component.
+    dm_random : jnp.ndarray, shape (n_obs * n_alts, k_random)
+        Design matrix columns for random parameters.
+    beta_random_means : jnp.ndarray, shape (k_random,)
+        Mean coefficients for random parameters.
+    beta_random_spreads : jnp.ndarray, shape (k_random,)
+        Spread coefficients for random parameters.
+    dist_codes : jnp.ndarray, shape (k_random,)
+        Integer distribution codes (0=normal, 1=lognormal, 2=triangular, 3=uniform).
+    draws : jnp.ndarray, shape (n_obs, n_draws, k_random)
+        Standard normal draws for simulated integration.
+    lambdas : jnp.ndarray, shape (n_nests,)
+        Nest dissimilarity parameters in (0, 1].
+    nest_matrix : jnp.ndarray, shape (n_alts, n_nests)
+        Alternative-to-nest membership matrix.
+    chosen : jnp.ndarray, shape (n_obs, n_alts)
+        Binary indicator matrix for chosen alternatives.
+    weights : jnp.ndarray, shape (n_obs,)
+        Observation-level weights.
+    available : jnp.ndarray, shape (n_obs, n_alts)
+        Binary availability matrix.
+    n_obs, n_alts, k_random, n_draws, n_nests : int
+        Problem dimensions.
+
+    Returns
+    -------
+    jnp.ndarray, scalar
+        Simulated log-likelihood.
+    """
+    means = beta_random_means[None, :]  # (1, k_random)
+    spreads = beta_random_spreads[None, :]  # (1, k_random)
+
+    # Pre-compute nest membership for nested logit
+    nest_matrix.sum(axis=1) > 0  # (n_alts,) bool
+    long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
+    for m in range(n_nests):
+        mask_m = nest_matrix[:, m] > 0
+        long_lambda = jnp.where(mask_m, lambdas[m], long_lambda)
+
+    def _ll_single_draw(r):
+        """Log-likelihood contribution for a single draw."""
+        z_r = draws[:, r, :]  # (n_obs, k_random)
+
+        # Generate random coefficients (same as mixed_logit_ll)
+        beta_normal = means + spreads * z_r
+        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
+        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
+        d = 0.3989422804014327
+        poly = t * (
+            0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+        )
+        phi_z = jnp.where(
+            z_r >= 0,
+            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
+            d * jnp.exp(-0.5 * z_r * z_r) * poly,
+        )
+        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
+        mask = phi_z <= 0.5
+        beta_triangular = jnp.where(
+            mask,
+            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
+            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        )
+
+        dist = dist_codes[None, :]
+        beta_random_r = jnp.where(
+            dist == 0,
+            beta_normal,
+            jnp.where(
+                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+            ),
+        )
+
+        # Random utility component
+        v_random = jnp.sum(
+            dm_random.reshape(n_obs, n_alts, k_random) * beta_random_r[:, None, :],
+            axis=2,
+        )
+
+        # Total utility
+        V = V_fixed + v_random
+
+        # Nested logit log-probabilities
+        log_probs = nested_log_probs(V, lambdas, nest_matrix, available)
+
+        # Chosen log-probability
+        log_L_n = (log_probs * chosen).sum(axis=1)
+        return log_L_n
+
+    # vmap over draws
+    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+
+    # Simulated log-likelihood
+    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
+    return jnp.sum(log_L_sim * weights)
+
+
+# ---------------------------------------------------------------------------
 # Log-likelihood computation (shared across models)
 # ---------------------------------------------------------------------------
 
