@@ -10,14 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from locpick._compat import _JAX_AVAILABLE
 from locpick._sampling.correction import get_sampling_correction
-
-if _JAX_AVAILABLE:
-    import jax
-    import jax.numpy as jnp
 
 
 @jax.tree_util.register_pytree_node_class
@@ -77,9 +74,6 @@ class EdgeDataJAX:
         -------
         EdgeDataJAX
         """
-        if not _JAX_AVAILABLE:
-            raise ImportError("JAX is required for EdgeDataJAX")
-
         n_edges = edge_struct.n_edges
         n_alts = edge_struct.n_alts
 
@@ -234,11 +228,6 @@ class ChoiceDataJAX:
         -------
         ChoiceDataJAX
         """
-        if not _JAX_AVAILABLE:
-            raise ImportError("JAX is required for ChoiceDataJAX")
-
-        import jax.numpy as jnp
-
         n_obs = arrays.n_obs
         n_alts = arrays.n_alts
 

@@ -1,5 +1,5 @@
 # ruff: noqa: E402
-"""Spatial model tests: SCL, MSCL, NestedSCL, MNSCL."""
+"""Spatial model tests: SCL, MSCL, SCL, MNSCL."""
 
 """Tests for the Spatially Correlated Logit (SCL) model.
 
@@ -489,7 +489,6 @@ parameter recovery, and integration with SCL components.
 
 
 from locpick.models.mixed import ParamDistribution
-from locpick.models.mscl import MixedSCL
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -555,7 +554,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         """Test that MSCL raises error when graph is not provided."""
         ct, _, _ = _make_choice_data()
         with pytest.raises(ValueError, match="graph"):
-            MixedSCL(
+            SCL(
                 data=ct,
                 formula="cost + time",
                 graph=None,
@@ -566,7 +565,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data()
         omega = _make_simple_adjacency()
         with pytest.raises(ValueError, match="formula.*spec"):
-            MixedSCL(
+            SCL(
                 data=ct,
                 graph=omega,
             )
@@ -576,7 +575,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=200, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = MixedSCL(
+        model = SCL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -594,7 +593,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=200, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = MixedSCL(
+        model = SCL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -618,7 +617,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=500, n_alts=5, seed=42)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = MixedSCL(
+        model = SCL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -638,7 +637,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         omega = _make_simple_adjacency(n_alts=5)
         sp_graph = sp.csr_array(omega)
 
-        model = MixedSCL(
+        model = SCL(
             data=ct,
             formula="cost + time",
             graph=sp_graph,
@@ -656,7 +655,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         omega = _make_simple_adjacency(n_alts=5)
 
         # Halton draws (default)
-        model_halton = MixedSCL(
+        model_halton = SCL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -668,7 +667,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         assert result_halton is not None
 
         # Pseudo-random draws
-        model_random = MixedSCL(
+        model_random = SCL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -690,20 +689,15 @@ These tests verify:
 """
 
 
-from locpick._compat import _JAX_AVAILABLE
+import jax.numpy as jnp
 
-if _JAX_AVAILABLE:
-    import jax.numpy as jnp
-
-    from locpick._jax.builders import (
-        _nested_scl_grad_kernel,
-        _nested_scl_ll_kernel,
-        build_nested_scl_objective,
-    )
-    from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
-
+from locpick._jax.builders import (
+    _nested_scl_grad_kernel,
+    _nested_scl_ll_kernel,
+    build_nested_scl_objective,
+)
+from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
 from locpick.dgp import simulate_nested_scl
-from locpick.models.nested_scl import NestedSCL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -728,7 +722,6 @@ def simple_nest_data():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_kernel_compiles():
     """Test that the nested SCL JAX kernel compiles and returns a finite value."""
     n_obs, n_alts, n_nests = 10, 6, 2
@@ -795,7 +788,6 @@ def test_nested_scl_kernel_compiles():
     assert result < 0, "LL should be negative (log-likelihood of random data)"
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_gradient_compiles():
     """Test that the nested SCL gradient kernel compiles and returns finite values."""
     n_obs, n_alts, n_nests = 10, 6, 2
@@ -858,7 +850,6 @@ def test_nested_scl_gradient_compiles():
     assert np.all(np.isfinite(grad)), "Gradient should be finite"
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_objective_builds():
     """Test that build_nested_scl_objective returns a valid Objective."""
     from locpick.data.arrays import ChoiceArrays
@@ -926,12 +917,11 @@ def test_nested_scl_objective_builds():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_model_instantiation(simple_nest_data):
     """Test that NestedSpatiallyCorrelatedLogit can be instantiated."""
     dataset = simple_nest_data
 
-    model = NestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -942,12 +932,11 @@ def test_nested_scl_model_instantiation(simple_nest_data):
     assert model._nests is dataset.nests
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_model_fit(simple_nest_data):
     """Test that NestedSpatiallyCorrelatedLogit can fit and return results."""
     dataset = simple_nest_data
 
-    model = NestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -973,7 +962,6 @@ def test_nested_scl_model_fit(simple_nest_data):
     assert any("lambda_" in name for name in param_names)
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_parameter_recovery():
     """Test approximate parameter recovery on synthetic data."""
     dataset = simulate_nested_scl(
@@ -985,7 +973,7 @@ def test_nested_scl_parameter_recovery():
         seed=123,
     )
 
-    model = NestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1032,7 +1020,6 @@ def test_nested_scl_parameter_recovery():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_single_nest():
     """Test Nested SCL with a single nest (should reduce to SCL)."""
     dataset = simulate_nested_scl(
@@ -1044,7 +1031,7 @@ def test_nested_scl_single_nest():
         seed=42,
     )
 
-    model = NestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1058,7 +1045,6 @@ def test_nested_scl_single_nest():
     assert len(result.coefficients) == 5  # 3 beta + 1 rho + 1 lambda
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_mnl_equivalence():
     """Test that when rho=1 and lambda=1, the model approximates MNL."""
     # When rho=1 and lambda=1, the model should be equivalent to MNL
@@ -1072,7 +1058,7 @@ def test_nested_scl_mnl_equivalence():
         seed=42,
     )
 
-    model = NestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1087,7 +1073,6 @@ def test_nested_scl_mnl_equivalence():
     assert np.isfinite(result.log_likelihood)
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_nested_scl_invalid_inputs():
     """Test that invalid inputs raise appropriate errors."""
     dataset = simulate_nested_scl(
@@ -1099,17 +1084,9 @@ def test_nested_scl_invalid_inputs():
         seed=1,
     )
 
-    # Missing nests
-    with pytest.raises(ValueError, match="nests"):
-        NestedSCL(
-            dataset.choice_table,
-            formula="cost + time + income_x_cost",
-            graph=dataset.adjacency,
-        )
-
     # Missing graph
     with pytest.raises(ValueError, match="graph"):
-        NestedSCL(
+        SCL(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             nests=dataset.nests,
@@ -1117,7 +1094,7 @@ def test_nested_scl_invalid_inputs():
 
     # Missing formula and spec
     with pytest.raises(ValueError, match="formula.*spec"):
-        NestedSCL(
+        SCL(
             dataset.choice_table,
             nests=dataset.nests,
             graph=dataset.adjacency,
@@ -1136,20 +1113,12 @@ These tests verify:
 
 import pytest
 
-from locpick._compat import _JAX_AVAILABLE
-
-if _JAX_AVAILABLE:
-    import jax.numpy as jnp
-
-    from locpick._jax.builders import (
-        _mnscl_grad_kernel,
-        _mnscl_ll_kernel,
-        build_mnscl_objective,
-    )
-    from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
-
+from locpick._jax.builders import (
+    _mnscl_grad_kernel,
+    _mnscl_ll_kernel,
+    build_mnscl_objective,
+)
 from locpick.dgp import simulate_mnscl
-from locpick.models.mnscl import MixedNestedSCL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1175,7 +1144,6 @@ def simple_mnscl_data():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_kernel_compiles():
     """Test that the MNSCL JAX kernel compiles and returns a finite value."""
     n_obs, n_alts, n_nests = 10, 6, 2
@@ -1260,7 +1228,6 @@ def test_mnscl_kernel_compiles():
     assert result < 0, "LL should be negative (log-likelihood of random data)"
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_gradient_compiles():
     """Test that the MNSCL gradient kernel compiles and returns finite values."""
     n_obs, n_alts, n_nests = 10, 6, 2
@@ -1341,7 +1308,6 @@ def test_mnscl_gradient_compiles():
     assert np.all(np.isfinite(grad)), "Gradient should be finite"
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_objective_builds():
     """Test that build_mnscl_objective returns a valid Objective."""
     from locpick.data.arrays import ChoiceArrays
@@ -1420,12 +1386,11 @@ def test_mnscl_objective_builds():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_model_instantiation(simple_mnscl_data):
     """Test that MixedNestedSpatiallyCorrelatedLogit can be instantiated."""
     dataset = simple_mnscl_data
 
-    model = MixedNestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1438,12 +1403,11 @@ def test_mnscl_model_instantiation(simple_mnscl_data):
     assert model._nests is dataset.nests
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_model_fit(simple_mnscl_data):
     """Test that MixedNestedSpatiallyCorrelatedLogit can fit and return results."""
     dataset = simple_mnscl_data
 
-    model = MixedNestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1474,7 +1438,6 @@ def test_mnscl_model_fit(simple_mnscl_data):
     assert any("sd_time" in name for name in param_names)
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_parameter_recovery():
     """Test approximate parameter recovery on synthetic data."""
     dataset = simulate_mnscl(
@@ -1487,7 +1450,7 @@ def test_mnscl_parameter_recovery():
         seed=123,
     )
 
-    model = MixedNestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1538,7 +1501,6 @@ def test_mnscl_parameter_recovery():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_single_nest():
     """Test MNSCL with a single nest (should reduce to MSCL-like behavior)."""
     dataset = simulate_mnscl(
@@ -1551,7 +1513,7 @@ def test_mnscl_single_nest():
         seed=42,
     )
 
-    model = MixedNestedSCL(
+    model = SCL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1568,7 +1530,6 @@ def test_mnscl_single_nest():
     assert len(result.coefficients) == 6  # 2 fixed beta + 1 rho + 1 lambda + 2 random
 
 
-@pytest.mark.skipif(not _JAX_AVAILABLE, reason="JAX not available")
 def test_mnscl_invalid_inputs():
     """Test that invalid inputs raise appropriate errors."""
     dataset = simulate_mnscl(
@@ -1581,18 +1542,9 @@ def test_mnscl_invalid_inputs():
         seed=1,
     )
 
-    # Missing nests
-    with pytest.raises(ValueError, match="nests"):
-        MixedNestedSCL(
-            dataset.choice_table,
-            formula="cost + time + income_x_cost",
-            graph=dataset.adjacency,
-            random_params={"time": ParamDistribution("normal", "time")},
-        )
-
     # Missing graph
     with pytest.raises(ValueError, match="graph"):
-        MixedNestedSCL(
+        SCL(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             nests=dataset.nests,
@@ -1601,7 +1553,7 @@ def test_mnscl_invalid_inputs():
 
     # Missing formula and spec
     with pytest.raises(ValueError, match="formula.*spec"):
-        MixedNestedSCL(
+        SCL(
             dataset.choice_table,
             nests=dataset.nests,
             graph=dataset.adjacency,

@@ -46,12 +46,17 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._compat import _JAX_AVAILABLE
 from locpick._jax.objective import Objective
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
+from locpick.models._spatial import (
+    EdgeStructure,
+    _resolve_spatial_graph,
+    naturalize_rho,
+)
 from locpick.models.base import (
     BaseChoiceModel,
+    SpatialMixin,
     _compute_fit_statistics,
     _compute_null_ll,
 )
@@ -60,7 +65,7 @@ from locpick.models.nested import NestingTree, naturalize_nest_params
 from locpick.results.fit_result import FitResult
 
 
-class MixedNestedMNL(BaseChoiceModel):
+class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
     r"""Mixed Nested Logit model for location choice estimation.
 
     This model combines random coefficients (mixed logit) with a nesting
@@ -126,6 +131,7 @@ class MixedNestedMNL(BaseChoiceModel):
         spec=None,
         nests: Optional[NestingTree] = None,
         random_params: Optional[dict[str, ParamDistribution]] = None,
+        graph=None,
         n_draws: Optional[int] = None,
         draw_type: Optional[str] = None,
         seed: int = 42,
@@ -135,8 +141,6 @@ class MixedNestedMNL(BaseChoiceModel):
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
     ):
-        from locpick.config import config
-
         if nests is None:
             raise ValueError(
                 "MixedNestedMNL requires a 'nests' argument specifying "
@@ -160,11 +164,24 @@ class MixedNestedMNL(BaseChoiceModel):
         )
         self._nests = nests
         self._random_params = random_params
-        self._n_draws = n_draws if n_draws is not None else config.default_n_draws_mixed
-        self._draw_type = draw_type if draw_type is not None else config.default_qmc_engine
+        self._n_draws = n_draws if n_draws is not None else 100
+        self._draw_type = draw_type if draw_type is not None else "sobol"
         self._seed = seed
         self._draws: Optional[np.ndarray] = None
         self._nest_matrix: Optional[np.ndarray] = None
+        # Spatial state (None when graph is not provided).
+        self._graph_input = graph
+        self._omega = None
+        self._allocation = None
+        self._edge_list = None
+        self._n_alts_graph = None
+        self._edge_struct = None
+        self._edge_structs = None
+        self._edge_data_list = None
+
+    @property
+    def _is_spatial(self) -> bool:
+        return self._graph_input is not None
 
     # ------------------------------------------------------------------
     # Estimation
@@ -196,10 +213,37 @@ class MixedNestedMNL(BaseChoiceModel):
         self._random_distributions = random_distributions
         self._random_param_names = random_param_names
 
+        if not self._is_spatial:
+            return
+
+        # Resolve graph + build per-nest EdgeStructure / EdgeDataJAX
+        self._resolve_spatial_graph()
+        self._validate_graph_size(arrays)
+
+        from locpick._jax.data import EdgeDataJAX
+
+        n_nests = self._nests.n_nests
+        self._edge_structs = []
+        self._edge_data_list = []
+        for m in range(n_nests):
+            nest_alts = np.where(self._nest_matrix[:, m] > 0)[0]
+            n_nest_alts = len(nest_alts)
+            if n_nest_alts == 0:
+                self._edge_structs.append(None)
+                self._edge_data_list.append(None)
+                continue
+            nest_adj = self._omega[np.ix_(nest_alts, nest_alts)]
+            _, nest_alloc, nest_edges, _ = _resolve_spatial_graph(nest_adj)
+            edge_struct = EdgeStructure(nest_edges, n_nest_alts, nest_alloc)
+            self._edge_structs.append(edge_struct)
+            self._edge_data_list.append(EdgeDataJAX.from_edge_structure(edge_struct))
+
     def _get_solver_inputs(self, arrays: ChoiceArrays):
         """Get initial values, param names, bounds, and fixed mask.
 
-        Parameter layout: [beta_fixed, alpha_nest, mean_*, sd_*]
+        Parameter layout (non-spatial): [beta_fixed, alpha_nest, mean_*, sd_*]
+        Parameter layout (spatial):    [beta_fixed, alpha_rho_1..M,
+                                         alpha_lambda_1..M, mean_*, sd_*]
         """
         param_names_all = list(arrays.param_names)
         k_total = arrays.design_matrix.shape[1]
@@ -208,6 +252,26 @@ class MixedNestedMNL(BaseChoiceModel):
         k_random = len(random_param_names)
         k_fixed = k_total - k_random
         fixed_param_names = [name for name in param_names_all if name not in random_param_names]
+
+        if self._is_spatial:
+            n_nests = self._nests.n_nests
+            x0 = np.concatenate(
+                [
+                    np.zeros(k_fixed),
+                    np.zeros(n_nests),  # alpha_rho per nest
+                    self._nests.initial_alphas(),
+                    np.zeros(k_random),
+                    np.full(k_random, 0.1),
+                ]
+            )
+            display_names = (
+                fixed_param_names
+                + [f"alpha_rho_{name}" for name in self._nests.nest_names]
+                + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
+                + [f"mean_{name}" for name in random_param_names]
+                + [f"sd_{name}" for name in random_param_names]
+            )
+            return x0, display_names, None, None
 
         # Initial values: zeros for beta/means, small positive for nest alphas,
         # zeros for random means, small positive for random spreads
@@ -236,19 +300,30 @@ class MixedNestedMNL(BaseChoiceModel):
                 "Random parameter structure must be prepared before building objective."
             )
 
+        if self._is_spatial:
+            from locpick._jax.builders import build_mnscl_objective
+
+            return build_mnscl_objective(
+                arrays,
+                self._nest_matrix,
+                self._edge_data_list,
+                self._random_col_indices,
+                self._random_distributions,
+                self._draws,
+            )
+
         # Try JAX backend first
         backend = (self._backend or os.environ.get("LOCPICK_MIXED_NESTED_BACKEND", "")).lower()
         if backend != "numpy":
-            if _JAX_AVAILABLE:
-                from locpick._jax.builders import build_mixed_nested_objective
+            from locpick._jax.builders import build_mixed_nested_objective
 
-                return build_mixed_nested_objective(
-                    arrays,
-                    self._nest_matrix,
-                    self._random_col_indices,
-                    self._random_distributions,
-                    self._draws,
-                )
+            return build_mixed_nested_objective(
+                arrays,
+                self._nest_matrix,
+                self._random_col_indices,
+                self._random_distributions,
+                self._draws,
+            )
 
         raise NotImplementedError(
             "MixedNestedMNL currently only supports the JAX backend. "
@@ -275,57 +350,119 @@ class MixedNestedMNL(BaseChoiceModel):
 
         n_nests = self._nests.n_nests
 
-        # Extract parameter blocks
-        beta_fixed = all_params[:k_fixed]
-        alpha_nest = all_params[k_fixed : k_fixed + n_nests]
-        beta_random_means = all_params[k_fixed + n_nests : k_fixed + n_nests + k_random]
-        beta_random_spreads = all_params[k_fixed + n_nests + k_random :]
-
-        # Naturalize nest parameters: alpha -> lambda
-        lambdas = naturalize_nest_params(alpha_nest)
-
-        # Display parameters: [beta_fixed, lambda_nest, mean_*, sd_*]
-        display_params = np.concatenate(
-            [beta_fixed, lambdas, beta_random_means, np.abs(beta_random_spreads)]
-        )
-
-        # Parameter names
-        display_names = (
-            fixed_param_names
-            + [f"lambda_{name}" for name in self._nests.nest_names]
-            + [f"mean_{name}" for name in random_param_names]
-            + [f"sd_{name}" for name in random_param_names]
-        )
-
-        # Standard errors — prefer HVP-based Hessian
-        std_errors = np.full(len(display_params), np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            # Delta method for nest parameters: SE(lambda) = |d(lambda)/d(alpha)| * SE(alpha)
-            se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-            std_errors = np.concatenate(
-                [
-                    se_raw[:k_fixed],
-                    se_lambda,
-                    se_raw[k_fixed + n_nests :],
-                ]
+        if self._is_spatial:
+            # Spatial layout: [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
+            beta_fixed = all_params[:k_fixed]
+            alpha_rho = all_params[k_fixed : k_fixed + n_nests]
+            alpha_lambda = all_params[k_fixed + n_nests : k_fixed + 2 * n_nests]
+            beta_random_means = all_params[
+                k_fixed + 2 * n_nests : k_fixed + 2 * n_nests + k_random
+            ]
+            beta_random_spreads = all_params[k_fixed + 2 * n_nests + k_random :]
+            rhos = naturalize_rho(alpha_rho)
+            lambdas = naturalize_nest_params(alpha_lambda)
+            display_params = np.concatenate(
+                [beta_fixed, rhos, lambdas, beta_random_means, np.abs(beta_random_spreads)]
             )
-        except Exception:
-            if solver_result.hessian is not None:
-                try:
-                    se_raw = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
-                    se_raw[se_raw == 0] = np.nan
-                    se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-                    std_errors = np.concatenate(
-                        [
-                            se_raw[:k_fixed],
-                            se_lambda,
-                            se_raw[k_fixed + n_nests :],
-                        ]
-                    )
-                except Exception:
-                    pass
+            display_names = (
+                fixed_param_names
+                + [f"rho_{name}" for name in self._nests.nest_names]
+                + [f"lambda_{name}" for name in self._nests.nest_names]
+                + [f"mean_{name}" for name in random_param_names]
+                + [f"sd_{name}" for name in random_param_names]
+            )
+            model_type = "Mixed Nested Spatially Correlated Logit"
+
+            std_errors = np.full(len(display_params), np.nan)
+            try:
+                hess = self._compute_hessian(all_params)
+                se_raw = self._compute_std_errors_from_hessian(hess)
+                se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
+                se_lambda = (
+                    lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
+                )
+                std_errors = np.concatenate(
+                    [
+                        se_raw[:k_fixed],
+                        se_rho,
+                        se_lambda,
+                        se_raw[k_fixed + 2 * n_nests :],
+                    ]
+                )
+            except Exception:
+                if solver_result.hessian is not None:
+                    try:
+                        se_raw = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                        se_raw[se_raw == 0] = np.nan
+                        se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
+                        se_lambda = (
+                            lambdas
+                            * (1.0 - lambdas)
+                            * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
+                        )
+                        std_errors = np.concatenate(
+                            [
+                                se_raw[:k_fixed],
+                                se_rho,
+                                se_lambda,
+                                se_raw[k_fixed + 2 * n_nests :],
+                            ]
+                        )
+                    except Exception:
+                        pass
+        else:
+            # Extract parameter blocks
+            beta_fixed = all_params[:k_fixed]
+            alpha_nest = all_params[k_fixed : k_fixed + n_nests]
+            beta_random_means = all_params[k_fixed + n_nests : k_fixed + n_nests + k_random]
+            beta_random_spreads = all_params[k_fixed + n_nests + k_random :]
+
+            # Naturalize nest parameters: alpha -> lambda
+            lambdas = naturalize_nest_params(alpha_nest)
+
+            # Display parameters: [beta_fixed, lambda_nest, mean_*, sd_*]
+            display_params = np.concatenate(
+                [beta_fixed, lambdas, beta_random_means, np.abs(beta_random_spreads)]
+            )
+
+            # Parameter names
+            display_names = (
+                fixed_param_names
+                + [f"lambda_{name}" for name in self._nests.nest_names]
+                + [f"mean_{name}" for name in random_param_names]
+                + [f"sd_{name}" for name in random_param_names]
+            )
+            model_type = "Mixed Nested Logit"
+
+            # Standard errors — prefer HVP-based Hessian
+            std_errors = np.full(len(display_params), np.nan)
+            try:
+                hess = self._compute_hessian(all_params)
+                se_raw = self._compute_std_errors_from_hessian(hess)
+                # Delta method for nest parameters: SE(lambda) = |d(lambda)/d(alpha)| * SE(alpha)
+                se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
+                std_errors = np.concatenate(
+                    [
+                        se_raw[:k_fixed],
+                        se_lambda,
+                        se_raw[k_fixed + n_nests :],
+                    ]
+                )
+            except Exception:
+                if solver_result.hessian is not None:
+                    try:
+                        se_raw = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                        se_raw[se_raw == 0] = np.nan
+                        se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
+                        std_errors = np.concatenate(
+                            [
+                                se_raw[:k_fixed],
+                                se_lambda,
+                                se_raw[k_fixed + n_nests :],
+                            ]
+                        )
+                    except Exception:
+                        pass
 
         # T-values and p-values
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -373,7 +510,7 @@ class MixedNestedMNL(BaseChoiceModel):
             n_alts=arrays.n_alts,
             coefficients=coefficients,
             std_errors=std_err_series,
-            model_type="Mixed Nested Logit",
+            model_type=model_type,
             solver_name=solver_result.solver_name,
             solver_result_raw=solver_result.raw,
         )
@@ -419,10 +556,7 @@ class MixedNestedMNL(BaseChoiceModel):
             )
 
         # Use JAX backend for prediction
-        if _JAX_AVAILABLE:
-            return self._probabilities_jax(arrays, beta, alpha)
-
-        raise NotImplementedError("MixedNestedMNL prediction requires JAX.")
+        return self._probabilities_jax(arrays, beta, alpha)
 
     def _probabilities_jax(self, arrays, beta=None, alpha=None):
         """Compute probabilities using JAX backend."""

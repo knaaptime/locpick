@@ -56,7 +56,10 @@ from locpick._jax.objective import Objective
 from locpick._kernels.constants import NEG_INF
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
-from locpick.models.base import BaseChoiceModel, _safe_inv, _sandwich_inv
+from locpick.models._spatial import (
+    naturalize_rho,
+)
+from locpick.models.base import BaseChoiceModel, SpatialMixin, _safe_inv, _sandwich_inv
 from locpick.results.fit_result import FitResult
 
 # ---------------------------------------------------------------------------
@@ -716,7 +719,7 @@ def _mixed_logit_gradient_numpy(
 # ---------------------------------------------------------------------------
 
 
-class MixedMNL(BaseChoiceModel):
+class MixedMNL(BaseChoiceModel, SpatialMixin):
     """Mixed logit (random coefficients) model for location choice estimation.
 
     This model generalises the multinomial logit by allowing some or all
@@ -768,6 +771,7 @@ class MixedMNL(BaseChoiceModel):
         formula: Optional[str] = None,
         spec=None,
         random_params: Optional[dict] = None,
+        graph=None,
         n_draws: Optional[int] = None,
         draw_type: Optional[str] = None,
         seed: int = 42,
@@ -777,8 +781,6 @@ class MixedMNL(BaseChoiceModel):
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
     ):
-        from locpick.config import config
-
         if random_params is None or len(random_params) == 0:
             raise ValueError(
                 "MixedLogit requires at least one random parameter. "
@@ -796,89 +798,37 @@ class MixedMNL(BaseChoiceModel):
             availability=availability,
         )
         self._random_params = random_params
-        self._n_draws = n_draws if n_draws is not None else config.default_n_draws_mixed
-        self._draw_type = draw_type if draw_type is not None else config.default_qmc_engine
+        self._n_draws = n_draws if n_draws is not None else 100
+        self._draw_type = draw_type if draw_type is not None else "sobol"
         self._seed = seed
         self._draws: Optional[np.ndarray] = None
+        # Spatial state (None when graph is not provided).
+        self._graph_input = graph
+        self._omega = None
+        self._allocation = None
+        self._edge_list = None
+        self._n_alts_graph = None
+        self._edge_struct = None
+
+    @property
+    def _is_spatial(self) -> bool:
+        return self._graph_input is not None
 
     # ------------------------------------------------------------------
     # Estimation
     # ------------------------------------------------------------------
 
-    def fit(self) -> FitResult:
-        """Estimate the mixed logit model and return results.
+    def _pre_fit(self, arrays: ChoiceArrays) -> None:
+        """Identify random-parameter columns, draws, and parameter layout.
 
-        Returns
-        -------
-        FitResult
-            Complete estimation results including fixed coefficients,
-            random coefficient means and spreads, and fit statistics.
+        Stashes state used by ``_build_objective``, ``_get_solver_inputs``
+        and ``_build_fit_result`` so they can match the base-class
+        signatures.
         """
-        # Build estimation arrays
-        arrays = self._build_arrays()
-        self._arrays = arrays
-
-        # Identify random parameter columns
         param_names = list(arrays.param_names)
-        random_param_names = []
-        random_distributions = []
-        random_col_indices = []
-
-        for name, dist in self._random_params.items():
-            if name not in param_names:
-                raise ValueError(
-                    f"Random parameter '{name}' not found in design matrix. "
-                    f"Available parameters: {param_names}"
-                )
-            random_param_names.append(name)
-            random_distributions.append(dist.distribution)
-            random_col_indices.append(param_names.index(name))
-
-        k_fixed = len(param_names) - len(random_param_names)
-        k_random = len(random_param_names)
-
-        objective = self._build_objective(arrays)
-
-        # Initial values: zeros for fixed/means, small positive spreads
-        x0 = np.concatenate(
-            [
-                np.zeros(k_fixed),
-                np.zeros(k_random),
-                np.full(k_random, 0.1),
-            ]
-        )
-
-        fixed_names = [n for i, n in enumerate(param_names) if i not in random_col_indices]
-        full_param_names = (
-            fixed_names
-            + [f"mean_{n}" for n in random_param_names]
-            + [f"sd_{n}" for n in random_param_names]
-        )
-
-        solver_result = self._solver.solve(
-            objective=objective,
-            x0=x0,
-            param_names=full_param_names,
-        )
-
-        # Build FitResult
-        self._result = self._build_fit_result(
-            solver_result,
-            arrays,
-            k_fixed,
-            k_random,
-            random_param_names,
-            random_distributions,
-        )
-        self._clear_caches()
-        return self._result
-
-    def _build_objective(self, arrays: ChoiceArrays) -> Objective:
-        """Build optimization objective for mixed logit estimation."""
-        param_names = list(arrays.param_names)
-        random_param_names = []
-        random_distributions = []
-        random_col_indices = []
+        random_param_names: list[str] = []
+        random_distributions: list[str] = []
+        random_col_indices: list[int] = []
 
         for name, dist in self._random_params.items():
             if name not in param_names:
@@ -894,33 +844,98 @@ class MixedMNL(BaseChoiceModel):
         k_random = len(random_param_names)
 
         if self._draw_type == "halton":
-            self._draws = generate_halton_draws(
+            draws = generate_halton_draws(
                 arrays.n_obs,
                 self._n_draws,
                 k_random,
                 seed=self._seed,
             )
         else:
-            self._draws = generate_random_draws(
+            draws = generate_random_draws(
                 arrays.n_obs,
                 self._n_draws,
                 k_random,
                 seed=self._seed,
             )
 
+        fixed_names = [n for i, n in enumerate(param_names) if i not in random_col_indices]
+        full_param_names = (
+            fixed_names
+            + [f"mean_{n}" for n in random_param_names]
+            + [f"sd_{n}" for n in random_param_names]
+        )
+
+        self._random_param_names = random_param_names
+        self._random_distributions = random_distributions
+        self._random_col_indices = random_col_indices
+        self._k_fixed = k_fixed
+        self._k_random = k_random
+        self._fixed_names = fixed_names
+        self._full_param_names = full_param_names
+        self._draws = draws
+
+        if self._is_spatial:
+            self._resolve_spatial_graph()
+            self._validate_graph_size(arrays)
+
+    def _get_solver_inputs(self, arrays: ChoiceArrays):
+        if self._is_spatial:
+            # Layout: [beta_fixed, alpha_rho, mean_*, sd_*]
+            x0 = np.concatenate(
+                [
+                    np.zeros(self._k_fixed),
+                    np.zeros(1),  # alpha_rho
+                    np.zeros(self._k_random),
+                    np.full(self._k_random, 0.1),
+                ]
+            )
+            display_names = (
+                list(self._fixed_names)
+                + ["rho"]
+                + [f"mean_{n}" for n in self._random_param_names]
+                + [f"sd_{n}" for n in self._random_param_names]
+            )
+            return x0, display_names, None, None
+
+        x0 = np.concatenate(
+            [
+                np.zeros(self._k_fixed),
+                np.zeros(self._k_random),
+                np.full(self._k_random, 0.1),
+            ]
+        )
+        return x0, list(self._full_param_names), None, None
+
+    def _build_objective(self, arrays: ChoiceArrays) -> Objective:
+        """Build optimization objective for mixed logit estimation."""
+        random_col_indices = self._random_col_indices
+        random_distributions = self._random_distributions
+        k_fixed = self._k_fixed
+        k_random = self._k_random
+
+        if self._is_spatial:
+            from locpick._jax.builders import build_mscl_objective
+
+            return build_mscl_objective(
+                arrays,
+                self._edge_struct,
+                self._allocation,
+                self._edge_list,
+                random_col_indices,
+                random_distributions,
+                self._draws,
+            )
+
         backend = (self._backend or os.environ.get("LOCPICK_MIXED_BACKEND", "")).lower()
         if backend != "numpy":
-            try:
-                from locpick._jax.builders import build_mixed_logit_objective
+            from locpick._jax.builders import build_mixed_logit_objective
 
-                return build_mixed_logit_objective(
-                    arrays,
-                    random_col_indices=random_col_indices,
-                    random_distributions=random_distributions,
-                    draws=self._draws,
-                )
-            except ImportError:
-                pass
+            return build_mixed_logit_objective(
+                arrays,
+                random_col_indices=random_col_indices,
+                random_distributions=random_distributions,
+                draws=self._draws,
+            )
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         chosen = np.asarray(arrays.chosen, dtype=np.float64)
@@ -970,43 +985,49 @@ class MixedMNL(BaseChoiceModel):
                 weights=weights,
             )
 
-        fixed_names = [n for i, n in enumerate(param_names) if i not in random_col_indices]
-        full_param_names = (
-            fixed_names
-            + [f"mean_{n}" for n in random_param_names]
-            + [f"sd_{n}" for n in random_param_names]
-        )
         return Objective.from_numpy(
             ll_fn=ll_fn,
             grad_fn=grad_fn,
-            param_names=full_param_names,
+            param_names=list(self._full_param_names),
         )
 
     def _build_fit_result(
         self,
         solver_result: SolverResult,
         arrays: ChoiceArrays,
-        k_fixed: int,
-        k_random: int,
-        random_param_names: list[str],
-        random_distributions: list[str],
     ) -> FitResult:
         """Build a FitResult from solver output."""
-        all_params = solver_result.coefficients
-        all_params[:k_fixed]
-        beta_random_means = all_params[k_fixed : k_fixed + k_random]
-        beta_random_spreads = all_params[k_fixed + k_random :]
+        k_fixed = self._k_fixed
+        k_random = self._k_random
+        random_param_names = self._random_param_names
+        random_distributions = self._random_distributions
 
-        # Parameter names
-        param_names = list(arrays.param_names)
-        fixed_names = [
-            n
-            for i, n in enumerate(param_names)
-            if i not in [param_names.index(rn) for rn in random_param_names]
-        ]
-        random_mean_names = [f"mean_{n}" for n in random_param_names]
-        random_spread_names = [f"sd_{n}" for n in random_param_names]
-        full_param_names = fixed_names + random_mean_names + random_spread_names
+        all_params = solver_result.coefficients
+
+        if self._is_spatial:
+            # Layout: [beta_fixed, alpha_rho, mean_*, sd_*]
+            beta_fixed = all_params[:k_fixed]
+            alpha_rho = all_params[k_fixed]
+            rho = naturalize_rho(alpha_rho)
+            beta_random_means = all_params[k_fixed + 1 : k_fixed + 1 + k_random]
+            beta_random_spreads = all_params[k_fixed + 1 + k_random :]
+            display_params = np.concatenate(
+                [beta_fixed, [rho], beta_random_means, beta_random_spreads]
+            )
+            full_param_names = (
+                list(self._fixed_names)
+                + ["rho"]
+                + [f"mean_{n}" for n in random_param_names]
+                + [f"sd_{n}" for n in random_param_names]
+            )
+            model_type = "Mixed Spatially Correlated Logit"
+        else:
+            full_param_names = list(self._full_param_names)
+            all_params[:k_fixed]
+            beta_random_means = all_params[k_fixed : k_fixed + k_random]
+            beta_random_spreads = all_params[k_fixed + k_random :]
+            display_params = all_params
+            model_type = "Mixed Logit"
 
         # Standard errors — prefer HVP-based Hessian (exact, via JAX autodiff)
         # over the solver's approximate inverse Hessian (e.g. L-BFGS-B hess_inv).
@@ -1028,17 +1049,29 @@ class MixedMNL(BaseChoiceModel):
                 except Exception:
                     pass
 
+        if self._is_spatial:
+            # Delta method for rho: SE(rho) = rho*(1-rho)*SE(alpha_rho)
+            se_alpha = std_errors.copy()
+            se_rho = float(rho * (1.0 - rho) * se_alpha[k_fixed])
+            display_std_errors = np.concatenate(
+                [se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1 :]]
+            )
+        else:
+            display_std_errors = std_errors
+
         # T-values and p-values
         with np.errstate(divide="ignore", invalid="ignore"):
-            t_values = np.where(std_errors > 0, all_params / std_errors, np.nan)
+            t_values = np.where(
+                display_std_errors > 0, display_params / display_std_errors, np.nan
+            )
         from scipy import stats
 
         p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
 
         # Confidence intervals
         z_crit = stats.norm.ppf(0.975)
-        conf_lower = all_params - z_crit * std_errors
-        conf_upper = all_params + z_crit * std_errors
+        conf_lower = display_params - z_crit * display_std_errors
+        conf_upper = display_params + z_crit * display_std_errors
 
         # Log-likelihood
         ll = solver_result.log_likelihood
@@ -1063,8 +1096,8 @@ class MixedMNL(BaseChoiceModel):
         rho_bar_squared = 1 - (ll - n_params) / ll_null
 
         # Build pandas objects
-        coefficients = pd.Series(all_params, index=full_param_names, name="coefficient")
-        std_err_series = pd.Series(std_errors, index=full_param_names, name="std_error")
+        coefficients = pd.Series(display_params, index=full_param_names, name="coefficient")
+        std_err_series = pd.Series(display_std_errors, index=full_param_names, name="std_error")
         t_series = pd.Series(t_values, index=full_param_names, name="t_value")
         p_series = pd.Series(p_values, index=full_param_names, name="p_value")
         conf_int = pd.DataFrame(
@@ -1098,7 +1131,7 @@ class MixedMNL(BaseChoiceModel):
             rho_squared=rho_squared,
             rho_bar_squared=rho_bar_squared,
             spec=self._spec,
-            model_type="Mixed Logit",
+            model_type=model_type,
             solver_name=solver_result.solver_name,
             solver_result=solver_result.raw,
         )

@@ -16,14 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from locpick._compat import _JAX_AVAILABLE
 from locpick._jax.transforms import ParamTransform
-
-if _JAX_AVAILABLE:
-    import jax
-    import jax.numpy as jnp
 
 
 @dataclass
@@ -102,8 +99,6 @@ class Objective:
         """
         if self.loglike_contribs_jax is None:
             raise ValueError("score_contribs requires loglike_contribs_jax to be set.")
-        if not _JAX_AVAILABLE:
-            raise RuntimeError("JAX is required for score_contribs.")
         # Cache the JIT'd score function to avoid recompilation on every call
         if not hasattr(self, "_score_fn_cache"):
             self._score_fn_cache = jax.jit(jax.jacrev(self.loglike_contribs_jax))
@@ -112,8 +107,8 @@ class Objective:
     def hvp(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
         """Hessian-vector product at ``x`` with direction ``v``.
 
-        Uses JAX forward-over-reverse AD when available, otherwise
-        falls back to finite differences.
+        Uses JAX forward-over-reverse AD via ``jax.jvp`` applied to the
+        gradient function.
 
         Parameters
         ----------
@@ -127,23 +122,16 @@ class Objective:
         np.ndarray
             Hessian-vector product H(x) @ v.
         """
-        if self.jax_fn is not None and _JAX_AVAILABLE:
-            x_jax = jnp.array(x, dtype=jnp.float64)
-            v_jax = jnp.array(v, dtype=jnp.float64)
-            grad_fn = jax.grad(self.jax_fn)
-            _, hvp = jax.jvp(grad_fn, (x_jax,), (v_jax,))
-            return np.asarray(hvp)
-        # Finite-difference fallback
-        h = 1e-5
-        x_p = x + h * v
-        x_m = x - h * v
-        return (self.grad(x_p) - self.grad(x_m)) / (2 * h)
+        if self.jax_fn is None:
+            raise RuntimeError("hvp requires a JAX-native log-likelihood (jax_fn).")
+        x_jax = jnp.array(x, dtype=jnp.float64)
+        v_jax = jnp.array(v, dtype=jnp.float64)
+        grad_fn = jax.grad(self.jax_fn)
+        _, hvp = jax.jvp(grad_fn, (x_jax,), (v_jax,))
+        return np.asarray(hvp)
 
     def hessian(self, x: np.ndarray) -> np.ndarray:
-        """Compute the Hessian at ``x``.
-
-        Uses HVP-based Hessian when JAX-native functions are available,
-        otherwise falls back to finite differences.
+        """Compute the Hessian at ``x`` via HVPs.
 
         Parameters
         ----------
@@ -155,11 +143,7 @@ class Objective:
         np.ndarray, shape (n_params, n_params)
             Hessian matrix of the log-likelihood.
         """
-        if self.jax_fn is not None and _JAX_AVAILABLE:
-            return self.hessian_hvp(x)
-        else:
-            # Finite-difference Hessian
-            return self._finite_diff_hessian(x)
+        return self.hessian_hvp(x)
 
     def hessian_hvp(self, x: np.ndarray) -> np.ndarray:
         """Compute Hessian via Hessian-vector products (HVP).
@@ -178,8 +162,8 @@ class Objective:
         np.ndarray, shape (n_params, n_params)
             Hessian matrix of the log-likelihood.
         """
-        if self.jax_fn is None or not _JAX_AVAILABLE:
-            return self._finite_diff_hessian(x)
+        if self.jax_fn is None:
+            raise RuntimeError("hessian_hvp requires a JAX-native log-likelihood (jax_fn).")
 
         x_jax = jnp.array(x, dtype=jnp.float64)
         grad_fn = jax.grad(self.jax_fn)
@@ -192,32 +176,6 @@ class Objective:
         hess_cols = jax.vmap(hvp_col)(eye)
         hess = 0.5 * (hess_cols + hess_cols.T)  # symmetrize
         return np.asarray(hess)
-
-    def _finite_diff_hessian(self, x: np.ndarray) -> np.ndarray:
-        """Compute Hessian via central finite differences."""
-        n = len(x)
-        h = 1e-5
-        hess = np.zeros((n, n))
-        self.fn(x)
-        for i in range(n):
-            for j in range(i, n):
-                x_pp = x.copy()
-                x_pm = x.copy()
-                x_mp = x.copy()
-                x_mm = x.copy()
-                x_pp[i] += h
-                x_pp[j] += h
-                x_pm[i] += h
-                x_pm[j] -= h
-                x_mp[i] -= h
-                x_mp[j] += h
-                x_mm[i] -= h
-                x_mm[j] -= h
-                hess[i, j] = (self.fn(x_pp) - self.fn(x_pm) - self.fn(x_mp) + self.fn(x_mm)) / (
-                    4 * h * h
-                )
-                hess[j, i] = hess[i, j]
-        return hess
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -260,8 +218,6 @@ class Objective:
         -------
         Objective
         """
-        if not _JAX_AVAILABLE:
-            raise ImportError("JAX is required for Objective.from_jax")
 
         # Numpy-compatible wrappers — minimise JAX↔NumPy overhead
         def log_likelihood(params: np.ndarray) -> float:

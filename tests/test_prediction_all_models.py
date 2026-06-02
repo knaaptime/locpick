@@ -21,7 +21,6 @@ from locpick.dgp import (
     simulate_scl,
 )
 from locpick.models.mixed import MixedMNL, ParamDistribution
-from locpick.models.mscl import MixedSCL
 from locpick.models.scl import SCL
 
 # ---------------------------------------------------------------------------
@@ -322,7 +321,7 @@ class TestMSCL:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_mscl(n_obs=500, n_alts=6, seed=42)
-        self.model = MixedSCL(
+        self.model = SCL(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,
@@ -456,7 +455,7 @@ class TestProtocolConformance:
         from locpick.models.base import ChoiceModel
 
         dataset = simulate_mscl(n_obs=500, n_alts=6, seed=42)
-        model = MixedSCL(
+        model = SCL(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,

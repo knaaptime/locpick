@@ -18,10 +18,10 @@ Model Specification <user-guide/modelspec>
 MNL Estimation <user-guide/mnl>
 Nested Logit <user-guide/nested>
 Mixed Logit <user-guide/mixed>
-SCL <user-guide/scl>
-MSCL <user-guide/mscl>
-NestedSCL <user-guide/nscl>
-MixedNestedSCL <user-guide/mnscl>
+SCL (spatial factory) <user-guide/scl>
+Spatial Mixed Logit <user-guide/spatial_mixed>
+Spatial Nested Logit <user-guide/spatial_nested>
+Spatial Mixed-Nested Logit <user-guide/spatial_mixed_nested>
 Simulated Location Choice Demo <user-guide/livelike_locpick_household_tract_demo>
 Spatial Models Demo <user-guide/spatial_models_demo>
 Sampling Correction <user-guide/sampling>

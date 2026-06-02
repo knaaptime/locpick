@@ -1,16 +1,16 @@
-# Mixed Spatially Correlated Logit (MSCL)
+# Mixed Logit with Spatial Correlation (MixedMNL + graph)
 
 ## Overview
 
-The `MixedSCL` class estimates the MSCL model proposed by Bhat & Guo (2004), which combines a GEV-based Spatially Correlated Logit (SCL) structure with random taste variation (mixed logit). The SCL component captures spatial correlation in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
+A `MixedMNL` model constructed with a spatial `graph=` argument estimates the Mixed Spatially Correlated Logit (MSCL) of Bhat & Guo (2004): it combines a closed-form GEV spatial-correlation structure with random taste variation. The spatial component captures correlation between contiguous alternatives in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
 
 ```{warning}
-The MSCL model does **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
+The spatial mixed logit does **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
 ```
 
 ## Mathematical Formulation
 
-The MSCL choice probability for alternative $i$ is:
+The choice probability for alternative $i$ is:
 
 $$P_i = \int (P_i \mid \beta) \, f(\beta \mid \theta) \, d\beta$$
 
@@ -18,7 +18,7 @@ approximated by simulated maximum likelihood:
 
 $$\tilde{P}_i = \frac{1}{R} \sum_{r=1}^{R} P_i(\beta^r)$$
 
-where $P_i(\beta^r)$ is the SCL choice probability conditional on the $r$-th draw of the random coefficients, and $f(\beta \mid \theta)$ is the mixing distribution.
+where $P_i(\beta^r)$ is the spatial choice probability conditional on the $r$-th draw of the random coefficients and $f(\beta \mid \theta)$ is the mixing distribution.
 
 The simulated log-likelihood is:
 
@@ -26,12 +26,12 @@ $$\text{SLL} = \sum_{n=1}^{N} w_n \log \left( \frac{1}{R} \sum_{r=1}^{R} L_n(\be
 
 ### Key Computational Advantage
 
-The SCL structure handles spatial correlation in closed form, so the simulation dimension equals the number of random parameters — **not** the number of spatial error components. In the empirical application of Bhat & Guo (2004), this reduces the integration dimension from ~500 (MMNL) to 3 (MSCL).
+The spatial GEV structure handles spatial correlation in closed form, so the simulation dimension equals the number of random parameters — **not** the number of spatial error components. In the empirical application of Bhat & Guo (2004), this reduces the integration dimension from ~500 (MMNL) to 3.
 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MixedSCL
+from locpick import ChoiceTable, MixedMNL
 from locpick.models.mixed import ParamDistribution
 from libpysal import graph
 
@@ -44,7 +44,7 @@ random_params = {
 }
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
-model = MixedSCL(
+model = MixedMNL(
     ct,
     formula="commute_time + density + shopping_access",
     graph=g,
@@ -80,8 +80,8 @@ Supported distributions:
 ## Draw Types
 
 ```python
-# Halton draws (default, quasi-random — more efficient)
-model = MixedSCL(
+# Halton draws (quasi-random — more efficient)
+model = MixedMNL(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=250,
@@ -89,7 +89,7 @@ model = MixedSCL(
 )
 
 # Pseudo-random draws
-model = MixedSCL(
+model = MixedMNL(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=500,
@@ -97,21 +97,15 @@ model = MixedSCL(
 )
 ```
 
-Halton draws provide better coverage of the mixing distribution with fewer draws, making them the default. Pseudo-random draws may be preferred for robustness checks.
+## Spatial-Only Estimation
 
-## SCL without Random Parameters
-
-When `random_params` is empty, the MSCL model reduces to the SCL model:
+When no random parameters are needed, prefer `MNL(graph=...)` directly to avoid the simulation loop:
 
 ```python
-model = MixedSCL(
-    ct, formula="cost + time", graph=g,
-    random_params={},
-    n_draws=50,
-)
-```
+from locpick import MNL
 
-For pure SCL estimation, prefer the `SCL` class directly — it avoids the overhead of the simulation loop.
+model = MNL(ct, formula="cost + time", graph=g)
+```
 
 ## References
 

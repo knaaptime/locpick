@@ -2,12 +2,25 @@
 
 ## Overview
 
-The `SCL` class estimates the SCL model proposed by Bhat & Guo (2004), which captures spatial correlation between contiguous alternatives using a paired Generalised Nested Logit (PGNL) structure with a single dissimilarity parameter $\rho$.
+`SCL` is a convenience factory that returns one of the four base estimators depending on which spatial / nesting / random-coefficient features are active:
+
+| Construction | Returns |
+|---|---|
+| `SCL(..., graph=g)` | `MNL` with spatial correlation |
+| `SCL(..., graph=g, nests=...)` | `NestedMNL` with spatial correlation |
+| `SCL(..., graph=g, random_params=...)` | `MixedMNL` with spatial correlation |
+| `SCL(..., graph=g, nests=..., random_params=...)` | `MixedNestedMNL` |
+
+The underlying model is the Spatially Correlated Logit of Bhat & Guo (2004), which captures spatial correlation between contiguous alternatives using a paired Generalised Nested Logit (PGNL) structure with a single dissimilarity parameter $\rho$ (per nest in the nested variants).
 
 When $\rho = 1$, the model reduces to the Multinomial Logit (MNL). Values of $\rho < 1$ indicate positive spatial correlation between adjacent alternatives — decision-makers view nearby zones as closer substitutes than distant ones.
 
+```{note}
+New code should prefer constructing `MNL`, `NestedMNL`, `MixedMNL`, or `MixedNestedMNL` directly with `graph=` for clarity. The `SCL` factory is retained for compatibility with existing scripts.
+```
+
 ```{warning}
-The SCL model does **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
+Spatial GEV models do **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
 ```
 
 ## Mathematical Formulation
@@ -47,17 +60,24 @@ All inputs are binarised (any non-zero entry becomes 1) and the diagonal is zero
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, SCL
+from locpick import ChoiceTable, MNL
 from libpysal import graph
 
 # Build spatial adjacency from zone geometries
 g = graph.Graph.build_contiguity(tracts_gdf, rook=False)
 
-# Estimate SCL model
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
-model = SCL(ct, formula="cost + time", graph=g)
+model = MNL(ct, formula="cost + time", graph=g)
 result = model.fit()
 print(result.summary())
+```
+
+Equivalently, using the `SCL` factory:
+
+```python
+from locpick import SCL
+
+model = SCL(ct, formula="cost + time", graph=g)  # returns an MNL instance
 ```
 
 ## Using scipy.sparse Input
@@ -68,7 +88,7 @@ import scipy.sparse as sp
 # Build adjacency manually
 adj = sp.csr_array(my_adjacency_matrix)
 
-model = SCL(ct, formula="cost + time", graph=adj)
+model = MNL(ct, formula="cost + time", graph=adj)
 result = model.fit()
 ```
 
@@ -90,8 +110,8 @@ A likelihood-ratio test of $\rho = 1$ (MNL) vs. $\rho < 1$ (SCL) tests whether s
 # Predict on estimation data
 probs = model.probabilities()
 
-# Predict with custom parameters
-probs = model.probabilities(beta=my_beta, rho=my_rho)
+# Predict with custom parameters (last entry is alpha_rho on the unconstrained scale)
+probs = model.probabilities(beta=my_full_params)
 ```
 
 ## References

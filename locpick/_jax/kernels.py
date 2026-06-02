@@ -22,14 +22,17 @@ Kernel design principles
 from __future__ import annotations
 
 import jax
-import jax.numpy as jnp
-from jax.ops import segment_sum
-from jax.scipy.special import logsumexp as jax_logsumexp
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 from locpick._kernels.constants import NEG_INF as _NEG_INF_FLOAT
+
+# Enable x64 before any jnp.float64 expression is evaluated at module-import
+# time below.
+jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp  # noqa: E402
+from jax.ops import segment_sum  # noqa: E402
+from jax.scipy.special import logsumexp as jax_logsumexp  # noqa: E402
+
 
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
 
@@ -530,7 +533,9 @@ def mixed_logit_ll(
             dist == 0,
             beta_normal,
             jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+                dist == 1,
+                beta_lognormal,
+                jnp.where(dist == 2, beta_triangular, beta_uniform),
             ),
         )  # (n_obs, k_random)
 
@@ -660,7 +665,9 @@ def mixed_nested_logit_ll(
             dist == 0,
             beta_normal,
             jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+                dist == 1,
+                beta_lognormal,
+                jnp.where(dist == 2, beta_triangular, beta_uniform),
             ),
         )
 

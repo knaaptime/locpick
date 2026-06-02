@@ -59,35 +59,6 @@ Models
    NestSpec :no-index:
    NestingTree :no-index:
 
-.. currentmodule:: locpick.models.scl
-
-.. autosummary::
-   :toctree: generated/
-
-   SCL :no-index:
-   EdgeStructure :no-index:
-
-.. currentmodule:: locpick.models.mscl
-
-.. autosummary::
-   :toctree: generated/
-
-   MixedSCL :no-index:
-
-.. currentmodule:: locpick.models.nested_scl
-
-.. autosummary::
-   :toctree: generated/
-
-   NestedSCL :no-index:
-
-.. currentmodule:: locpick.models.mnscl
-
-.. autosummary::
-   :toctree: generated/
-
-   MixedNestedSCL :no-index:
-
 .. currentmodule:: locpick.models.mixed
 
 .. autosummary::
@@ -95,6 +66,21 @@ Models
 
    MixedMNL :no-index:
    ParamDistribution :no-index:
+
+.. currentmodule:: locpick.models.mixed_nested
+
+.. autosummary::
+   :toctree: generated/
+
+   MixedNestedMNL :no-index:
+
+.. currentmodule:: locpick.models.scl
+
+.. autosummary::
+   :toctree: generated/
+
+   SCL :no-index:
+   EdgeStructure :no-index:
 
 Results
 -------
@@ -112,7 +98,10 @@ Results
    :toctree: generated/
 
    LikelihoodRatioTest :no-index:
+   HausmanTest :no-index:
    WaldTest :no-index:
+   lr_test :no-index:
+   hausman_test :no-index:
    wald_test :no-index:
 
 Sampling

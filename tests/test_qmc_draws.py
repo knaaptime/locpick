@@ -121,13 +121,13 @@ def test_mscl_qmc_fits_and_recovers():
     """MSCL with draw_type='qmc' should fit and stay in the same ballpark
     as the existing halton path on the standard simulated DGP."""
     from locpick.dgp import simulate_mscl
-    from locpick.models.mscl import MixedSCL
+    from locpick.models.scl import SCL
     from locpick.spec.model_spec import ParamDistribution as PD
 
     ds = simulate_mscl(n_obs=400, n_alts=10, seed=3)
     rp = {"time": PD(param="time", distribution="normal")}
 
-    m_qmc = MixedSCL(
+    m_qmc = SCL(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,
@@ -138,7 +138,7 @@ def test_mscl_qmc_fits_and_recovers():
     res_qmc = m_qmc.fit()
     assert np.isfinite(res_qmc.log_likelihood)
 
-    m_halton = MixedSCL(
+    m_halton = SCL(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,

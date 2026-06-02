@@ -130,6 +130,34 @@ class TestMarginalEffects:
         assert len(me) == ct_new.n_observations * ct_new.n_alternatives
         assert np.all(np.isfinite(me))
 
+    def test_average_marginal_effect_aggregations(self):
+        """AME helpers should aggregate per-obs ME consistently."""
+        ct, _, _, _ = _make_simple_dataset(n_obs=80, n_alts=4)
+        model = MNL(ct, formula="cost + time - 1")
+        model.fit()
+
+        me = model.marginal_effect(variable="cost")
+        ame_alt = model.average_marginal_effect("cost")
+        ame_obs = model.average_marginal_effect("cost", by="obs")
+        ame_all = model.average_marginal_effect("cost", by="overall")
+
+        assert len(ame_alt) == ct.n_alternatives
+        assert len(ame_obs) == ct.n_observations
+        npt.assert_allclose(ame_all, me.mean())
+        npt.assert_allclose(ame_alt.values, me.groupby(level=ame_alt.index.name).mean().values)
+
+        # cross/elasticity counterparts
+        cme = model.cross_marginal_effect(variable="cost")
+        el = model.elasticity(variable="cost")
+        npt.assert_allclose(
+            model.average_cross_marginal_effect("cost").values,
+            cme.groupby(level=ame_alt.index.name).mean().values,
+        )
+        npt.assert_allclose(
+            model.average_elasticity("cost").values,
+            el.groupby(level=ame_alt.index.name).mean().values,
+        )
+
 
 # ---------------------------------------------------------------------------
 # WTP / VOT
