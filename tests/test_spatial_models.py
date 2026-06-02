@@ -13,9 +13,11 @@ import pandas as pd
 import pytest
 from scipy.special import logsumexp
 
-from locpick import ChoiceTable
+from locpick import MNL, ChoiceTable
+from locpick.models.mixed import MixedMNL, ParamDistribution
+from locpick.models.mixed_nested import MixedNestedMNL
+from locpick.models.nested import NestedMNL
 from locpick.models.scl import (
-    SCL,
     _resolve_spatial_graph,
     _scl_ll_numpy,
     _scl_log_probs_numpy,
@@ -388,7 +390,7 @@ class TestSpatiallyCorrelatedLogitClass:
         ct, beta_cost, beta_time = _make_choice_data(n_obs=200, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -401,22 +403,12 @@ class TestSpatiallyCorrelatedLogitClass:
         assert result.n_parameters == 3  # cost, time, rho
         assert "rho" in result.coefficients.index
 
-    def test_scl_requires_graph(self):
-        """Test that SCL raises error when graph is not provided."""
-        ct, _, _ = _make_choice_data()
-        with pytest.raises(ValueError, match="graph"):
-            SCL(
-                data=ct,
-                formula="cost + time",
-                graph=None,
-            )
-
     def test_scl_requires_formula_or_spec(self):
         """Test that SCL raises error when neither formula nor spec is provided."""
         ct, _, _ = _make_choice_data()
         omega = _make_simple_adjacency()
         with pytest.raises(ValueError, match="formula.*spec"):
-            SCL(
+            MNL(
                 data=ct,
                 graph=omega,
             )
@@ -433,7 +425,7 @@ class TestSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=500, n_alts=5, seed=42)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -450,7 +442,7 @@ class TestSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=100, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -470,7 +462,7 @@ class TestSpatiallyCorrelatedLogitClass:
         omega = _make_simple_adjacency(n_alts=5)
         sp_graph = sp.csr_array(omega)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=sp_graph,
@@ -487,8 +479,6 @@ Covers: MSCL estimation, ρ=1 with no random params reduces to MNL,
 parameter recovery, and integration with SCL components.
 """
 
-
-from locpick.models.mixed import ParamDistribution
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -550,22 +540,12 @@ def _make_choice_data(n_obs=200, n_alts=5, seed=42):
 class TestMixedSpatiallyCorrelatedLogitClass:
     """Tests for the MixedSpatiallyCorrelatedLogit model class."""
 
-    def test_mscl_requires_graph(self):
-        """Test that MSCL raises error when graph is not provided."""
-        ct, _, _ = _make_choice_data()
-        with pytest.raises(ValueError, match="graph"):
-            SCL(
-                data=ct,
-                formula="cost + time",
-                graph=None,
-            )
-
     def test_mscl_requires_formula_or_spec(self):
         """Test that MSCL raises error when neither formula nor spec is provided."""
         ct, _, _ = _make_choice_data()
         omega = _make_simple_adjacency()
         with pytest.raises(ValueError, match="formula.*spec"):
-            SCL(
+            MNL(
                 data=ct,
                 graph=omega,
             )
@@ -575,12 +555,10 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=200, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=omega,
-            random_params=[],
-            n_draws=50,
         )
         result = model.fit()
 
@@ -593,7 +571,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=200, n_alts=5)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MixedMNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -617,12 +595,10 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         ct, _, _ = _make_choice_data(n_obs=500, n_alts=5, seed=42)
         omega = _make_simple_adjacency(n_alts=5)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=omega,
-            random_params={},
-            n_draws=50,
         )
         result = model.fit()
 
@@ -637,12 +613,10 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         omega = _make_simple_adjacency(n_alts=5)
         sp_graph = sp.csr_array(omega)
 
-        model = SCL(
+        model = MNL(
             data=ct,
             formula="cost + time",
             graph=sp_graph,
-            random_params=[],
-            n_draws=50,
         )
         result = model.fit()
 
@@ -655,7 +629,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         omega = _make_simple_adjacency(n_alts=5)
 
         # Halton draws (default)
-        model_halton = SCL(
+        model_halton = MixedMNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -667,7 +641,7 @@ class TestMixedSpatiallyCorrelatedLogitClass:
         assert result_halton is not None
 
         # Pseudo-random draws
-        model_random = SCL(
+        model_random = MixedMNL(
             data=ct,
             formula="cost + time",
             graph=omega,
@@ -921,7 +895,7 @@ def test_nested_scl_model_instantiation(simple_nest_data):
     """Test that NestedSpatiallyCorrelatedLogit can be instantiated."""
     dataset = simple_nest_data
 
-    model = SCL(
+    model = NestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -936,7 +910,7 @@ def test_nested_scl_model_fit(simple_nest_data):
     """Test that NestedSpatiallyCorrelatedLogit can fit and return results."""
     dataset = simple_nest_data
 
-    model = SCL(
+    model = NestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -973,7 +947,7 @@ def test_nested_scl_parameter_recovery():
         seed=123,
     )
 
-    model = SCL(
+    model = NestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1031,7 +1005,7 @@ def test_nested_scl_single_nest():
         seed=42,
     )
 
-    model = SCL(
+    model = NestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1058,7 +1032,7 @@ def test_nested_scl_mnl_equivalence():
         seed=42,
     )
 
-    model = SCL(
+    model = NestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1084,17 +1058,9 @@ def test_nested_scl_invalid_inputs():
         seed=1,
     )
 
-    # Missing graph
-    with pytest.raises(ValueError, match="graph"):
-        SCL(
-            dataset.choice_table,
-            formula="cost + time + income_x_cost",
-            nests=dataset.nests,
-        )
-
     # Missing formula and spec
     with pytest.raises(ValueError, match="formula.*spec"):
-        SCL(
+        NestedMNL(
             dataset.choice_table,
             nests=dataset.nests,
             graph=dataset.adjacency,
@@ -1390,7 +1356,7 @@ def test_mnscl_model_instantiation(simple_mnscl_data):
     """Test that MixedNestedSpatiallyCorrelatedLogit can be instantiated."""
     dataset = simple_mnscl_data
 
-    model = SCL(
+    model = MixedNestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1407,7 +1373,7 @@ def test_mnscl_model_fit(simple_mnscl_data):
     """Test that MixedNestedSpatiallyCorrelatedLogit can fit and return results."""
     dataset = simple_mnscl_data
 
-    model = SCL(
+    model = MixedNestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1450,7 +1416,7 @@ def test_mnscl_parameter_recovery():
         seed=123,
     )
 
-    model = SCL(
+    model = MixedNestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1513,7 +1479,7 @@ def test_mnscl_single_nest():
         seed=42,
     )
 
-    model = SCL(
+    model = MixedNestedMNL(
         dataset.choice_table,
         formula="cost + time + income_x_cost",
         nests=dataset.nests,
@@ -1542,18 +1508,9 @@ def test_mnscl_invalid_inputs():
         seed=1,
     )
 
-    # Missing graph
-    with pytest.raises(ValueError, match="graph"):
-        SCL(
-            dataset.choice_table,
-            formula="cost + time + income_x_cost",
-            nests=dataset.nests,
-            random_params={"time": ParamDistribution("normal", "time")},
-        )
-
     # Missing formula and spec
     with pytest.raises(ValueError, match="formula.*spec"):
-        SCL(
+        MixedNestedMNL(
             dataset.choice_table,
             nests=dataset.nests,
             graph=dataset.adjacency,

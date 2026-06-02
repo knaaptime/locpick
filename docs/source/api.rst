@@ -79,7 +79,6 @@ Models
 .. autosummary::
    :toctree: generated/
 
-   SCL :no-index:
    EdgeStructure :no-index:
 
 Results

@@ -33,7 +33,6 @@ import jax.numpy as jnp  # noqa: E402
 from jax.ops import segment_sum  # noqa: E402
 from jax.scipy.special import logsumexp as jax_logsumexp  # noqa: E402
 
-
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
 
 

@@ -18,7 +18,6 @@ Model Specification <user-guide/modelspec>
 MNL Estimation <user-guide/mnl>
 Nested Logit <user-guide/nested>
 Mixed Logit <user-guide/mixed>
-SCL (spatial factory) <user-guide/scl>
 Spatial Mixed Logit <user-guide/spatial_mixed>
 Spatial Nested Logit <user-guide/spatial_nested>
 Spatial Mixed-Nested Logit <user-guide/spatial_mixed_nested>

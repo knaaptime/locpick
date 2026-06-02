@@ -4,9 +4,9 @@
 
 - **Large-scale urban models**: 100K+ choosers, 1K+ alternatives
 - **Sampling-based estimation**: Most alternatives are irrelevant; only a sampled subset is evaluated per chooser
-- **Spatial correlation**: Nearby alternatives share unobserved attributes (SCL/MSCL/NSCL/MNSCL)
+- **Spatial correlation**: Nearby alternatives share unobserved attributes (via `graph=` on any model)
 - **Heterogeneous preferences**: Mixed logit for random taste variation
-- **Nested structure**: Nested logit and nested SCL for hierarchical choice (e.g., county → tract → block)
+- **Nested structure**: Nested logit for hierarchical choice (e.g., county → tract → block)
 - **JAX-native computation**: JIT-compiled kernels, GPU acceleration, automatic differentiation
 
 The package is **not** a general-purpose ML library. It is specifically for structural econometric models of choice where the likelihood has a closed form (or simulated approximation) and parameters have behavioral interpretations. For more transportation-oriented problems, see [larch](https://github.com/driftlesslabs/larch)

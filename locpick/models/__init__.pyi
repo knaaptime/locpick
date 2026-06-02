@@ -43,9 +43,6 @@ from .nested import (
     naturalize_nest_params as naturalize_nest_params,
 )
 from .scl import (
-    SCL as SCL,
-)
-from .scl import (
     EdgeStructure as EdgeStructure,
 )
 from .scl import (

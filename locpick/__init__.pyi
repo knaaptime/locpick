@@ -99,9 +99,6 @@ from .models import (
     MNL as MNL,
 )
 from .models import (
-    SCL as SCL,
-)
-from .models import (
     ChoiceModel as ChoiceModel,
 )
 from .models import (
