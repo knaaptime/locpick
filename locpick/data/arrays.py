@@ -10,16 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import jax.numpy as jnp
 import numpy as np
 
-from locpick._compat import _JAX_AVAILABLE
-
-if _JAX_AVAILABLE:
-    import jax.numpy as jnp
-
-    ArrayType = np.ndarray | jnp.ndarray  # type: ignore[name-defined]
-else:
-    ArrayType = np.ndarray  # type: ignore[misc]
+ArrayType = np.ndarray | jnp.ndarray  # type: ignore[name-defined]
 
 
 @dataclass

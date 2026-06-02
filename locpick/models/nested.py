@@ -42,8 +42,14 @@ import pandas as pd
 from locpick._jax.objective import Objective
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
+from locpick.models._spatial import (
+    EdgeStructure,
+    _resolve_spatial_graph,
+    naturalize_rho,
+)
 from locpick.models.base import (
     BaseChoiceModel,
+    SpatialMixin,
     _compute_fit_statistics,
     _compute_null_ll,
     _safe_inv,
@@ -455,7 +461,7 @@ def _nested_logit_gradient_numpy(
 # ---------------------------------------------------------------------------
 
 
-class NestedMNL(BaseChoiceModel):
+class NestedMNL(BaseChoiceModel, SpatialMixin):
     """Nested logit model for location choice estimation.
 
     This model generalises the multinomial logit by grouping alternatives
@@ -494,6 +500,7 @@ class NestedMNL(BaseChoiceModel):
         formula: Optional[str] = None,
         spec=None,
         nests: Optional[NestingTree] = None,
+        graph=None,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
         solver: Union[str, Solver] = "lbfgs",
@@ -514,22 +521,73 @@ class NestedMNL(BaseChoiceModel):
             availability=availability,
         )
         self._nests = nests
+        # Spatial state (None when graph is not provided).
+        self._graph_input = graph
+        self._omega = None
+        self._allocation = None
+        self._edge_list = None
+        self._n_alts_graph = None
+        self._edge_struct = None
+        self._edge_structs = None
+        self._edge_data_list = None
+
+    @property
+    def _is_spatial(self) -> bool:
+        return self._graph_input is not None
 
     # ------------------------------------------------------------------
     # Estimation
     # ------------------------------------------------------------------
 
     def _pre_fit(self, arrays: ChoiceArrays) -> None:
-        """Build nest matrix before objective construction."""
+        """Build nest matrix and (optionally) resolve spatial graph."""
         alt_ids = list(range(arrays.n_alts))
         self._nest_matrix = self._nests.build_nest_matrix(alt_ids)
+
+        if not self._is_spatial:
+            return
+
+        self._resolve_spatial_graph()
+        self._validate_graph_size(arrays)
+
+        # Build per-nest EdgeStructure / EdgeDataJAX from the global graph.
+        from locpick._jax.data import EdgeDataJAX
+
+        n_nests = self._nests.n_nests
+        self._edge_structs = []
+        self._edge_data_list = []
+        for m in range(n_nests):
+            nest_alts = np.where(self._nest_matrix[:, m] > 0)[0]
+            n_nest_alts = len(nest_alts)
+            if n_nest_alts == 0:
+                self._edge_structs.append(None)
+                self._edge_data_list.append(None)
+                continue
+            nest_adj = self._omega[np.ix_(nest_alts, nest_alts)]
+            _, nest_alloc, nest_edges, _ = _resolve_spatial_graph(nest_adj)
+            edge_struct = EdgeStructure(nest_edges, n_nest_alts, nest_alloc)
+            self._edge_structs.append(edge_struct)
+            self._edge_data_list.append(EdgeDataJAX.from_edge_structure(edge_struct))
 
     def _get_solver_inputs(self, arrays: ChoiceArrays):
         """Get initial values, param names, bounds, and fixed mask.
 
-        Extends the base class to include nest parameters.
+        Extends the base class to include nest parameters; when a graph is
+        supplied also includes per-nest ``alpha_rho`` parameters.
         """
         k = arrays.design_matrix.shape[1]
+        if self._is_spatial:
+            n_nests = self._nests.n_nests
+            # Layout expected by build_nested_scl_objective:
+            # [beta, alpha_rho_1..M, alpha_lambda_1..M]
+            x0 = np.concatenate([np.zeros(k), np.zeros(n_nests), self._nests.initial_alphas()])
+            param_names = (
+                list(arrays.param_names)
+                + [f"alpha_rho_{name}" for name in self._nests.nest_names]
+                + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
+            )
+            return x0, param_names, None, None
+
         x0 = np.concatenate([np.zeros(k), self._nests.initial_alphas()])
         param_names = list(arrays.param_names) + [
             f"nest_{name}" for name in self._nests.nest_names
@@ -540,15 +598,17 @@ class NestedMNL(BaseChoiceModel):
         """Build optimization objective for nested logit estimation."""
         nest_matrix = self._nest_matrix
 
+        if self._is_spatial:
+            from locpick._jax.builders import build_nested_scl_objective
+
+            return build_nested_scl_objective(arrays, nest_matrix, self._edge_data_list)
+
         # Try JAX backend first (default when available)
         backend = (self._backend or os.environ.get("LOCPICK_NESTED_BACKEND", "")).lower()
         if backend != "numpy":
-            try:
-                from locpick._jax.builders import build_nested_objective
+            from locpick._jax.builders import build_nested_objective
 
-                return build_nested_objective(arrays, nest_matrix)
-            except ImportError:
-                pass
+            return build_nested_objective(arrays, nest_matrix)
 
         # NumPy backend
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
@@ -609,10 +669,65 @@ class NestedMNL(BaseChoiceModel):
     ) -> FitResult:
         """Build a FitResult from solver output."""
         k = arrays.design_matrix.shape[1]
+        all_params = solver_result.coefficients
+
+        if self._is_spatial:
+            # Layout: [beta, alpha_rho_1..M, alpha_lambda_1..M]
+            n_nests = self._nests.n_nests
+            beta = all_params[:k]
+            alpha_rho = all_params[k : k + n_nests]
+            alpha_lambda = all_params[k + n_nests : k + 2 * n_nests]
+            rhos = naturalize_rho(alpha_rho)
+            lambdas = naturalize_nest_params(alpha_lambda)
+
+            display_params = np.concatenate([beta, rhos, lambdas])
+            param_names = (
+                list(arrays.param_names)
+                + [f"rho_{name}" for name in self._nests.nest_names]
+                + [f"lambda_{name}" for name in self._nests.nest_names]
+            )
+            model_type = "Nested Spatially Correlated Logit"
+
+            std_errors = np.full(len(display_params), np.nan)
+            try:
+                hess = self._compute_hessian(all_params)
+                se_alpha = self._compute_std_errors_from_hessian(hess)
+                se_rho = rhos * (1.0 - rhos) * se_alpha[k : k + n_nests]
+                se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k + n_nests : k + 2 * n_nests]
+                std_errors = np.concatenate([se_alpha[:k], se_rho, se_lambda])
+            except Exception:
+                if solver_result.hessian is not None:
+                    try:
+                        se_alpha = np.sqrt(np.maximum(np.diag(solver_result.hessian), 0))
+                        se_alpha[se_alpha == 0] = np.nan
+                        se_rho = rhos * (1.0 - rhos) * se_alpha[k : k + n_nests]
+                        se_lambda = (
+                            lambdas * (1.0 - lambdas) * se_alpha[k + n_nests : k + 2 * n_nests]
+                        )
+                        std_errors = np.concatenate([se_alpha[:k], se_rho, se_lambda])
+                    except Exception:
+                        pass
+
+            coefficients = pd.Series(display_params, index=param_names, name="coefficient")
+            std_err_series = pd.Series(std_errors, index=param_names, name="std_error")
+            ll = solver_result.log_likelihood
+            ll_null = _compute_null_ll(arrays)
+            stats = _compute_fit_statistics(
+                ll=ll,
+                ll_null=ll_null,
+                n_obs=arrays.n_obs,
+                n_params=len(display_params),
+                n_alts=arrays.n_alts,
+                coefficients=coefficients,
+                std_errors=std_err_series,
+                model_type=model_type,
+                solver_name=solver_result.solver_name,
+                solver_result_raw=solver_result.raw,
+            )
+            return FitResult(spec=self._spec, **stats)
 
         # Build a FitResult from solver output.
         # Store naturalized lambda values (not raw alpha) in coefficients.
-        all_params = solver_result.coefficients
         beta = all_params[:k]
         alpha = all_params[k:]
         lambdas = naturalize_nest_params(alpha)

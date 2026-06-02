@@ -152,12 +152,12 @@ def test_trust_ncg_matches_lbfgs_on_mnl(mnl_table, solver_cls):
 def test_trust_ncg_matches_lbfgs_on_scl():
     """Sanity check on a spatial model: trust-ncg + JAX HVP should reach
     the same SCL optimum as scipy L-BFGS-B."""
-    from locpick import SCL
+    from locpick import MNL
     from locpick.dgp import simulate_scl
 
     ds = simulate_scl(n_obs=600, n_alts=12, seed=11)
 
-    base = SCL(
+    base = MNL(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,
@@ -166,7 +166,7 @@ def test_trust_ncg_matches_lbfgs_on_scl():
     )
     base.fit()
 
-    test = SCL(
+    test = MNL(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,

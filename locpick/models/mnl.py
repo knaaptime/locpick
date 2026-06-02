@@ -15,8 +15,12 @@ import pandas as pd
 from locpick._solvers import Solver, SolverResult
 from locpick.data.arrays import ChoiceArrays
 from locpick.data.problem import EstimationProblem
+from locpick.models._spatial import (
+    naturalize_rho,
+)
 from locpick.models.base import (
     BaseChoiceModel,
+    SpatialMixin,
     _compute_fit_statistics,
     _compute_null_ll,
     _safe_inv,
@@ -25,7 +29,7 @@ from locpick.models.base import (
 from locpick.results.fit_result import FitResult
 
 
-class MNL(BaseChoiceModel):
+class MNL(BaseChoiceModel, SpatialMixin):
     r"""Multinomial logit model for location choice estimation.
 
     The MNL model assumes that the unobserved utility components are
@@ -106,6 +110,7 @@ class MNL(BaseChoiceModel):
         formula: Optional[str] = None,
         spec=None,
         problem: Optional[EstimationProblem] = None,
+        graph=None,
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
         solver: Union[str, Solver] = "lbfgs",
@@ -126,6 +131,17 @@ class MNL(BaseChoiceModel):
             weights=weights,
             availability=availability,
         )
+        # Spatial state (None when graph is not provided).
+        self._graph_input = graph
+        self._omega = None
+        self._allocation = None
+        self._edge_list = None
+        self._n_alts_graph = None
+        self._edge_struct = None
+
+    @property
+    def _is_spatial(self) -> bool:
+        return self._graph_input is not None
 
     def probabilities(self, data=None, beta=None):
         """Compute choice probabilities.
@@ -153,6 +169,38 @@ class MNL(BaseChoiceModel):
                 formula=self._spec.formula,
                 spec=self._spec if self._spec.formula is None else None,
             )
+
+        if self._is_spatial:
+            from locpick.models.scl import _scl_log_probs_dispatch
+
+            k = arrays.design_matrix.shape[1]
+            if beta is None:
+                coef_vals = np.asarray(self._result.coefficients.values, dtype=np.float64)
+                beta_use = coef_vals[:k]
+                rho = float(coef_vals[k])
+            else:
+                beta = np.asarray(beta, dtype=np.float64)
+                beta_use = beta[:k]
+                if beta.size > k:
+                    rho = float(beta[k])
+                else:
+                    rho = float(self._result.coefficients.values[k])
+
+            from locpick._sampling.correction import get_sampling_correction
+
+            log_probs = _scl_log_probs_dispatch(
+                beta_use,
+                rho,
+                np.asarray(arrays.design_matrix, dtype=np.float64),
+                self._allocation,
+                self._edge_list,
+                arrays.n_obs,
+                arrays.n_alts,
+                available=arrays.available,
+                inclusion_probs=get_sampling_correction(arrays),
+                edge_struct=self._edge_struct,
+            )
+            return np.exp(log_probs)
 
         if beta is None:
             beta = np.asarray(self._result.coefficients.values, dtype=np.float64)
@@ -208,6 +256,10 @@ class MNL(BaseChoiceModel):
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         n_obs = arrays.n_obs
         n_alts = arrays.n_alts
+
+        # Spatial MNL coefficients include a trailing alpha_rho; drop it.
+        if self._is_spatial:
+            beta = beta[: dm.shape[1]]
 
         # Systematic utility
         V = (dm @ beta).reshape(n_obs, n_alts)
@@ -656,6 +708,11 @@ class MNL(BaseChoiceModel):
         if cache_key in self._observation_scores_cache:
             return self._observation_scores_cache[cache_key]
 
+        if self._is_spatial:
+            scores = self._spatial_observation_scores(arrays)
+            self._observation_scores_cache[cache_key] = scores
+            return scores
+
         from locpick._kernels.mnl_numpy import mnl_observation_scores_numpy
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
@@ -690,24 +747,75 @@ class MNL(BaseChoiceModel):
         self._observation_scores_cache[cache_key] = scores
         return scores
 
+    def _spatial_observation_scores(self, arrays) -> np.ndarray:
+        """Compute observation-level scores for the spatial (SCL) MNL via
+        numerical differentiation of per-observation log-likelihoods.
+        """
+        eps = 1e-5
+        k = arrays.design_matrix.shape[1]
+        n_params = k + 1  # beta + alpha_rho
+        n_obs = arrays.n_obs
+
+        full_params = np.asarray(self._result.coefficients.values, dtype=np.float64).copy()
+        chosen = np.asarray(arrays.chosen, dtype=np.float64).reshape(n_obs, arrays.n_alts)
+        scores = np.zeros((n_obs, n_params))
+
+        for j in range(n_params):
+            p_plus = full_params.copy()
+            p_plus[j] += eps
+            p_minus = full_params.copy()
+            p_minus[j] -= eps
+
+            probs_plus = self.probabilities(data=None, beta=p_plus)
+            probs_minus = self.probabilities(data=None, beta=p_minus)
+
+            ll_plus = np.log(np.maximum(np.sum(probs_plus * chosen, axis=1), 1e-30))
+            ll_minus = np.log(np.maximum(np.sum(probs_minus * chosen, axis=1), 1e-30))
+            scores[:, j] = (ll_plus - ll_minus) / (2 * eps)
+        return scores
+
     def _build_objective(self, arrays: ChoiceArrays):
         """Build log-likelihood and gradient functions.
 
-        Uses JAX when available for JIT-compiled computation, falling back
-        to NumPy otherwise.
+        Uses the JAX backend by default; the explicit ``"numpy"`` backend
+        is provided for debugging and benchmarking.
         """
+        if self._is_spatial:
+            from locpick._jax.builders import build_scl_objective
+
+            return build_scl_objective(
+                arrays, self._edge_struct, self._allocation, self._edge_list
+            )
+
         import os
 
         backend = (self._backend or os.environ.get("LOCPICK_MNL_BACKEND", "")).lower()
         if backend == "numpy":
             return self._build_objective_numpy(arrays)
-        try:
-            from locpick._jax.builders import build_mnl_objective
+        from locpick._jax.builders import build_mnl_objective
 
-            objective = build_mnl_objective(arrays)
-            return objective
-        except ImportError:
-            return self._build_objective_numpy(arrays)
+        return build_mnl_objective(arrays)
+
+    def _pre_fit(self, arrays: ChoiceArrays) -> None:
+        """Resolve the spatial graph when ``graph=`` was supplied."""
+        if self._is_spatial:
+            self._resolve_spatial_graph()
+            self._validate_graph_size(arrays)
+
+    def _get_solver_inputs(self, arrays: ChoiceArrays):
+        """Get x0, names, bounds, fixed_mask.
+
+        Appends an unconstrained ``alpha_rho`` (initial 0.0) when a graph
+        is supplied so the spatial dissimilarity parameter is estimated
+        alongside the utility coefficients.
+        """
+        x0, names, bounds, fixed_mask = super()._get_solver_inputs(arrays)
+        if self._is_spatial:
+            x0 = np.concatenate([x0, np.zeros(1)])
+            names = list(names) + ["alpha_rho"]
+            # Bounds and fixed_mask remain None — alpha_rho is unconstrained
+            # and the natural rho is recovered via the sigmoid link.
+        return x0, names, bounds, fixed_mask
 
     def _build_objective_numpy(self, arrays: ChoiceArrays):
         """Build NumPy log-likelihood and gradient (fallback).
@@ -772,9 +880,26 @@ class MNL(BaseChoiceModel):
 
     def _build_fit_result(self, solver_result: SolverResult, arrays: ChoiceArrays) -> FitResult:
         """Build a FitResult from solver output."""
-        beta = solver_result.coefficients
-        param_names = list(arrays.param_names)
-        n_params = len(param_names)
+        all_params = solver_result.coefficients
+        utility_param_names = list(arrays.param_names)
+        k = len(utility_param_names)
+
+        if self._is_spatial:
+            # Layout: [beta_1..k, alpha_rho]
+            beta = all_params[:k]
+            alpha_rho = all_params[k]
+            rho = naturalize_rho(alpha_rho)
+            display_values = np.concatenate([beta, [rho]])
+            display_names = utility_param_names + ["rho"]
+            model_type = "Spatially Correlated Logit"
+        else:
+            beta = all_params
+            display_values = beta
+            display_names = utility_param_names
+            model_type = "Multinomial Logit"
+
+        n_params = len(display_values)
+        param_names = display_names
 
         # Compute standard errors using the most accurate Hessian available.
         # Prefer HVP-based Hessian (exact, via JAX autodiff) over the
@@ -782,9 +907,9 @@ class MNL(BaseChoiceModel):
         # Note: _compute_hessian returns the Hessian of the log-likelihood
         # (negative definite), so we use _compute_std_errors_from_hessian
         # which negates and inverts it.
-        std_errors = np.full(len(beta), np.nan)
+        std_errors = np.full(n_params, np.nan)
         try:
-            hess = self._compute_hessian(beta)
+            hess = self._compute_hessian(all_params)
             # If fixed parameters were used, the Hessian only covers
             # free parameters. Expand to full parameter space.
             if hess.shape[0] < n_params and self._problem is not None:
@@ -797,7 +922,13 @@ class MNL(BaseChoiceModel):
                         for j, fj in enumerate(free_idx):
                             full_hess[fi, fj] = hess[i, j]
                     hess = full_hess
-            std_errors = self._compute_std_errors_from_hessian(hess)
+            se_unconstrained = self._compute_std_errors_from_hessian(hess)
+            if self._is_spatial:
+                # Delta method: SE(rho) = rho*(1-rho)*SE(alpha_rho)
+                se_rho = rho * (1.0 - rho) * se_unconstrained[k]
+                std_errors = np.concatenate([se_unconstrained[:k], [se_rho]])
+            else:
+                std_errors = se_unconstrained
         except Exception:
             # Fallback: try solver's Hessian (approximate, e.g. L-BFGS-B hess_inv)
             # Note: solver_result.hessian is the *inverse* of the negative Hessian
@@ -817,12 +948,16 @@ class MNL(BaseChoiceModel):
                             hess = full_hess
                     se = np.sqrt(np.maximum(np.diag(hess), 0))
                     se[se == 0] = np.nan
-                    std_errors = se
+                    if self._is_spatial:
+                        se_rho = rho * (1.0 - rho) * se[k]
+                        std_errors = np.concatenate([se[:k], [se_rho]])
+                    else:
+                        std_errors = se
                 except Exception:
                     pass
 
         # Build result using shared helper
-        coefficients = pd.Series(beta, index=param_names, name="coefficient")
+        coefficients = pd.Series(display_values, index=param_names, name="coefficient")
         std_err_series = pd.Series(std_errors, index=param_names, name="std_error")
         ll = solver_result.log_likelihood
         ll_null = _compute_null_ll(arrays)
@@ -835,7 +970,7 @@ class MNL(BaseChoiceModel):
             n_alts=arrays.n_alts,
             coefficients=coefficients,
             std_errors=std_err_series,
-            model_type="Multinomial Logit",
+            model_type=model_type,
             solver_name=solver_result.solver_name,
             solver_result_raw=solver_result.raw,
         )

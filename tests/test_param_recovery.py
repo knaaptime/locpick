@@ -22,9 +22,7 @@ from locpick.dgp import (
     simulate_scl,
 )
 from locpick.models.mixed import MixedMNL, ParamDistribution
-from locpick.models.mscl import MixedSCL
 from locpick.models.nested import NestedMNL
-from locpick.models.scl import SCL
 
 # ---------------------------------------------------------------------------
 # MNL parameter recovery
@@ -147,7 +145,7 @@ class TestSCLRecovery:
     def test_scl_recovers_beta_params(self):
         """SCL should recover beta coefficients within tolerance."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = SCL(
+        model = MNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -166,7 +164,7 @@ class TestSCLRecovery:
     def test_scl_recovers_rho(self):
         """SCL should recover the dissimilarity parameter ρ."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = SCL(
+        model = MNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -184,7 +182,7 @@ class TestSCLRecovery:
     def test_scl_mnl_data_rho_near_one(self):
         """When data is MNL (rho≈1), estimated rho should be > 0."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.99, seed=42)
-        model = SCL(
+        model = MNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -271,7 +269,7 @@ class TestMSCLRecovery:
     def test_mscl_recovers_fixed_params(self):
         """MSCL should recover fixed coefficients within tolerance."""
         dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MixedSCL(
+        model = MixedMNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -292,7 +290,7 @@ class TestMSCLRecovery:
     def test_mscl_recovers_rho(self):
         """MSCL should recover the dissimilarity parameter ρ."""
         dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MixedSCL(
+        model = MixedMNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -315,12 +313,10 @@ class TestMSCLRecovery:
     def test_mscl_no_random_params_recovers_scl(self):
         """MSCL with no random params should behave like SCL."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=42)
-        model = MixedSCL(
+        model = MNL(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
-            random_params={},
-            n_draws=50,
         )
         result = model.fit()
 

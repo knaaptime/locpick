@@ -78,15 +78,12 @@ class EstimationProblem:
 
     def __post_init__(self) -> None:
         """Validate and infer defaults."""
-        from locpick.config import config
-
         # Infer param_names from arrays if not provided
         if not self.param_names and self.arrays.param_names:
             self.param_names = list(self.arrays.param_names)
 
-        # Default solver from config
         if self.solver_name is None:
-            self.solver_name = config.default_solver
+            self.solver_name = "lbfgs"
 
     # ------------------------------------------------------------------
     # Factory methods

@@ -7,8 +7,6 @@ This package provides:
 - :mod:`locpick.models.nested` — ``NestedLogit``, ``NestSpec``, ``NestingTree``
 - :mod:`locpick.models.mixed` — ``MixedLogit``, ``ParamDistribution``
 - :mod:`locpick.models.mixed_nested` — ``MixedNestedMNL``
-- :mod:`locpick.models.scl` — ``SpatiallyCorrelatedLogit``
-- :mod:`locpick.models.mscl` — ``MixedSpatiallyCorrelatedLogit``
 
 Submodules and attributes are loaded lazily following SPEC 1
 (https://scientific-python.org/specs/spec-0001/).

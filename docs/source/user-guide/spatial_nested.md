@@ -1,8 +1,8 @@
-# Nested Spatially Correlated Logit (NestedSCL)
+# Nested Logit with Spatial Correlation (NestedMNL + graph)
 
 ## Overview
 
-The `NestedSCL` class estimates a Nested Spatially Correlated Logit model, which combines a nested logit upper level with spatially correlated logit (SCL) lower levels. Each nest has:
+A `NestedMNL` model constructed with a spatial `graph=` argument estimates the Nested Spatially Correlated Logit (Nested SCL) model: a nested logit upper level combined with spatially correlated lower levels. Each nest has:
 
 - A spatial dissimilarity parameter $\rho_m \in (0, 1]$ governing correlation between spatially adjacent alternatives within the nest
 - A nest dissimilarity parameter $\lambda_m \in (0, 1]$ governing correlation between alternatives in the same nest
@@ -10,7 +10,7 @@ The `NestedSCL` class estimates a Nested Spatially Correlated Logit model, which
 This model is appropriate when alternatives are both **spatially correlated** (nearby zones are substitutes) and **grouped** (zones within the same district share unobserved attributes).
 
 ```{warning}
-The NestedSCL model does **not** support alternative sampling correction. Always use the full alternative set.
+The spatial nested model does **not** support alternative sampling correction. Always use the full alternative set.
 ```
 
 ## Mathematical Formulation
@@ -19,14 +19,14 @@ The choice probability for alternative $i$ in nest $m$ is:
 
 $$P_i = P_{\text{SCL}}(i \mid m) \times P_{\text{NL}}(m)$$
 
-where $P_{\text{SCL}}(i \mid m)$ is the SCL conditional probability within nest $m$ and $P_{\text{NL}}(m)$ is the nested logit probability of choosing nest $m$.
+where $P_{\text{SCL}}(i \mid m)$ is the spatial conditional probability within nest $m$ and $P_{\text{NL}}(m)$ is the nested-logit probability of choosing nest $m$.
 
 When $\rho_m = 1$ and $\lambda_m = 1$ for all nests, the model reduces to MNL.
 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, NestedSCL
+from locpick import ChoiceTable, NestedMNL
 from locpick.models.nested import NestSpec, NestingTree
 from libpysal import graph
 
@@ -41,16 +41,13 @@ tree = NestingTree(
     ]
 )
 
-# Estimate NestedSCL model
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
-model = NestedSCL(ct, formula="cost + time - 1", graph=g, nests=tree)
+model = NestedMNL(ct, formula="cost + time - 1", graph=g, nests=tree)
 result = model.fit()
 print(result.summary())
 ```
 
 ## Interpreting Results
-
-The key parameters are:
 
 | Parameter | Interpretation |
 |---|---|
@@ -58,16 +55,12 @@ The key parameters are:
 | $\lambda_m$ | Nest dissimilarity. $\lambda_m = 1$ means no correlation within the nest (MNL-like) |
 | $\beta$ | Utility coefficients |
 
-A likelihood-ratio test comparing NestedSCL to MNL tests whether both spatial and nesting structures are jointly significant.
+A likelihood-ratio test comparing the spatial nested model to MNL tests whether both spatial and nesting structures are jointly significant.
 
 ## Prediction
 
 ```python
-# Predict on estimation data
 probs = model.probabilities()
-
-# Predict with custom parameters
-probs = model.probabilities(beta=my_beta, rho=my_rho, lam=my_lam)
 ```
 
 ## References

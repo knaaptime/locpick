@@ -17,15 +17,12 @@ from __future__ import annotations
 
 import functools
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from jax.scipy.special import logsumexp as jax_logsumexp
 
-from locpick._compat import _JAX_AVAILABLE
 from locpick._jax.data import ChoiceDataJAX
-
-if _JAX_AVAILABLE:
-    import jax
-    import jax.numpy as jnp
-    from jax.scipy.special import logsumexp as jax_logsumexp
 from locpick._jax.kernels import (
     _NEG_INF,
     compute_ll,
@@ -85,9 +82,6 @@ def build_mnl_objective(arrays) -> Objective:
     Objective
         Objective with JIT-compiled LL, gradient, and Hessian.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for MNL objective")
-
     data = ChoiceDataJAX.from_arrays(arrays)
 
     # Thin wrappers — JAX sees the same top-level kernel, so compilation is cached
@@ -210,9 +204,6 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes a Sigmoid transform for the rho parameter.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for SCL objective")
-
     data = ChoiceDataJAX.from_arrays(arrays, edge_struct=edge_struct)
     k = arrays.design_matrix.shape[1]
 
@@ -544,9 +535,6 @@ def build_mnscl_objective(
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes Sigmoid for rho/lambda and SoftPlus for random spreads.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for MNSCL objective")
-
     data = ChoiceDataJAX.from_arrays(
         arrays,
         edge_struct=None,
@@ -667,9 +655,6 @@ def build_mscl_objective(
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes Sigmoid for rho and SoftPlus for random spreads.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for MSCL objective")
-
     data = ChoiceDataJAX.from_arrays(
         arrays,
         edge_struct=edge_struct,
@@ -762,9 +747,6 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes Sigmoid transforms for nest dissimilarity parameters.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for nested logit objective")
-
     data = ChoiceDataJAX.from_arrays(arrays)
     nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
     n_nests = nest_matrix.shape[1]
@@ -907,9 +889,6 @@ def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes Sigmoid transforms for rho and lambda parameters.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for nested SCL objective")
-
     data = ChoiceDataJAX.from_arrays(arrays)
     nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
     n_nests = nest_matrix.shape[1]
@@ -1029,9 +1008,6 @@ def build_mixed_logit_objective(
         Objective with JIT-compiled LL, gradient, and Hessian.
         Includes SoftPlus transforms for random parameter spreads.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for mixed logit objective")
-
     data = ChoiceDataJAX.from_arrays(
         arrays,
         draws=draws,
@@ -1194,9 +1170,6 @@ def build_mixed_nested_objective(
         Includes Sigmoid transforms for nest parameters and SoftPlus
         for random parameter spreads.
     """
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is required for mixed nested logit objective")
-
     data = ChoiceDataJAX.from_arrays(
         arrays,
         draws=draws,

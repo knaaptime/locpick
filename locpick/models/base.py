@@ -68,6 +68,23 @@ def _sandwich_inv(H_inv: np.ndarray, B: np.ndarray) -> np.ndarray:
     return H_inv @ B @ H_inv
 
 
+def _aggregate_per_obs_alt(s: pd.Series, by: str, name: str):
+    """Aggregate a per-(obs, alt) Series into AME-style summaries."""
+    if by == "alt":
+        alt_level = s.index.names[1]
+        out = s.groupby(level=alt_level).mean()
+        out.name = name
+        return out
+    if by == "obs":
+        obs_level = s.index.names[0]
+        out = s.groupby(level=obs_level).mean()
+        out.name = name
+        return out
+    if by == "overall":
+        return float(s.mean())
+    raise ValueError(f"by must be 'alt', 'obs', or 'overall'; got {by!r}")
+
+
 @runtime_checkable
 class ChoiceModel(Protocol):
     """Protocol for discrete choice model classes.
@@ -246,14 +263,13 @@ class BaseChoiceModel(ABC):
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
     ):
-        from locpick.config import config
         from locpick.spec.model_spec import ModelSpec
 
         self._solver_options = solver_options or {}
         self._backend = backend
 
         # Resolve solver
-        solver_name = solver if solver is not None else config.default_solver
+        solver_name = solver if solver is not None else "lbfgs"
         if isinstance(solver_name, str):
             self._solver = get_solver(solver_name, **self._solver_options)
         else:
@@ -608,6 +624,66 @@ class BaseChoiceModel(ABC):
 
         return None
 
+    # ------------------------------------------------------------------
+    # Aggregated marginal effects / elasticities
+    # ------------------------------------------------------------------
+
+    def average_marginal_effect(
+        self,
+        variable: str,
+        data=None,
+        by: str = "alt",
+    ):
+        """Average direct marginal effect (AME) of ``variable``.
+
+        Aggregates the per-observation marginal effects returned by
+        :meth:`marginal_effect` over the sample.
+
+        Parameters
+        ----------
+        variable : str
+            Variable name.
+        data : ChoiceTable, optional
+            Data to evaluate on. Defaults to the estimation sample.
+        by : {"alt", "obs", "overall"}, default ``"alt"``
+            Aggregation level.  ``"alt"`` returns one value per
+            alternative (the usual AME); ``"obs"`` returns one value per
+            observation (averaged over its alternatives); ``"overall"``
+            returns a single scalar.
+
+        Returns
+        -------
+        pd.Series or float
+        """
+        me = self.marginal_effect(data=data, variable=variable)
+        return _aggregate_per_obs_alt(me, by, name=f"ame_{variable}")
+
+    def average_cross_marginal_effect(
+        self,
+        variable: str,
+        data=None,
+        by: str = "alt",
+    ):
+        """Average cross marginal effect of ``variable``.
+
+        See :meth:`average_marginal_effect` for the ``by`` argument.
+        """
+        cme = self.cross_marginal_effect(data=data, variable=variable)
+        return _aggregate_per_obs_alt(cme, by, name=f"acme_{variable}")
+
+    def average_elasticity(
+        self,
+        variable: str,
+        data=None,
+        by: str = "alt",
+    ):
+        """Average direct elasticity of ``variable``.
+
+        See :meth:`average_marginal_effect` for the ``by`` argument.
+        """
+        el = self.elasticity(data=data, variable=variable)
+        return _aggregate_per_obs_alt(el, by, name=f"ae_{variable}")
+
 
 # ---------------------------------------------------------------------------
 # Spatial mixin
@@ -637,7 +713,7 @@ class SpatialMixin:
     def _resolve_spatial_graph(self) -> tuple[np.ndarray, list, int]:
         """Resolve the spatial graph and store allocation/edge data.
 
-        Delegates to :func:`locpick.models.scl._resolve_spatial_graph`
+        Delegates to :func:`locpick.models._spatial._resolve_spatial_graph`
         and caches the results on ``self``.
 
         Returns
@@ -651,8 +727,7 @@ class SpatialMixin:
         n_alts : int
             Number of alternatives (dimension of the graph).
         """
-        from locpick._compat import _NUMBA_AVAILABLE
-        from locpick.models.scl import EdgeStructure, _resolve_spatial_graph
+        from locpick.models._spatial import EdgeStructure, _resolve_spatial_graph
 
         omega, allocation, edge_list, n_alts = _resolve_spatial_graph(self._graph_input)
         self._omega = omega
@@ -660,11 +735,8 @@ class SpatialMixin:
         self._edge_list = edge_list
         self._n_alts_graph = n_alts
 
-        # Precompute edge structure for Numba backend
-        if _NUMBA_AVAILABLE:
-            self._edge_struct = EdgeStructure(edge_list, n_alts, allocation)
-        else:
-            self._edge_struct = None
+        # Precompute edge structure (consumed by the JAX builders)
+        self._edge_struct = EdgeStructure(edge_list, n_alts, allocation)
 
         return omega, allocation, edge_list, n_alts
 

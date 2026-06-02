@@ -99,9 +99,6 @@ from .models import (
     MNL as MNL,
 )
 from .models import (
-    SCL as SCL,
-)
-from .models import (
     ChoiceModel as ChoiceModel,
 )
 from .models import (
@@ -111,16 +108,7 @@ from .models import (
     MixedNestedMNL as MixedNestedMNL,
 )
 from .models import (
-    MixedNestedSCL as MixedNestedSCL,
-)
-from .models import (
-    MixedSCL as MixedSCL,
-)
-from .models import (
     NestedMNL as NestedMNL,
-)
-from .models import (
-    NestedSCL as NestedSCL,
 )
 from .models import (
     NestingTree as NestingTree,
@@ -138,10 +126,16 @@ from .results import (
     FitResult as FitResult,
 )
 from .results import (
+    HausmanTest as HausmanTest,
+)
+from .results import (
     LikelihoodRatioTest as LikelihoodRatioTest,
 )
 from .results import (
     WaldTest as WaldTest,
+)
+from .results import (
+    hausman_test as hausman_test,
 )
 from .results import (
     lr_test as lr_test,
