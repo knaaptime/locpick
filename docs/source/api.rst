@@ -150,13 +150,3 @@ DGP Utilities
    NestedSCLDataset :no-index:
    MNSCLDataset :no-index:
 
-Configuration
--------------
-
-.. currentmodule:: locpick.config
-
-.. autosummary::
-   :toctree: generated/
-
-   Config :no-index:
-   config :no-index:
