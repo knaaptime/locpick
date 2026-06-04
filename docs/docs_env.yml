@@ -22,6 +22,11 @@ dependencies:
   - geosnap
   - duckdb < 1.5
   - pymedm
+  - optimagic
+  - optimistix
+  - nlopt
+  - optax
+
   # testing
   - codecov
   - coverage
