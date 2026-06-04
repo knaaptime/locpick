@@ -14,7 +14,7 @@ dependencies:
   # optional (jax)
   - jax>=0.4
   - jaxlib>=0.4
-  - optimagix
+  - optimagic
   - optimistix
   # optional (spatial)
   - libpysal>=4.0
