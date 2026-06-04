@@ -17,7 +17,8 @@ dependencies:
   - optimagic
   - optimistix
   - nlopt
-  
+  - optax
+
   # optional (spatial)
   - libpysal>=4.0
   - geopandas>=0.13
