@@ -17,17 +17,4 @@ LocPick can automate the creation of choice tables for estimation or simulation,
 
 It also provides tools for Monte Carlo simulation of choices given probability distributions from fitted models, with fast algorithms for independent or capacity-constrained choices.
 
-LocPick includes native classic and spatially-correlated Multinomial Logit, Nested Logit, and Mixed Logit estimators, and an internal data pipeline designed around pandas inputs, xarray-backed alignment, and NumPy/JAX-ready arrays.
-
-## Installation
-
-Install LocPick with Pip or Conda:
-
-```bash
-pip install locpick
-```
-
-```bash
-conda install locpick --channel conda-forge
-```
-
+LocPick includes classic and spatially-correlated Multinomial Logit, Nested Logit, Mixed, and Mixed/Nested Logit estimators; its internal data pipeline is designed around pandas inputs, xarray-backed alignment, and NumPy/JAX-ready arrays.
