@@ -13,7 +13,7 @@ The package is **not** a general-purpose ML library. It is specifically for stru
 
 ## Features
 
-LocPick can automate the creation of choice tables for estimation or simulation, using census choice sets, uniform or weighted random sampling of alternatives, generated interaction terms, and cartesian merges.
+LocPick can automate the creation of choice tables for estimation or simulation, using census choice sets, uniform or weighted random sampling of alternatives, generated interaction terms, and cartesian merges. A unique feature is the implementation of [*spatial* choice models](https://linkinghub.elsevier.com/retrieve/pii/S0191261503000055), which assume that nearby alternatives are more similar (closer substitutes).
 
 It also provides tools for Monte Carlo simulation of choices given probability distributions from fitted models, with fast algorithms for independent or capacity-constrained choices.
 
