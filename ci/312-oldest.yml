@@ -16,6 +16,8 @@ dependencies:
   - jaxlib>=0.4
   - optimagic
   - optimistix
+  - nlopt
+
   # optional (spatial)
   - libpysal>=4.0
   - geopandas>=0.13

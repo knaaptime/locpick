@@ -24,6 +24,8 @@ dependencies:
   - pymedm
   - optimagic
   - optimistix
+  - nlopt
+
   # testing
   - codecov
   - coverage
