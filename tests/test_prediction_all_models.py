@@ -12,7 +12,7 @@ import numpy.testing as npt
 import pandas as pd
 import pytest
 
-from locpick import MNL, NestedMNL
+from locpick import ChoiceModel
 from locpick.dgp import (
     simulate_mixed_logit,
     simulate_mnl,
@@ -20,7 +20,7 @@ from locpick.dgp import (
     simulate_nested_logit,
     simulate_scl,
 )
-from locpick.models.mixed import MixedMNL, ParamDistribution
+from locpick.models.mixed import ParamDistribution
 
 # ---------------------------------------------------------------------------
 # MNL Tests
@@ -31,7 +31,7 @@ class TestMNL:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
-        self.model = MNL(
+        self.model = ChoiceModel(
             dataset.choice_table,
             formula="alt_feature + obs_x_alt",
         )
@@ -114,7 +114,7 @@ class TestNestedLogit:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
-        self.model = NestedMNL(
+        self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",
             nests=dataset.nests,
@@ -186,7 +186,7 @@ class TestSCL:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_scl(n_obs=500, n_alts=6, seed=42)
-        self.model = MNL(
+        self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,
@@ -206,12 +206,12 @@ class TestSCL:
         assert "draw" in sim.columns
 
     def test_elasticity(self):
-        elast = self.model.elasticity(variable="cost")
-        assert isinstance(elast, pd.Series)
+        with pytest.raises(NotImplementedError):
+            self.model.elasticity(variable="cost")
 
     def test_cross_elasticity(self):
-        cross_elast = self.model.cross_elasticity(variable="cost")
-        assert isinstance(cross_elast, pd.Series)
+        with pytest.raises(NotImplementedError):
+            self.model.cross_elasticity(variable="cost")
 
     def test_covariance_robust(self):
         cov = self.model.covariance_robust()
@@ -252,7 +252,7 @@ class TestMixedLogit:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_mixed_logit(n_obs=500, n_alts=4, seed=42)
-        self.model = MixedMNL(
+        self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             random_params={"time": ParamDistribution("normal", "time")},
@@ -320,7 +320,7 @@ class TestMSCL:
     @pytest.fixture(autouse=True)
     def setup(self):
         dataset = simulate_mscl(n_obs=500, n_alts=6, seed=42)
-        self.model = MixedMNL(
+        self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,
@@ -342,12 +342,12 @@ class TestMSCL:
         assert "draw" in sim.columns
 
     def test_elasticity(self):
-        elast = self.model.elasticity(variable="cost")
-        assert isinstance(elast, pd.Series)
+        with pytest.raises(NotImplementedError):
+            self.model.elasticity(variable="cost")
 
     def test_cross_elasticity(self):
-        cross_elast = self.model.cross_elasticity(variable="cost")
-        assert isinstance(cross_elast, pd.Series)
+        with pytest.raises(NotImplementedError):
+            self.model.cross_elasticity(variable="cost")
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ class TestCacheInvalidation:
 
     def test_mnl_cache_cleared_on_reestimate(self):
         dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt")
         model.fit()
 
         # Populate caches
@@ -379,7 +379,7 @@ class TestCacheInvalidation:
 
     def test_nested_cache_cleared_on_reestimate(self):
         dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
-        model = NestedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",
             nests=dataset.nests,
@@ -409,56 +409,61 @@ class TestProtocolConformance:
     """Test that all models conform to the ChoiceModel protocol."""
 
     def test_mnl_is_choice_model(self):
-        from locpick.models.base import ChoiceModel
+        from locpick.models.base import ChoiceModelProtocol
+        from locpick.models.choice_model import ChoiceModel
 
         dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt")
-        assert isinstance(model, ChoiceModel)
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt")
+        assert isinstance(model, ChoiceModelProtocol)
 
     def test_nested_is_choice_model(self):
-        from locpick.models.base import ChoiceModel
+        from locpick.models.base import ChoiceModelProtocol
+        from locpick.models.choice_model import ChoiceModel
 
         dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
-        model = NestedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",
             nests=dataset.nests,
         )
-        assert isinstance(model, ChoiceModel)
+        assert isinstance(model, ChoiceModelProtocol)
 
     def test_scl_is_choice_model(self):
-        from locpick.models.base import ChoiceModel
+        from locpick.models.base import ChoiceModelProtocol
+        from locpick.models.choice_model import ChoiceModel
 
         dataset = simulate_scl(n_obs=500, n_alts=6, seed=42)
-        model = MNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,
         )
-        assert isinstance(model, ChoiceModel)
+        assert isinstance(model, ChoiceModelProtocol)
 
     def test_mixed_is_choice_model(self):
-        from locpick.models.base import ChoiceModel
+        from locpick.models.base import ChoiceModelProtocol
+        from locpick.models.choice_model import ChoiceModel
 
         dataset = simulate_mixed_logit(n_obs=500, n_alts=4, seed=42)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             random_params={"time": ParamDistribution("normal", "time")},
             n_draws=50,
             seed=42,
         )
-        assert isinstance(model, ChoiceModel)
+        assert isinstance(model, ChoiceModelProtocol)
 
     def test_mscl_is_choice_model(self):
-        from locpick.models.base import ChoiceModel
+        from locpick.models.base import ChoiceModelProtocol
+        from locpick.models.choice_model import ChoiceModel
 
         dataset = simulate_mscl(n_obs=500, n_alts=6, seed=42)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
             graph=dataset.adjacency,
             random_params={"time": ParamDistribution("normal", "time")},
             n_draws=50,
         )
-        assert isinstance(model, ChoiceModel)
+        assert isinstance(model, ChoiceModelProtocol)

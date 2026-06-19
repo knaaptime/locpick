@@ -127,7 +127,6 @@ def mnl_log_likelihood_numpy(
     n_alts: int,
     weights: OptionalArray = None,
     inclusion_probs: OptionalArray = None,
-    design_matrix_sparse=None,
 ) -> float:
     """Compute the MNL log-likelihood.
 
@@ -149,9 +148,6 @@ def mnl_log_likelihood_numpy(
         Observation weights.
     inclusion_probs : np.ndarray or None, shape (n_obs, n_alts)
         Inclusion probabilities for sampling correction.
-    design_matrix_sparse : scipy.sparse.spmatrix or None
-        Sparse design matrix. If provided, used instead of dense
-        ``design_matrix`` for the matrix-vector product.
 
     Returns
     -------
@@ -159,10 +155,7 @@ def mnl_log_likelihood_numpy(
         Weighted log-likelihood.
     """
     # Step 1: systematic utility
-    if design_matrix_sparse is not None:
-        utilities = design_matrix_sparse.dot(beta).reshape(n_obs, n_alts)
-    else:
-        utilities = (design_matrix @ beta).reshape(n_obs, n_alts)
+    utilities = (design_matrix @ beta).reshape(n_obs, n_alts)
 
     # Steps 2–4: log-probabilities
     log_probs = mnl_log_probs_numpy(utilities, available, inclusion_probs)
@@ -190,7 +183,6 @@ def mnl_gradient_numpy(
     n_alts: int,
     weights: OptionalArray = None,
     inclusion_probs: OptionalArray = None,
-    design_matrix_sparse=None,
 ) -> np.ndarray:
     """Compute the MNL gradient.
 
@@ -212,9 +204,6 @@ def mnl_gradient_numpy(
         Observation weights.
     inclusion_probs : np.ndarray or None, shape (n_obs, n_alts)
         Inclusion probabilities.
-    design_matrix_sparse : scipy.sparse.spmatrix or None
-        Sparse design matrix. If provided, used instead of dense
-        ``design_matrix`` for the matrix-vector product.
 
     Returns
     -------
@@ -222,10 +211,7 @@ def mnl_gradient_numpy(
         Gradient vector.
     """
     # Step 1: systematic utility
-    if design_matrix_sparse is not None:
-        utilities = design_matrix_sparse.dot(beta).reshape(n_obs, n_alts)
-    else:
-        utilities = (design_matrix @ beta).reshape(n_obs, n_alts)
+    utilities = (design_matrix @ beta).reshape(n_obs, n_alts)
 
     # Steps 2–4: probabilities
     probs = mnl_probs_numpy(utilities, available, inclusion_probs)
@@ -237,10 +223,7 @@ def mnl_gradient_numpy(
     if weights is not None:
         residual = residual * weights.reshape(n_obs, 1)
 
-    if design_matrix_sparse is not None:
-        grad = design_matrix_sparse.T.dot(residual.ravel())
-    else:
-        grad = design_matrix.T @ residual.ravel()
+    grad = design_matrix.T @ residual.ravel()
     return grad
 
 

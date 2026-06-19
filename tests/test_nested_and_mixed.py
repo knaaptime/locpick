@@ -12,9 +12,8 @@ import numpy.testing as npt
 import pandas as pd
 import pytest
 
-from locpick import ChoiceTable
+from locpick import ChoiceModel, ChoiceTable
 from locpick.models.nested import (
-    NestedMNL,
     NestingTree,
     NestSpec,
     _nested_logit_ll_numpy,
@@ -485,7 +484,7 @@ class TestNestedLogitModel:
             ]
         )
 
-        model = NestedMNL(ct, formula="cost + time - 1", nests=nests)
+        model = ChoiceModel(ct, formula="cost + time - 1", nests=nests)
         result = model.fit()
 
         assert result.coefficients is not None
@@ -528,7 +527,7 @@ class TestNestedLogitModel:
             ]
         )
 
-        model = NestedMNL(ct, formula="cost + time - 1", nests=nests)
+        model = ChoiceModel(ct, formula="cost + time - 1", nests=nests)
         result = model.fit()
 
         # Should have lambda_transit and lambda_auto parameters
@@ -569,8 +568,9 @@ class TestNestedLogitModel:
             chosen_alternatives=pd.Series(choices, index=choosers.index),
         )
 
-        with pytest.raises(ValueError, match="nests"):
-            NestedMNL(ct, formula="y - 1")
+        # Without nests, ChoiceModel is MNL — no error
+        model = ChoiceModel(ct, formula="y - 1")
+        assert not model._is_nested
 
     def test_nested_logit_fit_alias(self):
         """fit() should be the primary estimation API."""
@@ -607,7 +607,7 @@ class TestNestedLogitModel:
             ]
         )
 
-        model = NestedMNL(ct, formula="y - 1", nests=nests)
+        model = ChoiceModel(ct, formula="y - 1", nests=nests)
         result = model.fit()
 
         assert np.isfinite(result.log_likelihood)
@@ -621,7 +621,6 @@ log-likelihood, parameter recovery, and MixedLogit model class.
 
 
 from locpick.models.mixed import (
-    MixedMNL,
     ParamDistribution,
     _halton_sequence,
     _mixed_logit_ll_numpy,
@@ -1010,7 +1009,7 @@ class TestMixedLogitModel:
         """MixedLogit should estimate and return a FitResult."""
         ct = make_mixed_data(n_obs=200, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={"time": ParamDistribution("normal", "time")},
@@ -1029,7 +1028,7 @@ class TestMixedLogitModel:
         """FitResult should include mean and sd of random parameters."""
         ct = make_mixed_data(n_obs=200, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={"time": ParamDistribution("normal", "time")},
@@ -1071,14 +1070,15 @@ class TestMixedLogitModel:
             chosen_alternatives=pd.Series(choices, index=choosers.index),
         )
 
-        with pytest.raises(ValueError, match="at least one random parameter"):
-            MixedMNL(ct, formula="y - 1", random_params={})
+        # Without random_params, ChoiceModel is MNL — no error
+        model = ChoiceModel(ct, formula="y - 1", random_params={})
+        assert not model._is_mixed
 
     def test_mixed_logit_fit_alias(self):
         """fit() should be the primary estimation API."""
         ct = make_mixed_data(n_obs=100, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={"time": ParamDistribution("normal", "time")},
@@ -1094,7 +1094,7 @@ class TestMixedLogitModel:
         """MixedLogit should work with Halton draws."""
         ct = make_mixed_data(n_obs=100, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={"time": ParamDistribution("normal", "time")},
@@ -1110,7 +1110,7 @@ class TestMixedLogitModel:
         """MixedLogit should handle multiple random parameters."""
         ct = make_mixed_data(n_obs=200, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={
@@ -1135,7 +1135,7 @@ class TestMixedLogitModel:
         """MixedLogit should work with lognormal distribution."""
         ct = make_mixed_data(n_obs=200, n_alts=4)
 
-        model = MixedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             random_params={"time": ParamDistribution("lognormal", "time")},

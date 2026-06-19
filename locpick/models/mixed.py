@@ -439,21 +439,7 @@ def _mixed_logit_probs_numpy(
     log_probs_draws = np.zeros((n_obs, n_draws, n_alts), dtype=np.float64)
 
     for r in range(n_draws):
-        # Realise random coefficients for this draw
-        beta_r = np.zeros(k_random)
-        for p in range(k_random):
-            z_p = draws[:, r, p]  # (n_obs,)
-            mean_p = np.full(n_obs, beta_random_means[p])
-            spread_p = np.full(n_obs, beta_random_spreads[p])
-            beta_r[p] = _apply_distribution(
-                z_p[:, None],
-                mean_p[:, None],
-                spread_p[:, None],
-                random_distributions[p],
-            ).ravel()[0]  # scalar for this draw
-
-        # Actually, we need per-observation random coefficients
-        # beta_r[n, p] = mean_p + spread_p * z[n, r, p]
+        # Realise per-observation random coefficients for this draw
         beta_random_r = np.zeros((n_obs, k_random))
         for p in range(k_random):
             z_p = draws[:, r, p]  # (n_obs,)
@@ -628,90 +614,6 @@ def _mixed_logit_ll_numpy(
         log_sim_probs = log_sim_probs * w
 
     return float(np.sum(log_sim_probs))
-
-
-def _mixed_logit_gradient_numpy(
-    params: np.ndarray,
-    random_col_indices: list[int],
-    k_fixed: int,
-    k_random: int,
-    random_distributions: list[str],
-    draws: np.ndarray,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """Compute mixed logit gradient via finite differences (NumPy backend).
-
-    Parameters
-    ----------
-    params : np.ndarray, shape (k_fixed + 2 * k_random,)
-        Full parameter vector: [beta_fixed, beta_random_means, beta_random_spreads].
-    random_col_indices, k_fixed, k_random, random_distributions, draws, design_matrix, chosen, n_obs, n_alts, available, inclusion_probs, weights
-        See :func:`_mixed_logit_ll_numpy`.
-
-    Returns
-    -------
-    np.ndarray, shape (k_fixed + 2 * k_random,)
-        Gradient of the simulated log-likelihood.
-    """
-    eps = 1e-5
-    n_params = len(params)
-    grad = np.zeros(n_params)
-
-    for i in range(n_params):
-        params_plus = params.copy()
-        params_plus[i] += eps
-        params_minus = params.copy()
-        params_minus[i] -= eps
-
-        def _unpack(p):
-            bf = p[:k_fixed]
-            rm = p[k_fixed : k_fixed + k_random]
-            rs = p[k_fixed + k_random :]
-            return bf, rm, rs
-
-        bf_plus, rm_plus, rs_plus = _unpack(params_plus)
-        bf_minus, rm_minus, rs_minus = _unpack(params_minus)
-
-        ll_plus = _mixed_logit_ll_numpy(
-            bf_plus,
-            rm_plus,
-            rs_plus,
-            random_distributions,
-            draws,
-            design_matrix,
-            chosen,
-            random_col_indices,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-        ll_minus = _mixed_logit_ll_numpy(
-            bf_minus,
-            rm_minus,
-            rs_minus,
-            random_distributions,
-            draws,
-            design_matrix,
-            chosen,
-            random_col_indices,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-
-        grad[i] = (ll_plus - ll_minus) / (2 * eps)
-
-    return grad
 
 
 # ---------------------------------------------------------------------------

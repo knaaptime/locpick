@@ -57,13 +57,6 @@ class ChoiceArrays:
 
     design_matrix: ArrayType
     chosen: ArrayType
-    design_matrix_sparse: Optional[Any] = None
-    """Sparse design matrix (scipy.sparse or jax.experimental.sparse).
-
-    When present, model kernels use sparse-dense products instead of
-    dense-dense, which is critical for large choice sets with many
-    zero-valued variables (e.g., "has_subway_station").
-    """
     available: Optional[ArrayType] = None
     weights: Optional[ArrayType] = None
     n_obs: int = 0

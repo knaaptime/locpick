@@ -829,7 +829,6 @@ class MNL(BaseChoiceModel, SpatialMixin):
         )
 
         dm = arrays.design_matrix.astype(np.float64)
-        dm_sparse = getattr(arrays, "design_matrix_sparse", None)
         chosen = arrays.chosen.astype(np.float64)
         n_obs = arrays.n_obs
         n_alts = arrays.n_alts
@@ -858,7 +857,6 @@ class MNL(BaseChoiceModel, SpatialMixin):
                 n_alts=n_alts,
                 weights=weights,
                 inclusion_probs=inclusion_probs,
-                design_matrix_sparse=dm_sparse,
             )
 
         def gradient(beta: np.ndarray) -> np.ndarray:
@@ -871,7 +869,6 @@ class MNL(BaseChoiceModel, SpatialMixin):
                 n_alts=n_alts,
                 weights=weights,
                 inclusion_probs=inclusion_probs,
-                design_matrix_sparse=dm_sparse,
             )
 
         from locpick._jax.objective import Objective

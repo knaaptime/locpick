@@ -83,7 +83,7 @@ def test_optax_solver_emits_diagnostics_in_raw_payload():
 import pandas as pd
 import pytest
 
-from locpick import MNL, ChoiceTable
+from locpick import ChoiceModel, ChoiceTable
 from locpick._solvers.lbfgs import LBFGSSolver
 from locpick._solvers.protocol import get_solver, list_solvers
 from locpick._solvers.trust_ncg import TrustKrylovSolver, TrustNCGSolver
@@ -133,11 +133,11 @@ def test_trust_ncg_rejects_unknown_method():
     [TrustNCGSolver, TrustKrylovSolver],
 )
 def test_trust_ncg_matches_lbfgs_on_mnl(mnl_table, solver_cls):
-    baseline = MNL(mnl_table, formula="rent + jobs", solver=LBFGSSolver())
+    baseline = ChoiceModel(mnl_table, formula="rent + jobs", solver=LBFGSSolver())
     baseline.fit()
     ll_base = baseline._result.log_likelihood
 
-    model = MNL(mnl_table, formula="rent + jobs", solver=solver_cls())
+    model = ChoiceModel(mnl_table, formula="rent + jobs", solver=solver_cls())
     model.fit()
     ll = model._result.log_likelihood
 
@@ -152,12 +152,12 @@ def test_trust_ncg_matches_lbfgs_on_mnl(mnl_table, solver_cls):
 def test_trust_ncg_matches_lbfgs_on_scl():
     """Sanity check on a spatial model: trust-ncg + JAX HVP should reach
     the same SCL optimum as scipy L-BFGS-B."""
-    from locpick import MNL
+    from locpick import ChoiceModel
     from locpick.dgp import simulate_scl
 
     ds = simulate_scl(n_obs=600, n_alts=12, seed=11)
 
-    base = MNL(
+    base = ChoiceModel(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,
@@ -166,7 +166,7 @@ def test_trust_ncg_matches_lbfgs_on_scl():
     )
     base.fit()
 
-    test = MNL(
+    test = ChoiceModel(
         data=ds.choice_table,
         formula="cost + time + income_x_cost",
         graph=ds.adjacency,
@@ -257,11 +257,11 @@ def test_optimagic_registered_lazily():
 )
 def test_optimagic_matches_lbfgs(mnl_table, algorithm):
     """OptimagicSolver should reach the same LL as scipy L-BFGS-B."""
-    baseline = MNL(mnl_table, formula="rent + jobs", solver=LBFGSSolver())
+    baseline = ChoiceModel(mnl_table, formula="rent + jobs", solver=LBFGSSolver())
     baseline.fit()
     ll_base = baseline._result.log_likelihood
 
-    model = MNL(
+    model = ChoiceModel(
         mnl_table,
         formula="rent + jobs",
         solver=OptimagicSolver(algorithm=algorithm),
@@ -279,6 +279,6 @@ def test_optimagic_matches_lbfgs(mnl_table, algorithm):
 
 def test_optimagic_unknown_algorithm_raises(mnl_table):
     solver = OptimagicSolver(algorithm="not_a_real_algorithm")
-    model = MNL(mnl_table, formula="rent + jobs", solver=solver)
+    model = ChoiceModel(mnl_table, formula="rent + jobs", solver=solver)
     with pytest.raises(Exception):
         model.fit()

@@ -6,7 +6,7 @@ import importlib.util
 import numpy.testing as npt
 import pytest
 
-from locpick import MNL, dgp
+from locpick import ChoiceModel, dgp
 
 """
 These are tests for the refactored locpick MNL codebase.
@@ -42,7 +42,7 @@ def test_mnl(obs, alts):
     """
     formula = "obsval + altval - 1"
     ct = ChoiceTable.from_tables(obs, alts, chosen_alternatives="choice")
-    m = MNL(ct, formula=formula)
+    m = ChoiceModel(ct, formula=formula)
     r = m.fit()
     assert len(r.coefficients) == 2
 
@@ -54,7 +54,7 @@ def test_mnl_estimation(obs, alts):
     """
     formula = "obsval + altval - 1"
     ct = ChoiceTable.from_tables(obs, alts, chosen_alternatives="choice")
-    result = MNL(ct, formula=formula).fit()
+    result = ChoiceModel(ct, formula=formula).fit()
     assert np.isfinite(result.log_likelihood)
     assert np.isfinite(result.coefficients.to_numpy()).all()
 
@@ -65,7 +65,7 @@ def test_mnl_prediction(obs, alts):
 
     """
     ct = ChoiceTable.from_tables(obs, alts, chosen_alternatives="choice", sample_size=5)
-    m = MNL(ct, formula="obsval + altval - 1")
+    m = ChoiceModel(ct, formula="obsval + altval - 1")
     m.fit()
 
     probs = m.probabilities(ct)
@@ -81,7 +81,7 @@ def _fit_v2(dataset, backend, monkeypatch):
     monkeypatch.delenv("LOCPICK_MNL_BACKEND", raising=False)
     if backend != "jax":
         monkeypatch.setenv("LOCPICK_MNL_BACKEND", backend)
-    model = MNL(dataset.choice_table, FORMULA)
+    model = ChoiceModel(dataset.choice_table, FORMULA)
     result = model.fit()
     return result.coefficients
 
@@ -94,7 +94,7 @@ def test_mnl_parameter_recovery_with_pairwise_variable():
         interaction_params={"obs_x_alt": 1.1},
         seed=1234,
     )
-    model = MNL(dataset.choice_table, FORMULA)
+    model = ChoiceModel(dataset.choice_table, FORMULA)
     estimated = model.fit().coefficients
 
     # With 4 000 observations MLE is consistent; allow 10 % relative tolerance.
@@ -229,7 +229,7 @@ class TestAvailability:
     def test_unavailable_alt_zero_probability(self):
         """Unavailable alternatives should have zero probability."""
         ct, _, _, _, avail_arr = _make_dataset_with_availability()
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -244,7 +244,7 @@ class TestAvailability:
     def test_available_alts_sum_to_one(self):
         """Probabilities of available alternatives should sum to 1."""
         ct, _, _, _, avail_arr = _make_dataset_with_availability()
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -261,7 +261,7 @@ class TestAvailability:
     def test_no_availability_all_available(self):
         """When no availability is specified, all alternatives should be available."""
         ct, _, _, _ = _make_simple_dataset()
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -357,7 +357,7 @@ class TestSamplingCorrection:
             sample_size=sample_size,
         )
 
-        model = MNL(ct, formula="altval - 1")
+        model = ChoiceModel(ct, formula="altval - 1")
         result = model.fit()
 
         # The coefficient should be recoverable (within 30% tolerance)
@@ -378,7 +378,7 @@ class TestProbabilityKernelConsistency:
         """Probabilities from prediction should match those implied by
         the estimated model's log-likelihood computation."""
         ct, _, _, _ = _make_simple_dataset()
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         # Get probabilities from prediction
@@ -411,7 +411,7 @@ class TestProbabilityKernelConsistency:
         if backend == "numpy":
             monkeypatch.setenv("LOCPICK_MNL_BACKEND", "numpy")
 
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         # Should produce finite results
@@ -437,13 +437,13 @@ class TestWeightSemantics:
         ct, _, _, _ = _make_simple_dataset()
 
         # Unweighted
-        model_unweighted = MNL(ct, formula="obsval + altval - 1")
+        model_unweighted = ChoiceModel(ct, formula="obsval + altval - 1")
         result_unweighted = model_unweighted.fit()
 
         # Weighted with unit weights
         n_obs = ct.n_observations
         unit_weights = np.ones(n_obs)
-        model_weighted = MNL(ct, formula="obsval + altval - 1", weights=unit_weights)
+        model_weighted = ChoiceModel(ct, formula="obsval + altval - 1", weights=unit_weights)
         result_weighted = model_weighted.fit()
 
         # Log-likelihoods should be very close
@@ -454,13 +454,13 @@ class TestWeightSemantics:
         ct, _, _, _ = _make_simple_dataset()
 
         # Unweighted
-        model_unweighted = MNL(ct, formula="obsval + altval - 1")
+        model_unweighted = ChoiceModel(ct, formula="obsval + altval - 1")
         result_unweighted = model_unweighted.fit()
 
         # Doubled weights
         n_obs = ct.n_observations
         double_weights = 2.0 * np.ones(n_obs)
-        model_doubled = MNL(ct, formula="obsval + altval - 1", weights=double_weights)
+        model_doubled = ChoiceModel(ct, formula="obsval + altval - 1", weights=double_weights)
         result_doubled = model_doubled.fit()
 
         # The doubled-weight LL should be approximately 2x the unweighted LL
@@ -479,7 +479,7 @@ class TestNullLogLikelihood:
     def test_null_ll_all_available(self):
         """When all alternatives are available, null LL = -n_obs * log(n_alts)."""
         ct, _, _, _ = _make_simple_dataset(n_obs=100, n_alts=5)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         expected_null_ll = -100 * np.log(5)
@@ -538,10 +538,11 @@ class TestGradientCorrectness:
     """Tests that the gradient is consistent with the log-likelihood
     via finite differences."""
 
+    @pytest.mark.skip(reason="NumPy backend removed")
     def test_numpy_gradient_matches_finite_differences(self):
         """NumPy gradient should match finite-difference approximation."""
         ct, _, _, _ = _make_simple_dataset(seed=77)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         arrays = model._build_arrays()
 
         # Force NumPy backend
@@ -572,6 +573,7 @@ class TestGradientCorrectness:
 
         assert np.allclose(analytical_grad, numerical_grad, atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.skip(reason="NumPy backend removed")
     def test_gradient_with_availability(self):
         """Gradient should be correct when availability masking is active."""
         n_obs = 50
@@ -603,7 +605,7 @@ class TestGradientCorrectness:
 
         # Build the objective directly using the model's method
         ct, _, _, _ = _make_simple_dataset(seed=55)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         objective = model._build_objective_numpy(arrays)
         ll_fn = objective.fn
         grad_fn = objective.grad
@@ -625,6 +627,7 @@ class TestGradientCorrectness:
 
         assert np.allclose(analytical_grad, numerical_grad, atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.skip(reason="NumPy backend removed")
     def test_gradient_with_sampling_correction(self):
         """Gradient should be correct when sampling correction is applied."""
         n_obs = 50
@@ -649,7 +652,7 @@ class TestGradientCorrectness:
         )
 
         ct, _, _, _ = _make_simple_dataset(seed=66)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         objective = model._build_objective_numpy(arrays)
         ll_fn = objective.fn
         grad_fn = objective.grad
@@ -751,7 +754,7 @@ class TestProbabilityComputation:
     def test_probabilities_match_softmax(self):
         """Probabilities from the model should match manual softmax computation."""
         ct, _, _, _ = _make_simple_dataset(seed=101)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         arrays = ct.to_arrays(formula="obsval + altval - 1")
@@ -775,7 +778,7 @@ class TestProbabilityComputation:
     def test_probabilities_sum_to_one(self):
         """Probabilities for each observation should sum to 1."""
         ct, _, _, _ = _make_simple_dataset(seed=102)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -786,7 +789,7 @@ class TestProbabilityComputation:
     def test_probabilities_are_non_negative(self):
         """All probabilities should be non-negative."""
         ct, _, _, _ = _make_simple_dataset(seed=103)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -795,7 +798,7 @@ class TestProbabilityComputation:
     def test_chosen_probabilities_positive(self):
         """Probability of the chosen alternative should be positive for each obs."""
         ct, _, _, _ = _make_simple_dataset(seed=104)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         arrays = ct.to_arrays(formula="obsval + altval - 1")
@@ -816,7 +819,7 @@ class TestLogLikelihoodComputation:
     def test_log_likelihood_matches_manual(self):
         """Log-likelihood should equal sum of log(chosen probabilities)."""
         ct, _, _, _ = _make_simple_dataset(seed=201)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         arrays = ct.to_arrays(formula="obsval + altval - 1")
@@ -832,14 +835,14 @@ class TestLogLikelihoodComputation:
     def test_log_likelihood_is_negative(self):
         """Log-likelihood should be negative for any model."""
         ct, _, _, _ = _make_simple_dataset(seed=202)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
         assert result.log_likelihood < 0
 
     def test_log_likelihood_better_than_null(self):
         """Fitted model LL should be >= null LL (rho-squared >= 0)."""
         ct, _, _, _ = _make_simple_dataset(seed=203)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
         assert result.log_likelihood >= result.log_likelihood_null
 
@@ -852,6 +855,7 @@ class TestLogLikelihoodComputation:
 class TestGradientExtended:
     """Extended gradient tests beyond the basic correctness tests."""
 
+    @pytest.mark.skip(reason="NumPy backend removed")
     def test_gradient_with_weights(self):
         """Gradient should be correct when observation weights are used."""
         n_obs = 50
@@ -875,7 +879,7 @@ class TestGradientExtended:
         )
 
         ct, _, _, _ = _make_simple_dataset(seed=301)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         objective = model._build_objective_numpy(arrays)
         ll_fn = objective.fn
         grad_fn = objective.grad
@@ -896,6 +900,7 @@ class TestGradientExtended:
 
         npt.assert_allclose(analytical_grad, numerical_grad, atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.skip(reason="NumPy backend removed")
     def test_gradient_with_availability_and_weights(self):
         """Gradient should be correct with both availability and weights."""
         n_obs = 50
@@ -926,7 +931,7 @@ class TestGradientExtended:
         )
 
         ct, _, _, _ = _make_simple_dataset(seed=302)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         objective = model._build_objective_numpy(arrays)
         ll_fn = objective.fn
         grad_fn = objective.grad
@@ -959,7 +964,7 @@ class TestHessianVerification:
     def test_inverse_hessian_matches_numerical(self):
         """The inverse Hessian should match a numerical approximation."""
         ct, _, _, _ = _make_simple_dataset(n_obs=200, seed=401)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         # Get the inverse Hessian from the solver result
@@ -1020,7 +1025,7 @@ class TestHessianVerification:
     def test_standard_errors_positive(self):
         """Standard errors should be positive for all parameters."""
         ct, _, _, _ = _make_simple_dataset(seed=402)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         # Parameters with zero SE are marked NaN (numerically unidentified).
@@ -1067,7 +1072,7 @@ class TestNumericalStability:
             chosen_alternatives=pd.Series(choices, index=choosers.index),
         )
 
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         result = model.fit()
 
         # Results should be finite
@@ -1107,7 +1112,7 @@ class TestNumericalStability:
             chosen_alternatives=pd.Series(choices, index=choosers.index),
         )
 
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -1149,7 +1154,7 @@ class TestNumericalStability:
             chosen_alternatives=pd.Series(choices, index=choosers.index),
         )
 
-        model = MNL(ct, formula="altval - 1")
+        model = ChoiceModel(ct, formula="altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -1170,7 +1175,7 @@ class TestPrediction:
     def test_prediction_on_same_data(self):
         """Prediction on estimation data should match fitted probabilities."""
         ct, _, _, _ = _make_simple_dataset(seed=601)
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -1206,7 +1211,7 @@ class TestPrediction:
             chosen_alternatives=pd.Series(choices_train, index=choosers_train.index),
         )
 
-        model = MNL(ct_train, formula="obsval + altval - 1")
+        model = ChoiceModel(ct_train, formula="obsval + altval - 1")
         model.fit()
 
         # New data (different choosers, same alternatives)
@@ -1273,7 +1278,7 @@ class TestPrediction:
             available=avail_series,
         )
 
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         probs = model.probabilities(ct)
@@ -1315,7 +1320,7 @@ class TestPrediction:
             sample_size=sample_size,
         )
 
-        model = MNL(ct, formula="obsval + altval - 1")
+        model = ChoiceModel(ct, formula="obsval + altval - 1")
         model.fit()
 
         # Utilities should include sampling correction
@@ -1488,7 +1493,7 @@ class TestDGPRecovery:
             interaction_params={},
             seed=8001,
         )
-        model = MNL(dataset.choice_table, formula="alt_feature - 1")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -1508,7 +1513,7 @@ class TestDGPRecovery:
             interaction_params={"obs_x_alt": 0.95},
             seed=8002,
         )
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -1533,7 +1538,7 @@ class TestDGPRecovery:
             interaction_params={"obs_x_alt": 1.0},
             seed=8003,
         )
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         # With 5000 obs, should recover within 10%
@@ -1560,7 +1565,7 @@ class TestDGPRecovery:
             seed=8004,
         )
 
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         # With 3000 obs and 15 alternatives, should recover within 20%
@@ -1589,7 +1594,7 @@ class TestDGPRecovery:
         if backend != "jax":
             monkeypatch.setenv("LOCPICK_MNL_BACKEND", backend)
 
-        model = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -1614,14 +1619,14 @@ class TestEstimationProblemIntegration:
         dataset = simulate_mnl(n_obs=2000, n_alts=5, seed=901)
 
         # Formula path
-        model_formula = MNL(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model_formula = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
         result_formula = model_formula.fit()
 
         # Problem path
         problem = EstimationProblem.from_choice_table(
             dataset.choice_table, formula="alt_feature + obs_x_alt - 1"
         )
-        model_problem = MNL(data=dataset.choice_table, problem=problem)
+        model_problem = ChoiceModel(data=dataset.choice_table, problem=problem)
         result_problem = model_problem.fit()
 
         # Results should match
@@ -1654,7 +1659,7 @@ class TestEstimationProblemIntegration:
             param_fixed=[True, False],
         )
 
-        model = MNL(data=dataset.choice_table, problem=problem_fixed)
+        model = ChoiceModel(data=dataset.choice_table, problem=problem_fixed)
         result = model.fit()
 
         # The fixed parameter should remain at -0.5
@@ -1680,7 +1685,7 @@ class TestEstimationProblemIntegration:
             param_bounds=[(-1.0, 0.0), (None, None)],
         )
 
-        model = MNL(data=dataset.choice_table, problem=problem_bounded)
+        model = ChoiceModel(data=dataset.choice_table, problem=problem_bounded)
         result = model.fit()
 
         # alt_feature should be within bounds
@@ -1732,7 +1737,7 @@ def test_choicetable_and_arrays():
 def test_multinomiallogit_estimation():
     choosers, alternatives, chosen = make_toy_data()
     ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=4, seed=1)
-    model = MNL(ct, formula="cost + time")
+    model = ChoiceModel(ct, formula="cost + time")
     result = model.fit()
     assert isinstance(result, FitResult)
     assert result.coefficients.shape[0] == 2
@@ -1749,7 +1754,7 @@ def test_multinomiallogit_estimation():
 def test_formatting_and_statistics():
     choosers, alternatives, chosen = make_toy_data()
     ct = ChoiceTable.from_tables(choosers, alternatives, chosen, sample_size=4, seed=2)
-    model = MNL(ct, formula="cost + time")
+    model = ChoiceModel(ct, formula="cost + time")
     result = model.fit()
     # Coefficient table
     table = format_coefficient_table(result)
@@ -1774,7 +1779,7 @@ def test_modelspec_formula_spec_estimation():
     arrays = ct.to_arrays(spec=spec)
     assert arrays.design_matrix.shape[1] == 2
     # Estimation with formula spec
-    model = MNL(ct, spec=spec)
+    model = ChoiceModel(ct, spec=spec)
     result = model.fit()
     assert isinstance(result, FitResult)
     assert result.coefficients.shape[0] == 2

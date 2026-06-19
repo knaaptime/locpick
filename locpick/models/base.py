@@ -86,12 +86,11 @@ def _aggregate_per_obs_alt(s: pd.Series, by: str, name: str):
 
 
 @runtime_checkable
-class ChoiceModel(Protocol):
+class ChoiceModelProtocol(Protocol):
     """Protocol for discrete choice model classes.
 
-    All concrete model classes (``MultinomialLogit``, ``NestedLogit``,
-    ``MixedLogit``, ``SpatiallyCorrelatedLogit``,
-    ``MixedSpatiallyCorrelatedLogit``) implement this protocol.
+    All concrete model classes implement this protocol.
+    The primary implementation is :class:`locpick.models.choice_model.ChoiceModel`.
     """
 
     def fit(self, **kwargs) -> FitResult:

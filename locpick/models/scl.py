@@ -23,17 +23,17 @@ from typing import Optional
 import numpy as np
 from scipy.special import logsumexp
 
-from locpick._kernels.constants import NEG_INF
-from locpick.models._spatial import (
+from .._kernels.constants import NEG_INF
+from ._spatial import (
     EdgeStructure as EdgeStructure,
 )
-from locpick.models._spatial import (
+from ._spatial import (
     _resolve_spatial_graph as _resolve_spatial_graph,
 )
-from locpick.models._spatial import (
+from ._spatial import (
     constrain_rho as constrain_rho,
 )
-from locpick.models._spatial import (
+from ._spatial import (
     naturalize_rho as naturalize_rho,
 )
 
@@ -186,13 +186,21 @@ def _scl_log_probs_numpy(
             if is_first:
                 # alt_i is node i in edge (i, j)
                 # P_{i|ij} = (α_{i,ij} * exp(V_i))^{1/ρ} / [(α_{i,ij} * exp(V_i))^{1/ρ} + (α_{j,ij} * exp(V_j))^{1/ρ}]
-                my_term = alloc_exp_V_inv_rho[:, alt_i, j]  # (α_{i,ij} * exp(V_i))^{1/ρ}
-                other_term = alloc_exp_V_inv_rho[:, j, alt_i]  # (α_{j,ij} * exp(V_j))^{1/ρ}
+                my_term = alloc_exp_V_inv_rho[
+                    :, alt_i, j
+                ]  # (α_{i,ij} * exp(V_i))^{1/ρ}
+                other_term = alloc_exp_V_inv_rho[
+                    :, j, alt_i
+                ]  # (α_{j,ij} * exp(V_j))^{1/ρ}
             else:
                 # alt_i is node j in edge (i, j)
                 # P_{j|ij} = (α_{j,ij} * exp(V_j))^{1/ρ} / [(α_{i,ij} * exp(V_i))^{1/ρ} + (α_{j,ij} * exp(V_j))^{1/ρ}]
-                my_term = alloc_exp_V_inv_rho[:, alt_i, i]  # (α_{j,ij} * exp(V_j))^{1/ρ}
-                other_term = alloc_exp_V_inv_rho[:, i, alt_i]  # (α_{i,ij} * exp(V_i))^{1/ρ}
+                my_term = alloc_exp_V_inv_rho[
+                    :, alt_i, i
+                ]  # (α_{j,ij} * exp(V_j))^{1/ρ}
+                other_term = alloc_exp_V_inv_rho[
+                    :, i, alt_i
+                ]  # (α_{i,ij} * exp(V_i))^{1/ρ}
 
             # log P_{i|ij} = log(my_term) - log(my_term + other_term)
             log_cond = np.log(np.maximum(my_term, 1e-300)) - np.log(
@@ -393,169 +401,6 @@ def _scl_ll_numpy(
     return float(chosen_log_probs.sum())
 
 
-def _scl_gradient_numpy(
-    beta: np.ndarray,
-    rho: float,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    allocation: np.ndarray,
-    edge_list: list[tuple[int, int]],
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """Compute SCL gradient via finite differences (NumPy backend).
-
-    This is a fallback gradient that uses central finite differences.
-    A proper analytical gradient will be implemented in a future version.
-
-    Parameters
-    ----------
-    beta, rho, design_matrix, chosen, allocation, edge_list, n_obs, n_alts,
-    available, inclusion_probs, weights
-        See :func:`_scl_ll_numpy`.
-
-    Returns
-    -------
-    np.ndarray, shape (k + 1,)
-        Gradient of the log-likelihood with respect to [beta, alpha_rho].
-    """
-    params = np.concatenate([beta, [rho]])
-    eps = 1e-5
-    n_params = len(params)
-    grad = np.zeros(n_params)
-
-    for i in range(n_params):
-        params_plus = params.copy()
-        params_plus[i] += eps
-        params_minus = params.copy()
-        params_minus[i] -= eps
-
-        ll_plus = _scl_ll_numpy(
-            params_plus[: len(beta)],
-            params_plus[len(beta)],
-            design_matrix,
-            chosen,
-            allocation,
-            edge_list,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-        ll_minus = _scl_ll_numpy(
-            params_minus[: len(beta)],
-            params_minus[len(beta)],
-            design_matrix,
-            chosen,
-            allocation,
-            edge_list,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-
-        grad[i] = (ll_plus - ll_minus) / (2 * eps)
-
-    return grad
-
-
 # ---------------------------------------------------------------------------
-# Dispatch layer (kept as a stable entry point for predict() and benchmarks)
-# ---------------------------------------------------------------------------
-
-
-def _scl_log_probs_dispatch(
-    beta: np.ndarray,
-    rho: float,
-    design_matrix: np.ndarray,
-    allocation: np.ndarray,
-    edge_list: list[tuple[int, int]],
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    edge_struct: Optional[EdgeStructure] = None,
-) -> np.ndarray:
-    """Compute SCL log-probabilities using the NumPy reference kernel."""
-    return _scl_log_probs_numpy(
-        beta,
-        rho,
-        design_matrix,
-        allocation,
-        edge_list,
-        n_obs,
-        n_alts,
-        available=available,
-        inclusion_probs=inclusion_probs,
-    )
-
-
-def _scl_ll_dispatch(
-    beta: np.ndarray,
-    rho: float,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    allocation: np.ndarray,
-    edge_list: list[tuple[int, int]],
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-    edge_struct: Optional[EdgeStructure] = None,
-) -> float:
-    """Compute SCL log-likelihood using the NumPy reference kernel."""
-    return _scl_ll_numpy(
-        beta,
-        rho,
-        design_matrix,
-        chosen,
-        allocation,
-        edge_list,
-        n_obs,
-        n_alts,
-        available=available,
-        inclusion_probs=inclusion_probs,
-        weights=weights,
-    )
-
-
-def _scl_gradient_dispatch(
-    beta: np.ndarray,
-    rho: float,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    allocation: np.ndarray,
-    edge_list: list[tuple[int, int]],
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-    edge_struct: Optional[EdgeStructure] = None,
-) -> np.ndarray:
-    """Compute SCL gradient via finite differences over the NumPy LL."""
-    return _scl_gradient_numpy(
-        beta,
-        rho,
-        design_matrix,
-        chosen,
-        allocation,
-        edge_list,
-        n_obs,
-        n_alts,
-        available=available,
-        inclusion_probs=inclusion_probs,
-        weights=weights,
-    )
-
-
-# ---------------------------------------------------------------------------
-# (Public ``SCL`` factory removed — construct ``MNL`` / ``NestedMNL`` /
-# ``MixedMNL`` / ``MixedNestedMNL`` directly with ``graph=`` instead.)
+# (Public ``SCL`` factory removed — construct ``ChoiceModel`` directly with
+# ``graph=`` instead.)

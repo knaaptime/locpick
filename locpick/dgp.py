@@ -354,6 +354,124 @@ def _build_choice_table(choosers, alternatives, choices, matrix_data=None):
 
 
 # ---------------------------------------------------------------------------
+# Shared DGP helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_choosers(n_obs, seed, feature_name="obs_feature"):
+    """Build choosers DataFrame with obs_id index and a random feature."""
+    rng = np.random.default_rng(seed)
+    obs_ids = pd.Index(np.arange(n_obs), name="oid")
+    choosers = pd.DataFrame({feature_name: rng.standard_normal(n_obs)}, index=obs_ids)
+    return choosers, rng, obs_ids
+
+
+def _build_alternatives(n_alts, rng, alt_features):
+    """Build alternatives DataFrame with alt_id index.
+
+    Parameters
+    ----------
+    n_alts : int
+    rng : np.random.Generator
+    alt_features : dict[str, tuple]
+        Mapping of column name → (low, high) for uniform draw.
+    """
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    data = {}
+    for col, (low, high) in alt_features.items():
+        data[col] = rng.uniform(low, high, n_alts)
+    alternatives = pd.DataFrame(data, index=alt_ids)
+    return alternatives, alt_ids
+
+
+def _build_interactions(obs_ids, alt_ids, chooser_feature, alt_columns):
+    """Build chooser×alternative interaction terms.
+
+    Returns
+    -------
+    interactions : dict[str, pd.Series]
+        Named (obs_id, alt_id)-indexed Series.
+    interaction_index : pd.MultiIndex
+    """
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
+    n_obs = len(obs_ids)
+    n_alts = len(alt_ids)
+    interactions = {}
+    for alt_col in alt_columns:
+        alt_vals = alt_columns[alt_col]
+        tiled_feat = np.repeat(chooser_feature, n_alts)
+        tiled_alt = np.tile(alt_vals, n_obs)
+        name = f"{chooser_feature.name}_x_{alt_col}" if hasattr(chooser_feature, "name") else f"obs_x_{alt_col}"
+        interactions[name] = pd.Series(
+            tiled_feat * tiled_alt, index=interaction_index, name=name
+        )
+    return interactions, interaction_index
+
+
+def _compute_det_utility(n_obs, n_alts, alternatives, alt_params, interactions, interaction_coefs=None):
+    """Compute deterministic utility from alt params and interactions.
+
+    Parameters
+    ----------
+    n_obs, n_alts : int
+    alternatives : pd.DataFrame
+    alt_params : dict[str, float]
+    interactions : dict[str, pd.Series]
+    interaction_coefs : dict[str, float] or None
+        Coefficients for interaction terms. Keys must match interactions.
+    """
+    det_utility = np.zeros((n_obs, n_alts))
+    for col, coef in alt_params.items():
+        alt_vals = alternatives[col].to_numpy()
+        det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
+    if interaction_coefs:
+        for name, coef in interaction_coefs.items():
+            if name in interactions:
+                det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
+    return det_utility
+
+
+def _build_design_matrix(n_obs, alternatives, interactions, interaction_coefs):
+    """Build a design matrix from alternatives + interaction terms.
+
+    Returns
+    -------
+    design_matrix : np.ndarray, shape (n_obs * n_alts, k)
+    beta : np.ndarray, shape (k,)
+    """
+    beta = np.array([None] * len(alternatives.columns), dtype=float)
+    design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
+    beta = np.array([1.0] * len(alternatives.columns), dtype=float)  # placeholder
+    for name, coef in interaction_coefs.items():
+        if name in interactions:
+            design_matrix = np.column_stack([design_matrix, interactions[name].to_numpy().ravel()])
+    return design_matrix
+
+
+def _simulate_choices_from_probs(probs, rng, n_obs, n_alts):
+    """Vectorized choice simulation from probability matrix.
+
+    Replaces the Python loop ``np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])``
+    with vectorized inverse-CDF sampling.
+    """
+    # Normalize to sum to 1 (numerical safety)
+    probs = probs / probs.sum(axis=1, keepdims=True)
+    cumulative = np.cumsum(probs, axis=1)
+    uniform = rng.random(n_obs)
+    choices = np.argmax(cumulative > uniform[:, None], axis=1)
+    return np.clip(choices, 0, n_alts - 1)
+
+
+def _build_circular_adjacency(n_alts):
+    """Build a circular adjacency matrix where zone i is adjacent to i±1."""
+    adjacency = np.zeros((n_alts, n_alts), dtype=np.float64)
+    for i in range(n_alts):
+        adjacency[i, (i - 1) % n_alts] = 1.0
+        adjacency[i, (i + 1) % n_alts] = 1.0
+    return adjacency
+
+
+# ---------------------------------------------------------------------------
 # MNL DGP
 # ---------------------------------------------------------------------------
 
@@ -601,7 +719,7 @@ def simulate_nested_logit(
     )
 
     # Simulate choices from probabilities
-    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choices = _simulate_choices_from_probs(probs, rng, n_obs, n_alts)
     choosers = choosers.copy()
     choosers["choice"] = choices
 
@@ -733,7 +851,7 @@ def simulate_scl(
     probs = np.exp(log_probs)
 
     # Simulate choices
-    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choices = _simulate_choices_from_probs(probs, rng, n_obs, n_alts)
     choosers = choosers.copy()
     choosers["choice"] = choices
 
@@ -1143,9 +1261,6 @@ def simulate_nested_scl(
     det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
 
     # --- Compute Nested SCL probabilities and simulate choices --------
-    np.array([alt_params[col] for col in alternatives.columns])
-    np.tile(alternatives.to_numpy(), (n_obs, 1))
-
     nest_matrix = nests.build_nest_matrix(list(range(n_alts)))
     n_nests = len(nest_names)
 
@@ -1204,7 +1319,7 @@ def simulate_nested_scl(
     probs = probs / probs.sum(axis=1, keepdims=True)
 
     # Simulate choices
-    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choices = _simulate_choices_from_probs(probs, rng, n_obs, n_alts)
     choosers = choosers.copy()
     choosers["choice"] = choices
 
@@ -1444,9 +1559,6 @@ def simulate_mnscl(
     det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
 
     # --- Add random coefficient variation ------------------------------
-    np.array([alt_params[col] for col in alternatives.columns])
-    np.tile(alternatives.to_numpy(), (n_obs, 1))
-
     # For each random parameter, add random variation multiplied by attribute
     for param_name, (dist, mean, spread) in random_params.items():
         list(alternatives.columns).index(param_name)
@@ -1525,7 +1637,7 @@ def simulate_mnscl(
     probs = probs / probs.sum(axis=1, keepdims=True)
 
     # Simulate choices
-    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choices = _simulate_choices_from_probs(probs, rng, n_obs, n_alts)
     choosers = choosers.copy()
     choosers["choice"] = choices
 
@@ -1726,7 +1838,7 @@ def simulate_mixed_nested_logit(
     )
 
     # Simulate choices from probabilities
-    choices = np.array([rng.choice(n_alts, p=probs[i]) for i in range(n_obs)])
+    choices = _simulate_choices_from_probs(probs, rng, n_obs, n_alts)
     choosers = choosers.copy()
     choosers["choice"] = choices
 
@@ -1756,6 +1868,195 @@ def simulate_mixed_nested_logit(
         true_random_spreads=true_random_spreads,
         random_params=random_param_dict,
         nests=nests,
+        choice_table=choice_table,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        seed=seed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# SAR-MNL DGP (Smirnov 2010)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SARMNLDataset:
+    """Synthetic dataset drawn from a known SAR-MNL data generating process.
+
+    Alternatives are spatial locations connected by ``W`` (alt×alt).
+    Choosers select among alternatives via MNL with spatially-filtered
+    and variance-normalised utilities (Smirnov 2010 PML DGP).
+
+    Attributes
+    ----------
+    choosers : pd.DataFrame
+        Obs-id-indexed DataFrame with chooser attributes and ``choice`` column.
+    alternatives : pd.DataFrame
+        Alt-id-indexed DataFrame with alternative attributes.
+    interactions : dict[str, pd.Series]
+        Named ``(obs_id, alt_id)``-indexed Series for chooser×alt interactions.
+    true_params : dict[str, float]
+        Ground-truth beta coefficients (alt-level + interaction).
+    true_rho : float
+        Ground-truth spatial autoregressive parameter.
+    W : libpysal.graph.Graph
+        Row-standardised spatial weights matrix (n_alts × n_alts) as a
+        libpysal Graph.  Use ``W.sparse`` to get the scipy.sparse matrix
+        for computation.
+    choice_table : object
+        Assembled ChoiceTable.
+    n_obs : int
+    n_alts : int
+    seed : int
+    """
+
+    choosers: pd.DataFrame
+    alternatives: pd.DataFrame
+    interactions: dict[str, pd.Series]
+    true_params: dict[str, float]
+    true_rho: float
+    W: Any  # libpysal.graph.Graph
+    choice_table: Any
+    n_obs: int
+    n_alts: int
+    seed: int
+
+
+def simulate_sar_mnl(
+    n_obs: int = 5000,
+    n_alts: int = 50,
+    alt_params: dict[str, float] | None = None,
+    interaction_params: dict[str, float] | None = None,
+    rho: float = 0.3,
+    W=None,
+    n_neighbors: int = 7,
+    seed: int = 1234,
+) -> SARMNLDataset:
+    """Generate synthetic SAR-MNL choice data with known parameters.
+
+    The DGP follows Smirnov (2010) PML model:
+
+    1. Build ``W`` (alt×alt, row-standardised k-nearest-neighbor Graph)
+    2. Generate alternative attributes ``Z`` and chooser-alt interactions ``X``
+    3. Compute base utilities: ``V_base = Zβ + Xγ``  (n_obs × n_alts)
+    4. Spatial filter: ``V_filtered = (I - ρW)^{-1} V_base^T``
+    5. Variance normalisation: ``D = diag((I - ρW)^{-1})``,
+       ``V_star = V_filtered / D``  (divide each alt by d_jj)
+    6. Add Gumbel noise: ``U = V_star + Gumbel(0, 1)``
+    7. Choice = ``argmax(U)`` per chooser
+
+    The variance normalisation (step 5) is essential — it matches the
+    PML estimator's model (Smirnov 2010).  Without it, the DGP would
+    not match the estimation model and parameter recovery would fail.
+
+    Parameters
+    ----------
+    n_obs : int, default 5000
+        Number of choosers.
+    n_alts : int, default 50
+        Number of alternatives (spatial locations).  Dimension of W.
+        For PML dense path, keep ≤ 2000.  For CG path, can be larger.
+    alt_params : dict, optional
+        Mapping of alternative-level column name → true coefficient.
+        Default: ``{"alt_attr": -0.5}``.
+    interaction_params : dict, optional
+        Mapping of interaction column name → true coefficient.
+        Default: ``{"obs_x_alt": 0.8}``.
+    rho : float, default 0.3
+        True spatial autoregressive parameter.  Should be in (-1, 1).
+        Smirnov 2010 MC evidence: good recovery for ρ ∈ [0, 0.5].
+    W : libpysal.graph.Graph, scipy.sparse, np.ndarray, or None
+        Pre-specified n_alts × n_alts spatial weights matrix.
+        If None, constructed as k-nearest-neighbor Graph on random
+        coordinates (matching Krisztin et al. 2022's 7-NN specification).
+        A ``libpysal.graph.Graph`` is the preferred input type.
+    n_neighbors : int, default 7
+        Number of nearest neighbors for default W construction.
+    seed : int, default 1234
+
+    Returns
+    -------
+    SARMNLDataset
+        Dataset with ``W`` stored as a ``libpysal.graph.Graph`` (row-standardised).
+    """
+    if alt_params is None:
+        alt_params = {"alt_attr": -0.5}
+    if interaction_params is None:
+        interaction_params = {"obs_x_alt": 0.8}
+
+    rng = np.random.default_rng(seed)
+
+    # --- Build W (alt×alt) as a libpysal Graph --------------------------
+    from locpick.models._spatial_weights import build_knn_graph, resolve_spatial_weights
+
+    if W is None:
+        coords = rng.standard_normal((n_alts, 2))
+        W_graph = build_knn_graph(coords, k=n_neighbors)
+        W_dense = np.asarray(W_graph.sparse.todense(), dtype=np.float64)
+    else:
+        W_graph, _ = resolve_spatial_weights(W, n_alts, row_standardize=True)
+        W_dense = np.asarray(W_graph.sparse.todense(), dtype=np.float64)
+
+    # --- Choosers and alternatives --------------------------------------
+    obs_ids = pd.Index(np.arange(n_obs), name="oid")
+    obs_feature = rng.standard_normal(n_obs)
+    choosers = pd.DataFrame({"obs_feature": obs_feature}, index=obs_ids)
+
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    alt_attr = rng.standard_normal(n_alts)
+    alternatives = pd.DataFrame({"alt_attr": alt_attr}, index=alt_ids)
+
+    # --- Interactions (chooser × alternative) --------------------------
+    interaction_index = pd.MultiIndex.from_product(
+        [obs_ids, alt_ids], names=["oid", "aid"]
+    )
+    obs_feat_tiled = np.repeat(obs_feature, n_alts)
+    alt_attr_tiled = np.tile(alt_attr, n_obs)
+    obs_x_alt_values = obs_feat_tiled * alt_attr_tiled
+    interactions = {
+        "obs_x_alt": pd.Series(
+            obs_x_alt_values, index=interaction_index, name="obs_x_alt"
+        )
+    }
+
+    # --- Base utilities: V_base = Zβ + Xγ  (n_obs × n_alts) -------------
+    V_base = np.zeros((n_obs, n_alts))
+    for col, coef in alt_params.items():
+        V_base += coef * np.tile(alternatives[col].to_numpy(), (n_obs, 1))
+    for col, coef in interaction_params.items():
+        V_base += coef * interactions[col].to_numpy().reshape(n_obs, n_alts)
+
+    # --- Spatial filter: V_filtered = (I - ρW)^{-1} V_base^T ------------
+    A = np.eye(n_alts) - rho * W_dense
+    V_filtered = np.linalg.solve(A, V_base.T).T  # (n_obs, n_alts)
+
+    # --- Variance normalisation: D = diag((I - ρW)^{-1}) ---------------
+    Z_mat = np.linalg.inv(A)
+    D = np.diag(Z_mat)  # (n_alts,)
+    V_star = V_filtered / D[None, :]  # normalise each alternative by d_jj
+
+    # --- Add Gumbel noise and simulate choices -------------------------
+    gumbel = rng.gumbel(size=(n_obs, n_alts))
+    U = V_star + gumbel
+    choices = U.argmax(axis=1)
+    choosers = choosers.copy()
+    choosers["choice"] = choices
+
+    # --- Build ChoiceTable ----------------------------------------------
+    true_params = dict(alt_params)
+    true_params.update(interaction_params)
+    choice_table = _build_choice_table(
+        choosers, alternatives, choosers["choice"], matrix_data=interactions
+    )
+
+    return SARMNLDataset(
+        choosers=choosers,
+        alternatives=alternatives,
+        interactions=interactions,
+        true_params=true_params,
+        true_rho=rho,
+        W=W_graph,
         choice_table=choice_table,
         n_obs=n_obs,
         n_alts=n_alts,
