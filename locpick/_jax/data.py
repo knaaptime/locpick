@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from locpick._sampling.correction import get_sampling_correction
+from .._sampling.correction import get_sampling_correction
 
 
 @jax.tree_util.register_pytree_node_class

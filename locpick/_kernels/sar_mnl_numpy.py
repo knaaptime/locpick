@@ -175,7 +175,7 @@ def fit_linearized_gmm(arrays, W_sparse):
     dict
         Dictionary with keys: 'beta', 'rho', 'se', 'vcov', 'log_likelihood'.
     """
-    from locpick._kernels.mnl_numpy import mnl_probs_numpy
+    from .mnl_numpy import mnl_probs_numpy
 
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
@@ -190,11 +190,11 @@ def fit_linearized_gmm(arrays, W_sparse):
         available = np.ones((n_obs, n_alts), dtype=np.float64)
 
     # --- Step 1: Standard MNL estimation ---
-    from locpick._solvers import get_solver
+    from .._solvers import get_solver
 
     solver = get_solver("lbfgs")
 
-    from locpick._jax.builders import build_mnl_objective
+    from .._jax.builders import build_mnl_objective
 
     objective = build_mnl_objective(arrays)
     x0 = np.zeros(k)

@@ -343,7 +343,7 @@ class MNSCLDataset:
 
 def _build_choice_table(choosers, alternatives, choices, matrix_data=None):
     """Build a ChoiceTable from component DataFrames."""
-    from locpick.data.choicetable import ChoiceTable
+    from .data.choicetable import ChoiceTable
 
     return ChoiceTable.from_tables(
         choosers=choosers.drop(columns="choice", errors="ignore"),
@@ -619,7 +619,7 @@ def simulate_nested_logit(
     -------
     NestedLogitDataset
     """
-    from locpick.models.nested import (
+    from .models.nested import (
         NestingTree,
         NestSpec,
         _nested_logit_probs_numpy,
@@ -789,7 +789,7 @@ def simulate_scl(
     -------
     SCLDataset
     """
-    from locpick.models.scl import _resolve_spatial_graph, _scl_log_probs_numpy
+    from .models.scl import _resolve_spatial_graph, _scl_log_probs_numpy
 
     if alt_params is None:
         alt_params = {"cost": -0.5, "time": -0.1}
@@ -1192,8 +1192,8 @@ def simulate_nested_scl(
     -------
     NestedSCLDataset
     """
-    from locpick.models.nested import NestingTree, NestSpec
-    from locpick.models.scl import (
+    from .models.nested import NestingTree, NestSpec
+    from .models.scl import (
         _resolve_spatial_graph,
     )
 
@@ -1488,8 +1488,8 @@ def simulate_mnscl(
     -------
     MNSCLDataset
     """
-    from locpick.models.nested import NestingTree, NestSpec
-    from locpick.models.scl import (
+    from .models.nested import NestingTree, NestSpec
+    from .models.scl import (
         _resolve_spatial_graph,
     )
 
@@ -1721,7 +1721,7 @@ def simulate_mixed_nested_logit(
     -------
     MixedNestedMNLDataset
     """
-    from locpick.models.nested import (
+    from .models.nested import (
         NestingTree,
         NestSpec,
         _nested_logit_probs_numpy,
@@ -1990,7 +1990,7 @@ def simulate_sar_mnl(
     rng = np.random.default_rng(seed)
 
     # --- Build W (alt×alt) as a libpysal Graph --------------------------
-    from locpick.models._spatial_weights import build_knn_graph, resolve_spatial_weights
+    from .models._spatial_weights import build_knn_graph, resolve_spatial_weights
 
     if W is None:
         coords = rng.standard_normal((n_alts, 2))

@@ -48,7 +48,7 @@ def solve_lbfgs(
     """
     from scipy.optimize import minimize
 
-    from locpick._jax.objective import Objective
+    from .._jax.objective import Objective
 
     if not isinstance(objective, Objective):
         raise TypeError("solve_lbfgs expects an Objective instance.")

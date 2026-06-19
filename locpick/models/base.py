@@ -14,12 +14,12 @@ import pandas as pd
 from scipy import stats
 from scipy.linalg import cho_factor, cho_solve
 
-from locpick._jax.objective import Objective
-from locpick._solvers.protocol import Solver, SolverResult, get_solver
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.choicetable import ChoiceTable
-from locpick.data.problem import EstimationProblem
-from locpick.results.fit_result import FitResult
+from .._jax.objective import Objective
+from .._solvers.protocol import Solver, SolverResult, get_solver
+from ..data.arrays import ChoiceArrays
+from ..data.choicetable import ChoiceTable
+from ..data.problem import EstimationProblem
+from ..results.fit_result import FitResult
 
 # ------------------------------------------------------------------
 # Cholesky-based linear-algebra helpers
@@ -262,7 +262,7 @@ class BaseChoiceModel(ABC):
         weights: Optional[Union[str, np.ndarray]] = None,
         availability: Optional[Union[str, np.ndarray]] = None,
     ):
-        from locpick.spec.model_spec import ModelSpec
+        from ..spec.model_spec import ModelSpec
 
         self._solver_options = solver_options or {}
         self._backend = backend
@@ -726,7 +726,7 @@ class SpatialMixin:
         n_alts : int
             Number of alternatives (dimension of the graph).
         """
-        from locpick.models._spatial import EdgeStructure, _resolve_spatial_graph
+        from ._spatial import EdgeStructure, _resolve_spatial_graph
 
         omega, allocation, edge_list, n_alts = _resolve_spatial_graph(self._graph_input)
         self._omega = omega

@@ -140,7 +140,7 @@ class OptaxSolver:
         if fixed_mask is not None and np.any(fixed_mask):
             raise NotImplementedError("OptaxSolver does not yet support fixed parameters.")
 
-        from locpick._jax.objective import Objective
+        from .._jax.objective import Objective
 
         if not isinstance(objective, Objective):
             raise TypeError("OptaxSolver.solve expects an Objective instance.")

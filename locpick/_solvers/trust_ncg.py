@@ -61,7 +61,7 @@ class TrustNCGSolver:
     ) -> SolverResult:
         from scipy.optimize import minimize
 
-        from locpick._jax.objective import Objective
+        from .._jax.objective import Objective
 
         if not isinstance(objective, Objective):
             raise TypeError(f"{type(self).__name__}.solve expects an Objective instance.")

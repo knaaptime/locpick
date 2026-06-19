@@ -13,13 +13,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from locpick._sampling.kernels import (
+from .._sampling.kernels import (
     HAS_NUMBA,
     _sample_unweighted_without_replacement_exclusion,
     _sample_weighted_without_replacement_1d_exclusion,
 )
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.dataset import (
+from .arrays import ChoiceArrays
+from .dataset import (
     _resolve_pairwise,
     build_choice_dataset,
     build_choice_dataset_from_long,
@@ -834,7 +834,7 @@ class ChoiceTable:
         inclusion_probs = None
 
         if self._sample_size is not None:
-            from locpick._sampling.inclusion import compute_inclusion_probs
+            from .._sampling.inclusion import compute_inclusion_probs
 
             n_alts_full = self.n_alternatives_full
             n_samples = self._sample_size

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import jax
 
-from locpick._kernels.constants import NEG_INF as _NEG_INF_FLOAT
+from .._kernels.constants import NEG_INF as _NEG_INF_FLOAT
 
 # Enable x64 before any jnp.float64 expression is evaluated at module-import
 # time below.

@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import logsumexp as scipy_logsumexp
 
-from locpick._kernels.constants import NEG_INF
+from .constants import NEG_INF
 
 # ---------------------------------------------------------------------------
 # Type aliases

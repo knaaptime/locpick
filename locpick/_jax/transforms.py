@@ -115,7 +115,7 @@ class ParamTransform:
 
     Examples
     --------
-    >>> from locpick._jax.transforms import ParamTransform, Identity, Sigmoid
+    >>> from .transforms import ParamTransform, Identity, Sigmoid
     >>> # SCL model: [beta_0, beta_1, rho] → [beta_0, beta_1, sigmoid(alpha_rho)]
     >>> pt = ParamTransform([Identity(), Identity(), Sigmoid(0, 1)])
     >>> x = jnp.array([0.5, -0.1, 0.0])

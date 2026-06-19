@@ -198,7 +198,7 @@ class ModelSpec:
         import numpy as np
         import pandas as pd
 
-        from locpick.data import ChoiceArrays
+        from ..data import ChoiceArrays
 
         df = data.to_frame()
         n_obs = data.n_observations

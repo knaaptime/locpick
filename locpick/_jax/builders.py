@@ -22,8 +22,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp as jax_logsumexp
 
-from locpick._jax.data import ChoiceDataJAX
-from locpick._jax.kernels import (
+from .data import ChoiceDataJAX
+from .kernels import (
     _NEG_INF,
     compute_ll,
     compute_ll_contribs,
@@ -33,8 +33,8 @@ from locpick._jax.kernels import (
     nested_log_probs,
     scl_log_probs,
 )
-from locpick._jax.objective import Objective
-from locpick._jax.transforms import Identity, ParamTransform, Sigmoid, SoftPlus
+from .objective import Objective
+from .transforms import Identity, ParamTransform, Sigmoid, SoftPlus
 
 # ---------------------------------------------------------------------------
 # MNL objective
@@ -376,7 +376,7 @@ def _mnscl_ll_kernel(
     nest_alt_indices : tuple of tuple of int
         Precomputed nest alt indices.
     """
-    from locpick._jax.kernels import scl_log_probs_and_inclusive_value
+    from .kernels import scl_log_probs_and_inclusive_value
 
     beta_fixed = params[:k_fixed]
     alpha_rhos = params[k_fixed : k_fixed + n_nests]
@@ -797,7 +797,7 @@ def _nested_scl_ll_kernel(params, data, nest_matrix, edge_data_list, k, nest_alt
         Precomputed nest alt indices: ``nest_alt_indices[m][i]`` = global alt index
         of the i-th alternative in nest m.
     """
-    from locpick._jax.kernels import scl_log_probs_and_inclusive_value
+    from .kernels import scl_log_probs_and_inclusive_value
 
     beta = params[:k]
     n_nests = nest_matrix.shape[1]
@@ -1090,7 +1090,7 @@ def _mixed_nested_ll_kernel(
     nest_alt_indices : tuple of tuple of int
         Precomputed nest alt indices.
     """
-    from locpick._jax.kernels import mixed_nested_logit_ll
+    from .kernels import mixed_nested_logit_ll
 
     beta_fixed = params[:k_fixed]
     alpha_nest = params[k_fixed : k_fixed + n_nests]

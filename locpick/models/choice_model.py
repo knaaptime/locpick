@@ -22,16 +22,17 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
-from locpick.models._spatial import (
+from .._jax.objective import Objective
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..data.problem import EstimationProblem
+from ..results.fit_result import FitResult
+from ._spatial import (
     EdgeStructure,
     _resolve_spatial_graph,
     naturalize_rho,
 )
-from locpick.models.base import (
+from .base import (
     BaseChoiceModel,
     SpatialMixin,
     _compute_fit_statistics,
@@ -39,9 +40,8 @@ from locpick.models.base import (
     _safe_inv,
     _sandwich_inv,
 )
-from locpick.models.mixed import ParamDistribution, _resolve_draws
-from locpick.models.nested import NestingTree, naturalize_nest_params
-from locpick.results.fit_result import FitResult
+from .mixed import ParamDistribution, _resolve_draws
+from .nested import NestingTree, naturalize_nest_params
 
 
 class ChoiceModel(BaseChoiceModel, SpatialMixin):
@@ -272,7 +272,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
     def _build_per_nest_edges(self, arrays: ChoiceArrays) -> None:
         """Build per-nest EdgeStructure / EdgeDataJAX from the global graph."""
-        from locpick._jax.data import EdgeDataJAX
+        from .._jax.data import EdgeDataJAX
 
         n_nests = self._nests.n_nests
         self._edge_structs = []
@@ -443,29 +443,29 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         # Pure MNL / SCL
         if not self._is_nested and not self._is_mixed:
             if self._is_spatial:
-                from locpick._jax.builders import build_scl_objective
+                from .._jax.builders import build_scl_objective
 
                 return build_scl_objective(
                     arrays, self._edge_struct, self._allocation, self._edge_list
                 )
-            from locpick._jax.builders import build_mnl_objective
+            from .._jax.builders import build_mnl_objective
 
             return build_mnl_objective(arrays)
 
         # Nested (no random)
         if self._is_nested and not self._is_mixed:
             if self._is_spatial:
-                from locpick._jax.builders import build_nested_scl_objective
+                from .._jax.builders import build_nested_scl_objective
 
                 return build_nested_scl_objective(arrays, self._nest_matrix, self._edge_data_list)
-            from locpick._jax.builders import build_nested_objective
+            from .._jax.builders import build_nested_objective
 
             return build_nested_objective(arrays, self._nest_matrix)
 
         # Mixed (no nests)
         if self._is_mixed and not self._is_nested:
             if self._is_spatial:
-                from locpick._jax.builders import build_mscl_objective
+                from .._jax.builders import build_mscl_objective
 
                 return build_mscl_objective(
                     arrays,
@@ -476,7 +476,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._random_distributions,
                     self._draws,
                 )
-            from locpick._jax.builders import build_mixed_logit_objective
+            from .._jax.builders import build_mixed_logit_objective
 
             return build_mixed_logit_objective(
                 arrays,
@@ -488,7 +488,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         # Mixed Nested
         if self._is_nested and self._is_mixed:
             if self._is_spatial:
-                from locpick._jax.builders import build_mnscl_objective
+                from .._jax.builders import build_mnscl_objective
 
                 return build_mnscl_objective(
                     arrays,
@@ -498,7 +498,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._random_distributions,
                     self._draws,
                 )
-            from locpick._jax.builders import build_mixed_nested_objective
+            from .._jax.builders import build_mixed_nested_objective
 
             return build_mixed_nested_objective(
                 arrays,
@@ -883,7 +883,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         arrays = self._arrays
         if data is not None:
-            from locpick.data.choicetable import ChoiceTable
+            from ..data.choicetable import ChoiceTable
 
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
@@ -899,10 +899,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
     def _probabilities_mnl(self, arrays, data, beta) -> np.ndarray:
         """Compute MNL or SCL probabilities."""
-        from locpick._kernels.mnl_numpy import mnl_probs_numpy
+        from .._kernels.mnl_numpy import mnl_probs_numpy
 
         if self._is_spatial:
-            from locpick.models.scl import _scl_log_probs_numpy
+            from .scl import _scl_log_probs_numpy
 
             k = arrays.design_matrix.shape[1]
             if beta is None:
@@ -916,7 +916,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     float(beta[k]) if beta.size > k else float(self._result.coefficients.values[k])
                 )
 
-            from locpick._sampling.correction import get_sampling_correction
+            from .._sampling.correction import get_sampling_correction
 
             log_probs = _scl_log_probs_numpy(
                 beta_use,
@@ -939,7 +939,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         n_alts = arrays.n_alts
 
         utilities = (dm @ beta).reshape(n_obs, n_alts)
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         utilities = apply_sampling_correction(utilities, arrays)
 
@@ -954,7 +954,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         """Compute probabilities for nested/mixed models (NumPy fallback)."""
         # For nested models, use the NumPy kernel
         if self._is_nested and not self._is_mixed:
-            from locpick.models.nested import _nested_logit_probs_numpy
+            from .nested import _nested_logit_probs_numpy
 
             k = arrays.design_matrix.shape[1]
             n_nests = self._nests.n_nests
@@ -971,7 +971,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if alpha is None:
                 alpha = np.zeros(n_nests)
 
-            from locpick._sampling.correction import get_sampling_correction
+            from .._sampling.correction import get_sampling_correction
 
             return _nested_logit_probs_numpy(
                 np.asarray(beta, dtype=np.float64),
@@ -986,7 +986,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         # For mixed models, use the NumPy kernel
         if self._is_mixed and not self._is_nested:
-            from locpick.models.mixed import _mixed_logit_probs_numpy
+            from .mixed import _mixed_logit_probs_numpy
 
             k_fixed = self._k_fixed
             k_random = self._k_random
@@ -1000,7 +1000,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 beta_random_means = beta[k_fixed : k_fixed + k_random]
                 beta_random_spreads = beta[k_fixed + k_random :]
 
-            from locpick._sampling.correction import get_sampling_correction
+            from .._sampling.correction import get_sampling_correction
 
             return _mixed_logit_probs_numpy(
                 beta_fixed,
@@ -1024,8 +1024,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
     def _probabilities_mixed_nested_numpy(self, arrays, beta, alpha) -> np.ndarray:
         """Compute mixed nested logit probabilities (NumPy fallback)."""
-        from locpick._sampling.correction import get_sampling_correction
-        from locpick.models.nested import _nested_logit_probs_numpy
+        from .._sampling.correction import get_sampling_correction
+        from .nested import _nested_logit_probs_numpy
 
         k_total = arrays.design_matrix.shape[1]
         k_fixed = self._k_fixed
@@ -1156,7 +1156,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         n_alts = arrays.n_alts
 
         V = (dm @ beta).reshape(n_obs, n_alts)
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V = apply_sampling_correction(V, arrays)
         return V
@@ -1186,7 +1186,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             Simulated choices with columns ``draw``, ``obs_id``,
             ``alt_id``, and ``probability``.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before simulation.")
@@ -1240,7 +1240,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
     def _resolve_me_data(self, data=None):
         """Resolve data for marginal effects computation."""
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -1515,7 +1515,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Sandwich (robust) covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1552,7 +1552,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Cluster-robust covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1628,7 +1628,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
     def _mnl_observation_scores(self, arrays) -> np.ndarray:
         """Compute MNL observation scores analytically."""
-        from locpick._kernels.mnl_numpy import mnl_observation_scores_numpy
+        from .._kernels.mnl_numpy import mnl_observation_scores_numpy
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         chosen = np.asarray(arrays.chosen, dtype=np.float64).reshape(arrays.n_obs, arrays.n_alts)
@@ -1641,7 +1641,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         else:
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         inclusion_probs = get_sampling_correction(arrays)
 

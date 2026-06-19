@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from locpick.data.arrays import ChoiceArrays
+    from ..data.arrays import ChoiceArrays
 
 
 def get_sampling_correction(arrays: "ChoiceArrays") -> np.ndarray | None:

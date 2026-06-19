@@ -21,15 +21,15 @@ import jax
 import jax.numpy as jnp
 import scipy.sparse as sp
 
-from locpick._jax.data import ChoiceDataJAX
-from locpick._jax.kernels import (
+from .data import ChoiceDataJAX
+from .kernels import (
     compute_ll,
     compute_ll_contribs,
     compute_utilities,
     mnl_log_probs,
 )
-from locpick._jax.objective import Objective
-from locpick._jax.transforms import ParamTransform
+from .objective import Objective
+from .transforms import ParamTransform
 
 # Threshold for switching from dense solve to conjugate gradient.
 _DENSE_CUTOFF = 2000

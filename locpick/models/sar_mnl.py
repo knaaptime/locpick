@@ -27,15 +27,15 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.models._spatial_weights import resolve_spatial_weights
-from locpick.models.base import (
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..results.fit_result import FitResult
+from ._spatial_weights import resolve_spatial_weights
+from .base import (
     BaseChoiceModel,
     _compute_fit_statistics,
     _compute_null_ll,
 )
-from locpick.results.fit_result import FitResult
 
 
 class SARMNL(BaseChoiceModel):
@@ -158,7 +158,7 @@ class SARMNL(BaseChoiceModel):
         self._arrays = arrays
         self._pre_fit(arrays)
 
-        from locpick._kernels.sar_mnl_numpy import fit_linearized_gmm
+        from .._kernels.sar_mnl_numpy import fit_linearized_gmm
 
         result_dict = fit_linearized_gmm(arrays, self._W_sparse)
 
@@ -204,7 +204,7 @@ class SARMNL(BaseChoiceModel):
         Auto-selects dense solve (n_alts ≤ 2000) or conjugate gradient
         (n_alts > 2000) based on the estimator setting.
         """
-        from locpick._jax.sar_kernels import build_sar_mnl_objective
+        from .._jax.sar_kernels import build_sar_mnl_objective
 
         # Auto-select estimator
         if self._estimator == "auto":
@@ -306,7 +306,7 @@ class SARMNL(BaseChoiceModel):
         np.ndarray, shape (n_obs, n_alts)
             Choice probabilities for each observation and alternative.
         """
-        from locpick._kernels.mnl_numpy import mnl_probs_numpy
+        from .._kernels.mnl_numpy import mnl_probs_numpy
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before prediction.")
@@ -335,7 +335,7 @@ class SARMNL(BaseChoiceModel):
         V_base = (dm @ beta).reshape(n_obs, n_alts)
 
         # Sampling correction
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V_base = apply_sampling_correction(V_base, arrays)
 
@@ -394,7 +394,7 @@ class SARMNL(BaseChoiceModel):
 
         V_base = (dm @ beta).reshape(n_obs, n_alts)
 
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V_base = apply_sampling_correction(V_base, arrays)
 
@@ -445,7 +445,7 @@ class SARMNL(BaseChoiceModel):
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
 
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         ct = self._data
         arrays = self._arrays
