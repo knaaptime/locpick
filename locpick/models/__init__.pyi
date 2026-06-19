@@ -45,12 +45,12 @@ from .nested import (
 from .nested import (
     naturalize_nest_params as naturalize_nest_params,
 )
+from .sar_mnl import (
+    SARMNL as SARMNL,
+)
 from .scl import (
     EdgeStructure as EdgeStructure,
 )
 from .scl import (
     naturalize_rho as naturalize_rho,
-)
-from .sar_mnl import (
-    SARMNL as SARMNL,
 )

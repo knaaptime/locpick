@@ -16,7 +16,7 @@ The `ChoiceTable` class is the primary data container for location choice modeli
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MNL
+from locpick import ChoiceTable, ChoiceModel
 
 # Create a ChoiceTable from chooser and alternative data
 ct = ChoiceTable.from_tables(
@@ -26,7 +26,7 @@ ct = ChoiceTable.from_tables(
 )
 
 # Estimate an MNL model
-model = MNL(ct, formula="cost + time - 1")
+model = ChoiceModel(ct, formula="cost + time - 1")
 result = model.fit()
 print(result.summary())
 ```

@@ -23,7 +23,6 @@ from locpick.dgp import (
 )
 from locpick.models.mixed import ParamDistribution
 
-
 # ---------------------------------------------------------------------------
 # MNL parameter recovery
 # ---------------------------------------------------------------------------

@@ -812,8 +812,6 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         """Build optimization objective for mixed logit estimation."""
         random_col_indices = self._random_col_indices
         random_distributions = self._random_distributions
-        k_fixed = self._k_fixed
-        k_random = self._k_random
 
         if self._is_spatial:
             from locpick._jax.builders import build_mscl_objective
@@ -839,58 +837,8 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
                 draws=self._draws,
             )
 
-        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
-        chosen = np.asarray(arrays.chosen, dtype=np.float64)
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        available = arrays.available
-        weights = arrays.weights
-
-        from locpick._sampling.correction import get_sampling_correction
-
-        inclusion_probs = get_sampling_correction(arrays)
-
-        def ll_fn(params):
-            beta_fixed = params[:k_fixed]
-            beta_random_means = params[k_fixed : k_fixed + k_random]
-            beta_random_spreads = params[k_fixed + k_random :]
-            return _mixed_logit_ll_numpy(
-                beta_fixed,
-                beta_random_means,
-                beta_random_spreads,
-                random_distributions,
-                self._draws,
-                dm,
-                chosen,
-                random_col_indices,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        def grad_fn(params):
-            return _mixed_logit_gradient_numpy(
-                params,
-                random_col_indices,
-                k_fixed,
-                k_random,
-                random_distributions,
-                self._draws,
-                dm,
-                chosen,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        return Objective.from_numpy(
-            ll_fn=ll_fn,
-            grad_fn=grad_fn,
-            param_names=list(self._full_param_names),
+        raise NotImplementedError(
+            "MixedMNL NumPy backend has been removed. Use ChoiceModel (JAX backend)."
         )
 
     def _build_fit_result(

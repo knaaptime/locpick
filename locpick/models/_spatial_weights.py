@@ -13,8 +13,6 @@ computation inside JAX kernels).
 
 from __future__ import annotations
 
-from typing import Union
-
 import numpy as np
 import scipy.sparse as sp
 
@@ -48,9 +46,7 @@ def resolve_spatial_weights(
         Row-standardised CSR sparse matrix (float64), zero diagonal.
     """
     # --- Reject legacy libpysal.weights.W -------------------------------
-    if W.__class__.__module__.startswith("libpysal.weights") and not hasattr(
-        W, "sparse"
-    ):
+    if W.__class__.__module__.startswith("libpysal.weights") and not hasattr(W, "sparse"):
         raise TypeError(
             "Legacy libpysal.weights.W is not supported. "
             "Convert via libpysal.graph.Graph.from_W(w) or pass w.sparse."
@@ -67,9 +63,7 @@ def resolve_spatial_weights(
 
     # --- Validate shape -------------------------------------------------
     if W_sparse.shape != (n_alts, n_alts):
-        raise ValueError(
-            f"W shape {W_sparse.shape} does not match n_alts ({n_alts}, {n_alts})."
-        )
+        raise ValueError(f"W shape {W_sparse.shape} does not match n_alts ({n_alts}, {n_alts}).")
 
     # --- Zero diagonal --------------------------------------------------
     W_sparse.setdiag(0.0)

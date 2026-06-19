@@ -186,21 +186,13 @@ def _scl_log_probs_numpy(
             if is_first:
                 # alt_i is node i in edge (i, j)
                 # P_{i|ij} = (α_{i,ij} * exp(V_i))^{1/ρ} / [(α_{i,ij} * exp(V_i))^{1/ρ} + (α_{j,ij} * exp(V_j))^{1/ρ}]
-                my_term = alloc_exp_V_inv_rho[
-                    :, alt_i, j
-                ]  # (α_{i,ij} * exp(V_i))^{1/ρ}
-                other_term = alloc_exp_V_inv_rho[
-                    :, j, alt_i
-                ]  # (α_{j,ij} * exp(V_j))^{1/ρ}
+                my_term = alloc_exp_V_inv_rho[:, alt_i, j]  # (α_{i,ij} * exp(V_i))^{1/ρ}
+                other_term = alloc_exp_V_inv_rho[:, j, alt_i]  # (α_{j,ij} * exp(V_j))^{1/ρ}
             else:
                 # alt_i is node j in edge (i, j)
                 # P_{j|ij} = (α_{j,ij} * exp(V_j))^{1/ρ} / [(α_{i,ij} * exp(V_i))^{1/ρ} + (α_{j,ij} * exp(V_j))^{1/ρ}]
-                my_term = alloc_exp_V_inv_rho[
-                    :, alt_i, i
-                ]  # (α_{j,ij} * exp(V_j))^{1/ρ}
-                other_term = alloc_exp_V_inv_rho[
-                    :, i, alt_i
-                ]  # (α_{i,ij} * exp(V_i))^{1/ρ}
+                my_term = alloc_exp_V_inv_rho[:, alt_i, i]  # (α_{j,ij} * exp(V_j))^{1/ρ}
+                other_term = alloc_exp_V_inv_rho[:, i, alt_i]  # (α_{i,ij} * exp(V_i))^{1/ρ}
 
             # log P_{i|ij} = log(my_term) - log(my_term + other_term)
             log_cond = np.log(np.maximum(my_term, 1e-300)) - np.log(

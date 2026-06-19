@@ -13,10 +13,10 @@ Prediction and simulation are **model methods**, not `FitResult` methods. After 
 - `model.predict(result, data)` — Predicted choices
 
 ```python
-from locpick import ChoiceTable, MNL
+from locpick import ChoiceTable, ChoiceModel
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
-model = MNL(ct, formula="cost + time - 1")
+model = ChoiceModel(ct, formula="cost + time - 1")
 result = model.fit()
 
 # Choice probabilities (n_obs × n_alts ndarray)

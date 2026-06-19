@@ -8,7 +8,7 @@ and consumed by ``MultinomialLogit.fit()``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np

@@ -337,11 +337,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             n_nests = self._nests.n_nests
             if self._is_spatial:
                 # Nested SCL: [beta, alpha_rho_1..M, alpha_lambda_1..M]
-                x0 = np.concatenate([
-                    np.zeros(k),
-                    np.zeros(n_nests),
-                    self._nests.initial_alphas(),
-                ])
+                x0 = np.concatenate(
+                    [
+                        np.zeros(k),
+                        np.zeros(n_nests),
+                        self._nests.initial_alphas(),
+                    ]
+                )
                 names = (
                     param_names_all
                     + [f"alpha_rho_{name}" for name in self._nests.nest_names]
@@ -359,12 +361,14 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             k_random = self._k_random
             if self._is_spatial:
                 # MSCL: [beta_fixed, alpha_rho, mean_*, sd_*]
-                x0 = np.concatenate([
-                    np.zeros(k_fixed),
-                    np.zeros(1),
-                    np.zeros(k_random),
-                    np.full(k_random, 0.1),
-                ])
+                x0 = np.concatenate(
+                    [
+                        np.zeros(k_fixed),
+                        np.zeros(1),
+                        np.zeros(k_random),
+                        np.full(k_random, 0.1),
+                    ]
+                )
                 names = (
                     list(self._fixed_names)
                     + ["rho"]
@@ -373,11 +377,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 )
             else:
                 # Mixed: [beta_fixed, mean_*, sd_*]
-                x0 = np.concatenate([
-                    np.zeros(k_fixed),
-                    np.zeros(k_random),
-                    np.full(k_random, 0.1),
-                ])
+                x0 = np.concatenate(
+                    [
+                        np.zeros(k_fixed),
+                        np.zeros(k_random),
+                        np.full(k_random, 0.1),
+                    ]
+                )
                 names = list(self._full_param_names)
             return x0, names, None, None
 
@@ -386,16 +392,20 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             k_fixed = self._k_fixed
             k_random = self._k_random
             n_nests = self._nests.n_nests
-            fixed_param_names = [name for name in param_names_all if name not in self._random_params]
+            fixed_param_names = [
+                name for name in param_names_all if name not in self._random_params
+            ]
             if self._is_spatial:
                 # Mixed Nested SCL: [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
-                x0 = np.concatenate([
-                    np.zeros(k_fixed),
-                    np.zeros(n_nests),
-                    self._nests.initial_alphas(),
-                    np.zeros(k_random),
-                    np.full(k_random, 0.1),
-                ])
+                x0 = np.concatenate(
+                    [
+                        np.zeros(k_fixed),
+                        np.zeros(n_nests),
+                        self._nests.initial_alphas(),
+                        np.zeros(k_random),
+                        np.full(k_random, 0.1),
+                    ]
+                )
                 names = (
                     fixed_param_names
                     + [f"alpha_rho_{name}" for name in self._nests.nest_names]
@@ -405,12 +415,14 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 )
             else:
                 # Mixed Nested: [beta_fixed, alpha_nest, mean_*, sd_*]
-                x0 = np.concatenate([
-                    np.zeros(k_fixed),
-                    self._nests.initial_alphas(),
-                    np.zeros(k_random),
-                    np.full(k_random, 0.1),
-                ])
+                x0 = np.concatenate(
+                    [
+                        np.zeros(k_fixed),
+                        self._nests.initial_alphas(),
+                        np.zeros(k_random),
+                        np.full(k_random, 0.1),
+                    ]
+                )
                 names = (
                     fixed_param_names
                     + [f"lambda_{name}" for name in self._nests.nest_names]
@@ -432,26 +444,29 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         if not self._is_nested and not self._is_mixed:
             if self._is_spatial:
                 from locpick._jax.builders import build_scl_objective
+
                 return build_scl_objective(
                     arrays, self._edge_struct, self._allocation, self._edge_list
                 )
             from locpick._jax.builders import build_mnl_objective
+
             return build_mnl_objective(arrays)
 
         # Nested (no random)
         if self._is_nested and not self._is_mixed:
             if self._is_spatial:
                 from locpick._jax.builders import build_nested_scl_objective
-                return build_nested_scl_objective(
-                    arrays, self._nest_matrix, self._edge_data_list
-                )
+
+                return build_nested_scl_objective(arrays, self._nest_matrix, self._edge_data_list)
             from locpick._jax.builders import build_nested_objective
+
             return build_nested_objective(arrays, self._nest_matrix)
 
         # Mixed (no nests)
         if self._is_mixed and not self._is_nested:
             if self._is_spatial:
                 from locpick._jax.builders import build_mscl_objective
+
                 return build_mscl_objective(
                     arrays,
                     self._edge_struct,
@@ -462,6 +477,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._draws,
                 )
             from locpick._jax.builders import build_mixed_logit_objective
+
             return build_mixed_logit_objective(
                 arrays,
                 random_col_indices=self._random_col_indices,
@@ -473,6 +489,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         if self._is_nested and self._is_mixed:
             if self._is_spatial:
                 from locpick._jax.builders import build_mnscl_objective
+
                 return build_mnscl_objective(
                     arrays,
                     self._nest_matrix,
@@ -482,6 +499,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._draws,
                 )
             from locpick._jax.builders import build_mixed_nested_objective
+
             return build_mixed_nested_objective(
                 arrays,
                 self._nest_matrix,
@@ -552,9 +570,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 display_names = param_names_all + [
                     f"lambda_{name}" for name in self._nests.nest_names
                 ]
-                std_errors = self._compute_se_nested(
-                    all_params, arrays, k, lambdas
-                )
+                std_errors = self._compute_se_nested(all_params, arrays, k, lambdas)
 
             return self._make_fit_result(
                 solver_result, arrays, display_values, display_names, std_errors
@@ -580,9 +596,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     + [f"mean_{n}" for n in self._random_param_names]
                     + [f"sd_{n}" for n in self._random_param_names]
                 )
-                std_errors = self._compute_se_mscl(
-                    all_params, arrays, k_fixed, rho
-                )
+                std_errors = self._compute_se_mscl(all_params, arrays, k_fixed, rho)
             else:
                 # Layout: [beta_fixed, mean_*, sd_*]
                 display_values = all_params
@@ -598,7 +612,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             k_fixed = self._k_fixed
             k_random = self._k_random
             n_nests = self._nests.n_nests
-            fixed_param_names = [name for name in param_names_all if name not in self._random_params]
+            fixed_param_names = [
+                name for name in param_names_all if name not in self._random_params
+            ]
 
             if self._is_spatial:
                 # Layout: [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
@@ -741,14 +757,16 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             hess = self._compute_hessian(all_params)
             se_alpha = self._compute_std_errors_from_hessian(hess)
             se_rho = float(rho * (1.0 - rho) * se_alpha[k_fixed])
-            std_errors = np.concatenate([se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1:]])
+            std_errors = np.concatenate([se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1 :]])
         except Exception:
             hess_inv = self._get_hessian_inverse()
             if hess_inv is not None:
                 se_alpha = np.sqrt(np.maximum(np.diag(hess_inv), 0))
                 se_alpha[se_alpha == 0] = np.nan
                 se_rho = float(rho * (1.0 - rho) * se_alpha[k_fixed])
-                std_errors = np.concatenate([se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1:]])
+                std_errors = np.concatenate(
+                    [se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1 :]]
+                )
         return std_errors
 
     def _compute_se_mixed_nested(self, all_params, arrays, k_fixed, n_nests, lambdas):
@@ -759,14 +777,16 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             hess = self._compute_hessian(all_params)
             se_raw = self._compute_std_errors_from_hessian(hess)
             se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-            std_errors = np.concatenate([se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests:]])
+            std_errors = np.concatenate([se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests :]])
         except Exception:
             hess_inv = self._get_hessian_inverse()
             if hess_inv is not None:
                 se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
                 se_raw[se_raw == 0] = np.nan
                 se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-                std_errors = np.concatenate([se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests:]])
+                std_errors = np.concatenate(
+                    [se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests :]]
+                )
         return std_errors
 
     def _compute_se_mixed_nested_scl(self, all_params, arrays, k_fixed, n_nests, rhos, lambdas):
@@ -777,26 +797,34 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             hess = self._compute_hessian(all_params)
             se_raw = self._compute_std_errors_from_hessian(hess)
             se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
-            se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
-            std_errors = np.concatenate([
-                se_raw[:k_fixed],
-                se_rho,
-                se_lambda,
-                se_raw[k_fixed + 2 * n_nests:],
-            ])
+            se_lambda = (
+                lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
+            )
+            std_errors = np.concatenate(
+                [
+                    se_raw[:k_fixed],
+                    se_rho,
+                    se_lambda,
+                    se_raw[k_fixed + 2 * n_nests :],
+                ]
+            )
         except Exception:
             hess_inv = self._get_hessian_inverse()
             if hess_inv is not None:
                 se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
                 se_raw[se_raw == 0] = np.nan
                 se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
-                se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
-                std_errors = np.concatenate([
-                    se_raw[:k_fixed],
-                    se_rho,
-                    se_lambda,
-                    se_raw[k_fixed + 2 * n_nests:],
-                ])
+                se_lambda = (
+                    lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
+                )
+                std_errors = np.concatenate(
+                    [
+                        se_raw[:k_fixed],
+                        se_rho,
+                        se_lambda,
+                        se_raw[k_fixed + 2 * n_nests :],
+                    ]
+                )
         return std_errors
 
     def _make_fit_result(
@@ -856,6 +884,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         arrays = self._arrays
         if data is not None:
             from locpick.data.choicetable import ChoiceTable
+
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
             arrays = data.to_arrays(
@@ -883,7 +912,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             else:
                 beta = np.asarray(beta, dtype=np.float64)
                 beta_use = beta[:k]
-                rho = float(beta[k]) if beta.size > k else float(self._result.coefficients.values[k])
+                rho = (
+                    float(beta[k]) if beta.size > k else float(self._result.coefficients.values[k])
+                )
 
             from locpick._sampling.correction import get_sampling_correction
 
@@ -909,6 +940,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         utilities = (dm @ beta).reshape(n_obs, n_alts)
         from locpick._sampling.correction import apply_sampling_correction
+
         utilities = apply_sampling_correction(utilities, arrays)
 
         if arrays.available is not None:
@@ -1056,6 +1088,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     beta_random_r[:, p] = np.exp(np.clip(exponent, -50, 50))
                 elif dist == "triangular":
                     from scipy.stats import norm as norm_dist
+
                     u = norm_dist.cdf(z_p)
                     mask = u <= 0.5
                     beta_random_r[:, p] = np.where(
@@ -1065,6 +1098,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     )
                 elif dist == "uniform":
                     from scipy.stats import norm as norm_dist
+
                     u = norm_dist.cdf(z_p)
                     beta_random_r[:, p] = mean_p + spread_p * (2 * u - 1)
 
@@ -1123,6 +1157,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         V = (dm @ beta).reshape(n_obs, n_alts)
         from locpick._sampling.correction import apply_sampling_correction
+
         V = apply_sampling_correction(V, arrays)
         return V
 
@@ -1189,12 +1224,14 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         chosen_probs = probs[np.arange(n_obs), chosen_indices]
 
         # Build results DataFrame (vectorized)
-        results = pd.DataFrame({
-            "draw": np.repeat(np.arange(n_draws), n_obs),
-            ct.obs_id_col: np.tile(obs_ids, n_draws),
-            ct.alt_id_col: chosen_alts.T.ravel(),
-            "probability": chosen_probs.T.ravel(),
-        })
+        results = pd.DataFrame(
+            {
+                "draw": np.repeat(np.arange(n_draws), n_obs),
+                ct.obs_id_col: np.tile(obs_ids, n_draws),
+                ct.alt_id_col: chosen_alts.T.ravel(),
+                "probability": chosen_probs.T.ravel(),
+            }
+        )
         return results
 
     # ------------------------------------------------------------------
@@ -1292,7 +1329,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 mask = nest_matrix[:, m] > 0
                 if not mask.any():
                     continue
-                P_m = P_nest[:, m:m+1]  # (n_obs, 1)
+                P_m = P_nest[:, m : m + 1]  # (n_obs, 1)
                 P_i_given_m[:, mask] = probs[:, mask] / np.maximum(P_m, 1e-30)
 
             # Marginal effect: P_i * (1 - lambda_m * P_{i|m}) * beta
@@ -1379,7 +1416,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 mask = nest_matrix[:, m] > 0
                 if not mask.any():
                     continue
-                P_m = P_nest[:, m:m+1]
+                P_m = P_nest[:, m : m + 1]
                 P_i_given_m[:, mask] = probs[:, mask] / np.maximum(P_m, 1e-30)
 
             cross_me = -probs * long_lambda[None, :] * P_i_given_m * beta
@@ -1425,9 +1462,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         x = df[variable].values
 
         if self._is_spatial and not self._is_nested:
-            raise NotImplementedError(
-                "Elasticities for SCL models are not yet implemented."
-            )
+            raise NotImplementedError("Elasticities for SCL models are not yet implemented.")
 
         # For MNL, nested, and mixed: elasticity = marginal_effect * x
         me = self.marginal_effect(data=data, variable=variable)
@@ -1456,9 +1491,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         x = df[variable].values
 
         if self._is_spatial and not self._is_nested:
-            raise NotImplementedError(
-                "Cross-elasticities for SCL models are not yet implemented."
-            )
+            raise NotImplementedError("Cross-elasticities for SCL models are not yet implemented.")
 
         # cross_elasticity = cross_marginal_effect * x
         cme = self.cross_marginal_effect(data=data, variable=variable)
@@ -1609,6 +1642,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
         from locpick._sampling.correction import get_sampling_correction
+
         inclusion_probs = get_sampling_correction(arrays)
 
         weights = None

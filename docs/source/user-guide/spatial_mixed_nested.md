@@ -1,8 +1,8 @@
-# Mixed Nested Logit with Spatial Correlation (MixedNestedMNL + graph)
+# Mixed Nested Logit with Spatial Correlation (ChoiceModel + graph + nests + random_params)
 
 ## Overview
 
-A `MixedNestedMNL` model constructed with a spatial `graph=` argument estimates the most general model in the locpick spatial hierarchy. It combines three structures:
+A `ChoiceModel` constructed with a spatial `graph=` argument, `nests=`, and `random_params=` estimates the most general model in the locpick spatial hierarchy. It combines three structures:
 
 1. **Nested logit upper level**: alternatives are grouped into nests, each with a nest dissimilarity parameter $\lambda_m \in (0, 1]$
 2. **Spatial lower levels**: within each nest, spatial correlation between contiguous alternatives is captured via a paired GNL structure with nest-specific spatial dissimilarity $\rho_m \in (0, 1]$
@@ -25,7 +25,7 @@ where $\beta^r$ is the $r$-th draw of the random coefficients, approximated by s
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MixedNestedMNL
+from locpick import ChoiceTable, ChoiceModel
 from locpick.models.nested import NestSpec, NestingTree
 from locpick.models.mixed import ParamDistribution
 from libpysal import graph
@@ -47,7 +47,7 @@ random_params = {
 }
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
-model = MixedNestedMNL(
+model = ChoiceModel(
     ct,
     formula="cost + time - 1",
     graph=g,
@@ -78,19 +78,19 @@ Supported distributions: `normal`, `lognormal`, `triangular`, `uniform` (see [Mi
 
 ```python
 # QMC draws (default, Sobol sequences — most efficient)
-model = MixedNestedMNL(
+model = ChoiceModel(
     ct, formula="cost + time - 1", graph=g, nests=tree,
     random_params=random_params, n_draws=100, draw_type="qmc",
 )
 
 # Halton draws
-model = MixedNestedMNL(
+model = ChoiceModel(
     ct, formula="cost + time - 1", graph=g, nests=tree,
     random_params=random_params, n_draws=250, draw_type="halton",
 )
 
 # Pseudo-random draws
-model = MixedNestedMNL(
+model = ChoiceModel(
     ct, formula="cost + time - 1", graph=g, nests=tree,
     random_params=random_params, n_draws=500, draw_type="random",
 )

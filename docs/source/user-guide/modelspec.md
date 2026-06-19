@@ -17,9 +17,9 @@ locpick uses formula/scoped-term specification for model structure:
 Typically models are specified using Wilkinson formulas
 
 ```python
-from locpick import ChoiceTable, MNL
+from locpick import ChoiceTable, ChoiceModel
 
-model = MNL(ct, formula="cost + time - 1")
+model = ChoiceModel(ct, formula="cost + time - 1")
 ```
 
 The `ChoiceTable` handles data construction intelligently. In this example `cost` is fixed
@@ -42,10 +42,10 @@ ct = ct.add_pairwise_variable("time", time_series)
 ## Scoped Terms
 
 ```python
-from locpick import ModelSpec, MNL
+from locpick import ModelSpec, ChoiceModel
 
 spec = ModelSpec(formula="cost + time - 1").alternative_specific("time", reference="walk")
-model = MNL(ct, spec=spec)
+model = ChoiceModel(ct, spec=spec)
 ```
 
 ## Generated Interaction Variables

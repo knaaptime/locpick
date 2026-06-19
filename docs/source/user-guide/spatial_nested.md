@@ -1,8 +1,8 @@
-# Nested Logit with Spatial Correlation (NestedMNL + graph)
+# Nested Logit with Spatial Correlation (ChoiceModel + graph + nests)
 
 ## Overview
 
-A `NestedMNL` model constructed with a spatial `graph=` argument estimates the Nested Spatially Correlated Logit (Nested SCL) model: a nested logit upper level combined with spatially correlated lower levels. Each nest has:
+A `ChoiceModel` constructed with a spatial `graph=` argument and `nests=` estimates the Nested Spatially Correlated Logit (Nested SCL) model: a nested logit upper level combined with spatially correlated lower levels. Each nest has:
 
 - A spatial dissimilarity parameter $\rho_m \in (0, 1]$ governing correlation between spatially adjacent alternatives within the nest
 - A nest dissimilarity parameter $\lambda_m \in (0, 1]$ governing correlation between alternatives in the same nest
@@ -26,7 +26,7 @@ When $\rho_m = 1$ and $\lambda_m = 1$ for all nests, the model reduces to MNL.
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, NestedMNL
+from locpick import ChoiceTable, ChoiceModel
 from locpick.models.nested import NestSpec, NestingTree
 from libpysal import graph
 
@@ -42,7 +42,7 @@ tree = NestingTree(
 )
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
-model = NestedMNL(ct, formula="cost + time - 1", graph=g, nests=tree)
+model = ChoiceModel(ct, formula="cost + time - 1", graph=g, nests=tree)
 result = model.fit()
 print(result.summary())
 ```

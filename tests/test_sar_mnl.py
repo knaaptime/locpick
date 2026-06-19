@@ -13,9 +13,8 @@ Tolerances follow the existing ``test_param_recovery.py`` conventions:
 
 import numpy as np
 import numpy.testing as npt
-import pytest
 
-from locpick import ChoiceModel, SARMNL
+from locpick import SARMNL, ChoiceModel
 from locpick.dgp import simulate_sar_mnl
 
 
@@ -114,9 +113,7 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_smaller_n_alts(self):
         """SAR-MNL should work with a small number of alternatives."""
-        dataset = simulate_sar_mnl(
-            n_obs=3000, n_alts=12, rho=0.2, n_neighbors=3, seed=42
-        )
+        dataset = simulate_sar_mnl(n_obs=3000, n_alts=12, rho=0.2, n_neighbors=3, seed=42)
         model = SARMNL(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
@@ -136,17 +133,11 @@ class TestSARMNLRecovery:
         W_sparse = sp.csr_array(W_graph.sparse)  # scipy.sparse
         W_dense = W_sparse.toarray()  # dense numpy
 
-        model1 = SARMNL(
-            dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_graph
-        )
+        model1 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_graph)
         result1 = model1.fit()
-        model2 = SARMNL(
-            dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_sparse
-        )
+        model2 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_sparse)
         result2 = model2.fit()
-        model3 = SARMNL(
-            dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_dense
-        )
+        model3 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_dense)
         result3 = model3.fit()
 
         npt.assert_allclose(
@@ -177,4 +168,68 @@ class TestSARMNLRecovery:
             1.0,
             atol=1e-10,
             err_msg="Probabilities do not sum to 1",
+        )
+
+    def test_sar_mnl_marginal_effects_structure(self):
+        """Marginal effects: direct + indirect = total; indirect > 0 when ρ > 0."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.3, seed=42)
+        model = SARMNL(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            W=dataset.W,
+        )
+        model.fit()
+        me = model.marginal_effects(variable="alt_attr")
+
+        # direct + indirect = total
+        npt.assert_allclose(
+            me["direct"].values + me["indirect"].values,
+            me["total"].values,
+            rtol=1e-10,
+            err_msg="direct + indirect != total",
+        )
+
+    def test_sar_mnl_gmm_recovers_rho(self):
+        """Linearized GMM should recover ρ at moderate spatial dependence."""
+        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        model = SARMNL(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            W=dataset.W,
+            estimator="linearized_gmm",
+        )
+        result = model.fit()
+
+        # GMM is less precise — use wider tolerance
+        est_rho = result.coefficients["rho"]
+        assert abs(est_rho - dataset.true_rho) < 0.2, (
+            f"GMM failed to recover rho: got {est_rho:.4f}, true {dataset.true_rho}"
+        )
+
+    def test_sar_mnl_cg_matches_dense(self):
+        """CG path should give similar results to dense path."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+
+        model_dense = SARMNL(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            W=dataset.W,
+            estimator="pml",
+        )
+        result_dense = model_dense.fit()
+
+        model_cg = SARMNL(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            W=dataset.W,
+            estimator="pml_cg",
+        )
+        result_cg = model_cg.fit()
+
+        # CG and dense should agree closely
+        npt.assert_allclose(
+            result_dense.coefficients.values,
+            result_cg.coefficients.values,
+            rtol=0.05,
+            err_msg="CG and dense paths give different results",
         )

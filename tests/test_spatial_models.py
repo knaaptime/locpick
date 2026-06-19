@@ -15,8 +15,6 @@ from scipy.special import logsumexp
 
 from locpick import ChoiceModel, ChoiceTable
 from locpick.models.mixed import ParamDistribution
-
-
 from locpick.models.scl import (
     _resolve_spatial_graph,
     _scl_ll_numpy,

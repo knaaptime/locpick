@@ -539,56 +539,8 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
 
             return build_nested_objective(arrays, nest_matrix)
 
-        # NumPy backend
-        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
-        chosen = np.asarray(arrays.chosen, dtype=np.float64)
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        available = arrays.available
-        weights = arrays.weights
-
-        from locpick._sampling.correction import get_sampling_correction
-
-        inclusion_probs = get_sampling_correction(arrays)
-        k = dm.shape[1]
-
-        def ll_fn(params):
-            beta = params[:k]
-            alpha = params[k:]
-            return _nested_logit_ll_numpy(
-                beta,
-                alpha,
-                dm,
-                chosen,
-                nest_matrix,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        def grad_fn(params):
-            beta = params[:k]
-            alpha = params[k:]
-            return _nested_logit_gradient_numpy(
-                beta,
-                alpha,
-                dm,
-                chosen,
-                nest_matrix,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        return Objective.from_numpy(
-            ll_fn=ll_fn,
-            grad_fn=grad_fn,
-            param_names=list(arrays.param_names)
-            + [f"nest_{name}" for name in self._nests.nest_names],
+        raise NotImplementedError(
+            "NestedMNL NumPy backend has been removed. Use ChoiceModel (JAX backend)."
         )
 
     def _build_fit_result(

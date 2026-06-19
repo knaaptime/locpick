@@ -1,12 +1,10 @@
 """Tests for the Mixed Nested Logit model."""
 
 import numpy as np
-import pytest
 
 from locpick import ChoiceModel, ChoiceTable
 from locpick.dgp import simulate_mixed_nested_logit
 from locpick.models.mixed import ParamDistribution
-
 from locpick.models.nested import NestingTree, NestSpec
 
 # ---------------------------------------------------------------------------

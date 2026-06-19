@@ -401,14 +401,18 @@ def _build_interactions(obs_ids, alt_ids, chooser_feature, alt_columns):
         alt_vals = alt_columns[alt_col]
         tiled_feat = np.repeat(chooser_feature, n_alts)
         tiled_alt = np.tile(alt_vals, n_obs)
-        name = f"{chooser_feature.name}_x_{alt_col}" if hasattr(chooser_feature, "name") else f"obs_x_{alt_col}"
-        interactions[name] = pd.Series(
-            tiled_feat * tiled_alt, index=interaction_index, name=name
+        name = (
+            f"{chooser_feature.name}_x_{alt_col}"
+            if hasattr(chooser_feature, "name")
+            else f"obs_x_{alt_col}"
         )
+        interactions[name] = pd.Series(tiled_feat * tiled_alt, index=interaction_index, name=name)
     return interactions, interaction_index
 
 
-def _compute_det_utility(n_obs, n_alts, alternatives, alt_params, interactions, interaction_coefs=None):
+def _compute_det_utility(
+    n_obs, n_alts, alternatives, alt_params, interactions, interaction_coefs=None
+):
     """Compute deterministic utility from alt params and interactions.
 
     Parameters
@@ -439,9 +443,7 @@ def _build_design_matrix(n_obs, alternatives, interactions, interaction_coefs):
     design_matrix : np.ndarray, shape (n_obs * n_alts, k)
     beta : np.ndarray, shape (k,)
     """
-    beta = np.array([None] * len(alternatives.columns), dtype=float)
     design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
-    beta = np.array([1.0] * len(alternatives.columns), dtype=float)  # placeholder
     for name, coef in interaction_coefs.items():
         if name in interactions:
             design_matrix = np.column_stack([design_matrix, interactions[name].to_numpy().ravel()])
@@ -2008,16 +2010,12 @@ def simulate_sar_mnl(
     alternatives = pd.DataFrame({"alt_attr": alt_attr}, index=alt_ids)
 
     # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product(
-        [obs_ids, alt_ids], names=["oid", "aid"]
-    )
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
     obs_feat_tiled = np.repeat(obs_feature, n_alts)
     alt_attr_tiled = np.tile(alt_attr, n_obs)
     obs_x_alt_values = obs_feat_tiled * alt_attr_tiled
     interactions = {
-        "obs_x_alt": pd.Series(
-            obs_x_alt_values, index=interaction_index, name="obs_x_alt"
-        )
+        "obs_x_alt": pd.Series(obs_x_alt_values, index=interaction_index, name="obs_x_alt")
     }
 
     # --- Base utilities: V_base = Zβ + Xγ  (n_obs × n_alts) -------------
