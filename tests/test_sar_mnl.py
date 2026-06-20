@@ -14,7 +14,7 @@ Tolerances follow the existing ``test_param_recovery.py`` conventions:
 import numpy as np
 import numpy.testing as npt
 
-from locpick import SARMNL, ChoiceModel
+from locpick import ChoiceModel
 from locpick.dgp import simulate_sar_mnl
 
 
@@ -24,10 +24,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_recovers_beta_params(self):
         """SAR-MNL should recover beta coefficients within tolerance."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         result = model.fit()
 
@@ -43,10 +44,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_recovers_rho(self):
         """SAR-MNL should recover the spatial autoregressive parameter ρ."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         result = model.fit()
 
@@ -62,10 +64,11 @@ class TestSARMNLRecovery:
         """When ρ=0, SAR-MNL should recover standard MNL estimates."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.0, seed=42)
         # Fit SAR-MNL
-        sar_model = SARMNL(
+        sar_model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         sar_result = sar_model.fit()
         # Fit standard MNL (via ChoiceModel without W)
@@ -85,10 +88,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_recovers_rho_low_spatial_dep(self):
         """SAR-MNL should detect low spatial dependence (ρ=0.05) is near zero."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.05, seed=2026)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         result = model.fit()
         # Low ρ is hard to distinguish from zero — check it's not wildly off
@@ -98,10 +102,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_recovers_rho_moderate_spatial_dep(self):
         """SAR-MNL should recover ρ at moderate spatial dependence (ρ=0.5)."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.5, seed=2026)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         result = model.fit()
         npt.assert_allclose(
@@ -114,10 +119,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_smaller_n_alts(self):
         """SAR-MNL should work with a small number of alternatives."""
         dataset = simulate_sar_mnl(n_obs=3000, n_alts=12, rho=0.2, n_neighbors=3, seed=42)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         result = model.fit()
         # Should converge and produce finite estimates
@@ -133,11 +139,26 @@ class TestSARMNLRecovery:
         W_sparse = sp.csr_array(W_graph.sparse)  # scipy.sparse
         W_dense = W_sparse.toarray()  # dense numpy
 
-        model1 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_graph)
+        model1 = ChoiceModel(
+            dataset.choice_table,
+            "alt_attr + obs_x_alt - 1",
+            graph=W_graph,
+            lag=True,
+        )
         result1 = model1.fit()
-        model2 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_sparse)
+        model2 = ChoiceModel(
+            dataset.choice_table,
+            "alt_attr + obs_x_alt - 1",
+            graph=W_sparse,
+            lag=True,
+        )
         result2 = model2.fit()
-        model3 = SARMNL(dataset.choice_table, "alt_attr + obs_x_alt - 1", W=W_dense)
+        model3 = ChoiceModel(
+            dataset.choice_table,
+            "alt_attr + obs_x_alt - 1",
+            graph=W_dense,
+            lag=True,
+        )
         result3 = model3.fit()
 
         npt.assert_allclose(
@@ -156,10 +177,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_probabilities_sum_to_one(self):
         """Choice probabilities should sum to 1 across alternatives."""
         dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         model.fit()
         probs = model.probabilities()
@@ -173,10 +195,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_marginal_effects_structure(self):
         """Marginal effects: direct + indirect = total; indirect > 0 when ρ > 0."""
         dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.3, seed=42)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
         )
         model.fit()
         me = model.marginal_effects(variable="alt_attr")
@@ -192,10 +215,11 @@ class TestSARMNLRecovery:
     def test_sar_mnl_gmm_recovers_rho(self):
         """Linearized GMM should recover ρ at moderate spatial dependence."""
         dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
-        model = SARMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
             estimator="linearized_gmm",
         )
         result = model.fit()
@@ -210,18 +234,20 @@ class TestSARMNLRecovery:
         """CG path should give similar results to dense path."""
         dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
 
-        model_dense = SARMNL(
+        model_dense = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
             estimator="pml",
         )
         result_dense = model_dense.fit()
 
-        model_cg = SARMNL(
+        model_cg = ChoiceModel(
             dataset.choice_table,
             formula="alt_attr + obs_x_alt - 1",
-            W=dataset.W,
+            graph=dataset.W,
+            lag=True,
             estimator="pml_cg",
         )
         result_cg = model_cg.fit()
