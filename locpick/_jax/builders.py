@@ -134,11 +134,6 @@ def build_mnl_objective(arrays) -> Objective:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# SCL objective
-# ---------------------------------------------------------------------------
-
-
 # Top-level JIT'd kernels — cached across all SCL objectives
 @jax.jit
 def _scl_ll_kernel(params, data):

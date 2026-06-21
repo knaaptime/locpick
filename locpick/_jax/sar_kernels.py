@@ -495,9 +495,13 @@ def _sar_mixed_ll_core(
                 beta_lognormal,
                 jnp.where(dist_codes == 2, beta_triangular, beta_uniform),
             ),
-        )
+        )  # (n_obs, k_random)
 
-        V_random = (dm_random @ beta_r).reshape(n_obs, n_alts)
+        # Random utility: broadcast per-obs random coefficients with design matrix
+        V_random = jnp.sum(
+            dm_random.reshape(n_obs, n_alts, k_random) * beta_r[:, None, :],
+            axis=2,
+        )
         V_total = V_fixed_star + V_random
         V_masked = jnp.where(available > 0, V_total, -1e30)
         log_sum_exp = jax.scipy.special.logsumexp(V_masked, axis=1)
@@ -672,9 +676,13 @@ def _sar_mixed_nested_ll_core(
                 beta_lognormal,
                 jnp.where(dist_codes == 2, beta_triangular, beta_uniform),
             ),
-        )
+        )  # (n_obs, k_random)
 
-        V_random = (dm_random @ beta_r).reshape(n_obs, n_alts)
+        # Random utility: broadcast per-obs random coefficients with design matrix
+        V_random = jnp.sum(
+            dm_random.reshape(n_obs, n_alts, k_random) * beta_r[:, None, :],
+            axis=2,
+        )
         V_total = V_fixed_star + V_random
         log_probs = nested_log_probs(V_total, lambdas, nest_matrix, available)
         return jnp.exp((log_probs * chosen).sum(axis=1))
