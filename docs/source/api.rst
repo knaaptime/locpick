@@ -50,13 +50,6 @@ Models
 
    ChoiceModel :no-index:
 
-.. currentmodule:: locpick.models.sar_mnl
-
-.. autosummary::
-   :toctree: generated/
-
-   SARMNL :no-index:
-
 .. currentmodule:: locpick.models.nested
 
 .. autosummary::

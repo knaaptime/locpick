@@ -1,16 +1,17 @@
 # Spatial Autoregressive Multinomial Logit (SAR-MNL)
 
 ```{note}
-This user guide covers the `SARMNL` model class, which implements a
-spatial autoregressive lag in the utility of alternatives (spatial
-locations) using the pseudo maximum likelihood (PML) estimator from
-Smirnov (2010).
+This user guide covers SAR-MNL estimation via ``ChoiceModel`` with
+``graph=`` and ``lag=True``, which implements a spatial autoregressive
+lag in the utility of alternatives (spatial locations) using the pseudo
+maximum likelihood (PML) estimator from Smirnov (2010).
 ```
 
 ## Overview
 
-The `SARMNL` class models spatial spillover in the **systematic utility**
-of alternatives via a spatial autoregressive (SAR) lag:
+The `ChoiceModel` class with `lag=True` models spatial spillover in the
+**systematic utility** of alternatives via a spatial autoregressive (SAR)
+lag:
 
 $$V_j = \rho \sum_k w_{jk} V_k + Z_j \beta + X_{ij} \gamma$$
 
@@ -23,6 +24,20 @@ normalised by $D = \text{diag}((I - \rho W)^{-1})$ for consistency
 (Smirnov 2010). Choice probabilities follow standard MNL softmax over
 the spatially-filtered, variance-normalised utilities.
 
+### SAR vs SCL
+
+The `graph=` parameter can be used with two spatial mechanisms:
+
+| `lag=` | Mechanism | ρ range | Transform |
+|--------|-----------|---------|-----------|
+| `False` (default) | SCL (GEV paired nests) | (0, 1] | Sigmoid |
+| `True` | SAR (spatial autoregressive lag) | (-1, 1) | Tanh |
+
+SAR models spatial spillover in the **systematic utility** via the
+spatial multiplier $(I - \rho W)^{-1}$. SCL models spatial correlation
+via GEV paired nests between adjacent alternatives. They are different
+mechanisms for the same spatial weights matrix.
+
 ### Key features
 
 - **PML estimator** (Smirnov 2010): consistent, no log-determinant needed
@@ -31,11 +46,12 @@ the spatially-filtered, variance-normalised utilities.
 - **Linearized GMM fallback** (Carrión-Flores et al. 2018): for very large J
 - **libpysal Graph support**: canonical W type, matching bayespecon
 - **Marginal effects**: direct, indirect, and total (LeSage & Pace 2009)
+- **Composable with Mixed and Nested logit**: SAR + Mixed, SAR + Nested, SAR + Mixed + Nested
 
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, SARMNL
+from locpick import ChoiceTable, ChoiceModel
 from libpysal.graph import Graph
 
 # Build spatial weights matrix connecting alternatives
@@ -45,7 +61,7 @@ W = Graph.build_knn(gdf, k=7).transform("r")
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen_alternatives=choices)
 
 # Estimate SAR-MNL
-model = SARMNL(ct, formula="cost + time - 1", W=W)
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True)
 result = model.fit()
 print(result.summary())
 ```
@@ -64,13 +80,13 @@ variance normalisation $\text{diag}((I - \rho W)^{-1})$.
 
 ```python
 # Auto-select (default)
-model = SARMNL(ct, formula="cost + time - 1", W=W)
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True)
 
 # Force dense solve
-model = SARMNL(ct, formula="cost + time - 1", W=W, estimator="pml")
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True, estimator="pml")
 
 # Force conjugate gradient
-model = SARMNL(ct, formula="cost + time - 1", W=W, estimator="pml_cg")
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True, estimator="pml_cg")
 ```
 
 ### Linearized GMM
@@ -83,13 +99,13 @@ inversion entirely via a two-step procedure:
 2. **Step 2**: Two-stage least squares (TSLS) with instruments $[X, WX]$
 
 ```python
-model = SARMNL(ct, formula="cost + time - 1", W=W, estimator="linearized_gmm")
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True, estimator="linearized_gmm")
 result = model.fit()
 ```
 
 ## Spatial Weights Matrix
 
-`SARMNL` accepts `libpysal.graph.Graph` as the canonical W type
+`ChoiceModel` accepts `libpysal.graph.Graph` as the canonical W type
 (matching the bayespecon package). `scipy.sparse` matrices and dense
 NumPy arrays are also accepted for convenience.
 
@@ -104,6 +120,46 @@ W = Graph.build_contiguity(gdf, rook=False).transform("r")
 
 # Distance band
 W = Graph.build_distance_band(gdf, threshold=1000).transform("r")
+```
+
+## Composing with Mixed and Nested Logit
+
+SAR composes naturally with mixed logit (random coefficients) and nested
+logit (hierarchical choice). The spatial filter is applied to utilities
+*before* the GEV/softmax/mixed-logit logic, so the mechanisms are
+independent.
+
+### SAR + Nested
+
+```python
+from locpick import ChoiceModel, NestingTree
+
+nests = NestingTree(...)
+model = ChoiceModel(ct, formula="cost + time - 1", graph=W, lag=True, nests=nests)
+result = model.fit()
+```
+
+### SAR + Mixed
+
+```python
+from locpick import ChoiceModel, ParamDistribution
+
+random_params = {"time": ParamDistribution("normal", "time")}
+model = ChoiceModel(
+    ct, formula="cost + time - 1", graph=W, lag=True,
+    random_params=random_params, n_draws=200,
+)
+result = model.fit()
+```
+
+### SAR + Mixed + Nested
+
+```python
+model = ChoiceModel(
+    ct, formula="cost + time - 1", graph=W, lag=True,
+    nests=nests, random_params=random_params, n_draws=200,
+)
+result = model.fit()
 ```
 
 ## Marginal Effects
