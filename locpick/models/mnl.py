@@ -12,13 +12,14 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.problem import EstimationProblem
-from locpick.models._spatial import (
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..data.problem import EstimationProblem
+from ..results.fit_result import FitResult
+from ._spatial import (
     naturalize_rho,
 )
-from locpick.models.base import (
+from .base import (
     BaseChoiceModel,
     SpatialMixin,
     _compute_fit_statistics,
@@ -26,7 +27,6 @@ from locpick.models.base import (
     _safe_inv,
     _sandwich_inv,
 )
-from locpick.results.fit_result import FitResult
 
 
 class MNL(BaseChoiceModel, SpatialMixin):
@@ -158,7 +158,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_obs, n_alts)
             Choice probabilities for each observation and alternative.
         """
-        from locpick._kernels.mnl_numpy import mnl_probs_numpy
+        from .._kernels.mnl_numpy import mnl_probs_numpy
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before prediction.")
@@ -171,7 +171,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
             )
 
         if self._is_spatial:
-            from locpick.models.scl import _scl_log_probs_dispatch
+            from .scl import _scl_log_probs_dispatch
 
             k = arrays.design_matrix.shape[1]
             if beta is None:
@@ -186,7 +186,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
                 else:
                     rho = float(self._result.coefficients.values[k])
 
-            from locpick._sampling.correction import get_sampling_correction
+            from .._sampling.correction import get_sampling_correction
 
             log_probs = _scl_log_probs_dispatch(
                 beta_use,
@@ -211,7 +211,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
 
         # Systematic utility with sampling correction
         utilities = (dm @ beta).reshape(n_obs, n_alts)
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         utilities = apply_sampling_correction(utilities, arrays)
 
@@ -265,7 +265,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         V = (dm @ beta).reshape(n_obs, n_alts)
 
         # Add sampling correction if present
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V = apply_sampling_correction(V, arrays)
 
@@ -297,7 +297,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
             Simulated choices with columns ``draw``, ``obs_id``,
             ``alt_id``, and ``probability``.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before simulation.")
@@ -381,7 +381,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -431,7 +431,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -481,7 +481,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -529,7 +529,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -575,7 +575,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Sandwich (robust) covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -614,7 +614,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Cluster-robust covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -713,7 +713,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
             self._observation_scores_cache[cache_key] = scores
             return scores
 
-        from locpick._kernels.mnl_numpy import mnl_observation_scores_numpy
+        from .._kernels.mnl_numpy import mnl_observation_scores_numpy
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         chosen = np.asarray(arrays.chosen, dtype=np.float64).reshape(arrays.n_obs, arrays.n_alts)
@@ -726,7 +726,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         else:
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         inclusion_probs = get_sampling_correction(arrays)
 
@@ -781,7 +781,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         is provided for debugging and benchmarking.
         """
         if self._is_spatial:
-            from locpick._jax.builders import build_scl_objective
+            from .._jax.builders import build_scl_objective
 
             return build_scl_objective(
                 arrays, self._edge_struct, self._allocation, self._edge_list
@@ -792,7 +792,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         backend = (self._backend or os.environ.get("LOCPICK_MNL_BACKEND", "")).lower()
         if backend == "numpy":
             return self._build_objective_numpy(arrays)
-        from locpick._jax.builders import build_mnl_objective
+        from .._jax.builders import build_mnl_objective
 
         return build_mnl_objective(arrays)
 
@@ -823,13 +823,12 @@ class MNL(BaseChoiceModel, SpatialMixin):
         Delegates to the canonical MNL kernels in
         :mod:`locpick._kernels.mnl_numpy` to avoid code duplication.
         """
-        from locpick._kernels.mnl_numpy import (
+        from .._kernels.mnl_numpy import (
             mnl_gradient_numpy,
             mnl_log_likelihood_numpy,
         )
 
         dm = arrays.design_matrix.astype(np.float64)
-        dm_sparse = getattr(arrays, "design_matrix_sparse", None)
         chosen = arrays.chosen.astype(np.float64)
         n_obs = arrays.n_obs
         n_alts = arrays.n_alts
@@ -844,7 +843,7 @@ class MNL(BaseChoiceModel, SpatialMixin):
         else:
             available = np.ones((n_obs, n_alts), dtype=np.float64)
 
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         inclusion_probs = get_sampling_correction(arrays)
 
@@ -858,7 +857,6 @@ class MNL(BaseChoiceModel, SpatialMixin):
                 n_alts=n_alts,
                 weights=weights,
                 inclusion_probs=inclusion_probs,
-                design_matrix_sparse=dm_sparse,
             )
 
         def gradient(beta: np.ndarray) -> np.ndarray:
@@ -871,10 +869,9 @@ class MNL(BaseChoiceModel, SpatialMixin):
                 n_alts=n_alts,
                 weights=weights,
                 inclusion_probs=inclusion_probs,
-                design_matrix_sparse=dm_sparse,
             )
 
-        from locpick._jax.objective import Objective
+        from .._jax.objective import Objective
 
         return Objective(fn=log_likelihood, grad=gradient)
 

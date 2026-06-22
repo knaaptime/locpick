@@ -1,8 +1,8 @@
-# Mixed Logit with Spatial Correlation (MixedMNL + graph)
+# Mixed Logit with Spatial Correlation (ChoiceModel + graph + random_params)
 
 ## Overview
 
-A `MixedMNL` model constructed with a spatial `graph=` argument estimates the Mixed Spatially Correlated Logit (MSCL) of Bhat & Guo (2004): it combines a closed-form GEV spatial-correlation structure with random taste variation. The spatial component captures correlation between contiguous alternatives in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
+A `ChoiceModel` constructed with a spatial `graph=` argument and `random_params=` estimates the Mixed Spatially Correlated Logit (MSCL) of Bhat & Guo (2004): it combines a closed-form GEV spatial-correlation structure with random taste variation. The spatial component captures correlation between contiguous alternatives in closed form, while the mixing distribution captures unobserved heterogeneity across decision-makers.
 
 ```{warning}
 The spatial mixed logit does **not** support alternative sampling correction. The MNL's uniform conditioning property does not hold for non-MNL GEV models. Always use the full alternative set (or sample without correction).
@@ -31,7 +31,7 @@ The spatial GEV structure handles spatial correlation in closed form, so the sim
 ## Quick Start
 
 ```python
-from locpick import ChoiceTable, MixedMNL
+from locpick import ChoiceTable, ChoiceModel
 from locpick.models.mixed import ParamDistribution
 from libpysal import graph
 
@@ -44,7 +44,7 @@ random_params = {
 }
 
 ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
-model = MixedMNL(
+model = ChoiceModel(
     ct,
     formula="commute_time + density + shopping_access",
     graph=g,
@@ -81,7 +81,7 @@ Supported distributions:
 
 ```python
 # Halton draws (quasi-random — more efficient)
-model = MixedMNL(
+model = ChoiceModel(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=250,
@@ -89,7 +89,7 @@ model = MixedMNL(
 )
 
 # Pseudo-random draws
-model = MixedMNL(
+model = ChoiceModel(
     ct, formula="cost + time", graph=g,
     random_params=random_params,
     n_draws=500,
@@ -99,12 +99,12 @@ model = MixedMNL(
 
 ## Spatial-Only Estimation
 
-When no random parameters are needed, prefer `MNL(graph=...)` directly to avoid the simulation loop:
+When no random parameters are needed, prefer `ChoiceModel(graph=...)` directly to avoid the simulation loop:
 
 ```python
-from locpick import MNL
+from locpick import ChoiceModel
 
-model = MNL(ct, formula="cost + time", graph=g)
+model = ChoiceModel(ct, formula="cost + time", graph=g)
 ```
 
 ## References

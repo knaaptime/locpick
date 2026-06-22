@@ -46,23 +46,23 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.models._spatial import (
+from .._jax.objective import Objective
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..results.fit_result import FitResult
+from ._spatial import (
     EdgeStructure,
     _resolve_spatial_graph,
     naturalize_rho,
 )
-from locpick.models.base import (
+from .base import (
     BaseChoiceModel,
     SpatialMixin,
     _compute_fit_statistics,
     _compute_null_ll,
 )
-from locpick.models.mixed import ParamDistribution, _resolve_draws
-from locpick.models.nested import NestingTree, naturalize_nest_params
-from locpick.results.fit_result import FitResult
+from .mixed import ParamDistribution, _resolve_draws
+from .nested import NestingTree, naturalize_nest_params
 
 
 class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
@@ -106,9 +106,9 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
     Examples
     --------
     >>> from locpick import ChoiceTable
-    >>> from locpick.models.mixed_nested import MixedNestedMNL
-    >>> from locpick.models.nested import NestingTree, NestSpec
-    >>> from locpick.models.mixed import ParamDistribution
+    >>> from .mixed_nested import MixedNestedMNL
+    >>> from .nested import NestingTree, NestSpec
+    >>> from .mixed import ParamDistribution
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
     >>> nests = NestingTree([
     ...     NestSpec("transit", alt_ids=[0, 1, 2]),
@@ -220,7 +220,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
         self._resolve_spatial_graph()
         self._validate_graph_size(arrays)
 
-        from locpick._jax.data import EdgeDataJAX
+        from .._jax.data import EdgeDataJAX
 
         n_nests = self._nests.n_nests
         self._edge_structs = []
@@ -301,7 +301,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
             )
 
         if self._is_spatial:
-            from locpick._jax.builders import build_mnscl_objective
+            from .._jax.builders import build_mnscl_objective
 
             return build_mnscl_objective(
                 arrays,
@@ -315,7 +315,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
         # Try JAX backend first
         backend = (self._backend or os.environ.get("LOCPICK_MIXED_NESTED_BACKEND", "")).lower()
         if backend != "numpy":
-            from locpick._jax.builders import build_mixed_nested_objective
+            from .._jax.builders import build_mixed_nested_objective
 
             return build_mixed_nested_objective(
                 arrays,
@@ -546,7 +546,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
 
         arrays = self._arrays
         if data is not None:
-            from locpick.data.choicetable import ChoiceTable
+            from ..data.choicetable import ChoiceTable
 
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
@@ -562,7 +562,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
         """Compute probabilities using JAX backend."""
         import jax.numpy as jnp
 
-        from locpick._jax.data import ChoiceDataJAX
+        from .._jax.data import ChoiceDataJAX
 
         k_total = arrays.design_matrix.shape[1]
         k_fixed = k_total - len(self._random_col_indices)
@@ -662,7 +662,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
             V = np.asarray(v_fixed) + v_random
 
             # Nested logit probabilities for this draw
-            from locpick.models.nested import _nested_logit_probs_numpy
+            from .nested import _nested_logit_probs_numpy
 
             _nested_logit_probs_numpy(
                 np.concatenate([beta_fixed, np.zeros(0)]),  # beta only, no nest params in utility
@@ -688,7 +688,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
 
     def _probabilities_numpy(self, arrays, beta=None, alpha=None):
         """Compute probabilities using NumPy backend (fallback)."""
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         k_total = arrays.design_matrix.shape[1]
         k_fixed = k_total - len(self._random_col_indices)
@@ -869,7 +869,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
 
         arrays = self._arrays
         if data is not None:
-            from locpick.data.choicetable import ChoiceTable
+            from ..data.choicetable import ChoiceTable
 
             if not isinstance(data, ChoiceTable):
                 raise TypeError("data must be a ChoiceTable")
@@ -898,7 +898,7 @@ class MixedNestedMNL(BaseChoiceModel, SpatialMixin):
             V = np.zeros((n_obs, n_alts))
 
         # Add sampling correction if present
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V = apply_sampling_correction(V, arrays)
 

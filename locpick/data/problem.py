@@ -20,7 +20,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
-from locpick.data.arrays import ChoiceArrays
+from .arrays import ChoiceArrays
 
 
 @dataclass
@@ -126,7 +126,7 @@ class EstimationProblem:
         -------
         EstimationProblem
         """
-        from locpick.spec import ModelSpec
+        from ..spec import ModelSpec
 
         # Resolve spec
         if spec is None and formula is not None:

@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from locpick._jax.transforms import ParamTransform
+from .transforms import ParamTransform
 
 
 @dataclass

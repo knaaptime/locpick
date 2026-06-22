@@ -13,13 +13,13 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from locpick._sampling.kernels import (
+from .._sampling.kernels import (
     HAS_NUMBA,
     _sample_unweighted_without_replacement_exclusion,
     _sample_weighted_without_replacement_1d_exclusion,
 )
-from locpick.data.arrays import ChoiceArrays
-from locpick.data.dataset import (
+from .arrays import ChoiceArrays
+from .dataset import (
     _resolve_pairwise,
     build_choice_dataset,
     build_choice_dataset_from_long,
@@ -137,7 +137,9 @@ class ChoiceTable:
         ChoiceTable
         """
         if seed is not None:
-            np.random.seed(seed)
+            rng = np.random.default_rng(seed)
+        else:
+            rng = np.random.default_rng()
 
         # Normalize index names; if the named column exists as a data column,
         # promote it to the index.
@@ -223,6 +225,7 @@ class ChoiceTable:
                 replace,
                 oid_name,
                 aid_name,
+                rng=rng,
             )
 
         n_obs = len(choosers)
@@ -722,8 +725,6 @@ class ChoiceTable:
         spec=None,
         weights=None,
         available=None,
-        sparse: bool = False,
-        sparse_threshold: float = 0.5,
     ) -> ChoiceArrays:
         """Convert to estimation-ready arrays.
 
@@ -739,36 +740,32 @@ class ChoiceTable:
             Observation weights as a flat array of length n_obs * n_alts.
         available : array-like or None
             Alternative availability as a flat array of length n_obs * n_alts.
-        sparse : bool
-            If True, convert the design matrix to scipy.sparse.csr_matrix
-            when the zero fraction exceeds ``sparse_threshold``. This is
-            useful for large choice sets with many zero-valued variables
-            (e.g., "has_subway_station").
-        sparse_threshold : float
-            Fraction of zeros required to trigger sparse conversion.
-            Default 0.5 (50% zeros).
 
         Returns
         -------
         ChoiceArrays
         """
-        # Cache key: hashable tuple of all arguments
+        # Cache key: hashable representation of all arguments
+        # Use bytes hash for array-like weights/available to handle numpy arrays
+        import hashlib
+
+        def _hashable(val):
+            if val is None or isinstance(val, str):
+                return val
+            if hasattr(val, "tobytes"):
+                return hashlib.md5(np.asarray(val).tobytes()).hexdigest()
+            if hasattr(val, "__iter__"):
+                return hashlib.md5(np.asarray(val).tobytes()).hexdigest()
+            return val
+
         cache_key = (
             formula,
             id(spec) if spec is not None else None,
-            tuple(weights)
-            if hasattr(weights, "__iter__") and not isinstance(weights, str)
-            else weights,
-            tuple(available)
-            if hasattr(available, "__iter__") and not isinstance(available, str)
-            else available,
-            sparse,
-            sparse_threshold,
+            _hashable(weights),
+            _hashable(available),
         )
         if cache_key in self._to_arrays_cache:
             return self._to_arrays_cache[cache_key]
-
-        import numpy as np
 
         df = self._get_frame_cached(copy=False)
         n_obs = self.n_observations
@@ -837,7 +834,7 @@ class ChoiceTable:
         inclusion_probs = None
 
         if self._sample_size is not None:
-            from locpick._sampling.inclusion import compute_inclusion_probs
+            from .._sampling.inclusion import compute_inclusion_probs
 
             n_alts_full = self.n_alternatives_full
             n_samples = self._sample_size
@@ -869,22 +866,12 @@ class ChoiceTable:
             param_names = []
             design_matrix = np.asarray(dm, dtype=np.float64)
 
-        # Sparse design matrix (optional)
-        design_matrix_sparse = None
-        if sparse and design_matrix.size > 0:
-            zero_fraction = 1.0 - np.count_nonzero(design_matrix) / design_matrix.size
-            if zero_fraction >= sparse_threshold:
-                import scipy.sparse as sp
-
-                design_matrix_sparse = sp.csr_matrix(design_matrix)
-
         # Get obs_ids and alt_ids
         obs_ids = np.repeat(np.asarray(self._ds.coords["obs_id"].values), n_alts)
         alt_ids = np.asarray(self._ds["alt_id_values"].values).reshape(-1)
 
         result = ChoiceArrays(
             design_matrix=design_matrix,
-            design_matrix_sparse=design_matrix_sparse,
             chosen=chosen,
             available=avail,
             weights=wts,
@@ -936,8 +923,11 @@ class ChoiceTable:
         replace: bool,
         oid_name: str,
         aid_name: str,
+        rng: Optional[np.random.Generator] = None,
     ) -> pd.DataFrame:
         """Build merged table with alternative sampling."""
+        if rng is None:
+            rng = np.random.default_rng()
         n_obs = len(choosers)
         n_alts = len(alternatives)
         alt_ids = alternatives.index.values
@@ -968,7 +958,7 @@ class ChoiceTable:
                     available_probs = probs.copy()
                     available_probs[~available_mask] = 0
                     available_probs /= available_probs.sum()
-                    sampled[i] = np.random.choice(
+                    sampled[i] = rng.choice(
                         alt_ids, size=sample_size, replace=True, p=available_probs
                     )
             else:
@@ -978,7 +968,7 @@ class ChoiceTable:
                     if excluded_alt_ids[i] >= 0:
                         available_mask[excluded_alt_ids[i]] = False
                     available_alts = alt_ids[available_mask]
-                    sampled[i] = np.random.choice(available_alts, size=sample_size, replace=True)
+                    sampled[i] = rng.choice(available_alts, size=sample_size, replace=True)
         else:
             # Without replacement — use Numba kernels if available
             if weights_series is not None and weights_1d and HAS_NUMBA:
@@ -1005,7 +995,7 @@ class ChoiceTable:
                     if excluded_alt_ids[i] >= 0:
                         available_mask[excluded_alt_ids[i]] = False
                     available_alts = alt_ids[available_mask]
-                    sampled[i] = np.random.choice(available_alts, size=sample_size, replace=False)
+                    sampled[i] = rng.choice(available_alts, size=sample_size, replace=False)
 
         # Ensure chosen alternative is always included
         if chosen_series is not None:

@@ -4,6 +4,9 @@ from . import mnl as mnl
 from . import nested as nested
 from . import scl as scl
 from .base import (
+    ChoiceModelProtocol as ChoiceModelProtocol,
+)
+from .choice_model import (
     ChoiceModel as ChoiceModel,
 )
 from .mixed import (

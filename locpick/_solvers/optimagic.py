@@ -59,7 +59,7 @@ class OptimagicSolver:
     ) -> SolverResult:
         import optimagic as om
 
-        from locpick._jax.objective import Objective
+        from .._jax.objective import Objective
 
         if not isinstance(objective, Objective):
             raise TypeError("OptimagicSolver.solve expects an Objective instance.")

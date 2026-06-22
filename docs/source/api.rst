@@ -43,19 +43,18 @@ Model Specification
 Models
 ------
 
-.. currentmodule:: locpick.models.mnl
+.. currentmodule:: locpick.models.choice_model
 
 .. autosummary::
    :toctree: generated/
 
-   MNL :no-index:
+   ChoiceModel :no-index:
 
 .. currentmodule:: locpick.models.nested
 
 .. autosummary::
    :toctree: generated/
 
-   NestedMNL :no-index:
    NestSpec :no-index:
    NestingTree :no-index:
 
@@ -64,15 +63,7 @@ Models
 .. autosummary::
    :toctree: generated/
 
-   MixedMNL :no-index:
    ParamDistribution :no-index:
-
-.. currentmodule:: locpick.models.mixed_nested
-
-.. autosummary::
-   :toctree: generated/
-
-   MixedNestedMNL :no-index:
 
 .. currentmodule:: locpick.models.scl
 

@@ -1,12 +1,10 @@
 """Tests for the Mixed Nested Logit model."""
 
 import numpy as np
-import pytest
 
-from locpick import ChoiceTable
+from locpick import ChoiceModel, ChoiceTable
 from locpick.dgp import simulate_mixed_nested_logit
 from locpick.models.mixed import ParamDistribution
-from locpick.models.mixed_nested import MixedNestedMNL
 from locpick.models.nested import NestingTree, NestSpec
 
 # ---------------------------------------------------------------------------
@@ -65,35 +63,35 @@ def make_mixed_nested_data(n_obs=500, n_alts=4, seed=42):
 class TestMixedNestedMNL:
     """Tests for the MixedNestedMNL model class."""
 
-    def test_requires_nests(self):
-        """MixedNestedMNL should require nests argument."""
+    def test_without_nests_is_not_nested(self):
+        """ChoiceModel without nests should not raise — it's just mixed."""
         ct, nests = make_mixed_nested_data()
 
-        with pytest.raises(ValueError, match="nests"):
-            MixedNestedMNL(
-                ct,
-                formula="cost + time - 1",
-                random_params={"time": ParamDistribution("normal", "time")},
-                n_draws=50,
-            )
+        model = ChoiceModel(
+            ct,
+            formula="cost + time - 1",
+            random_params={"time": ParamDistribution("normal", "time")},
+            n_draws=50,
+        )
+        assert not model._is_nested
 
-    def test_requires_random_params(self):
-        """MixedNestedMNL should require random_params argument."""
+    def test_without_random_params_is_not_mixed(self):
+        """ChoiceModel without random_params should not raise — it's just nested."""
         ct, nests = make_mixed_nested_data()
 
-        with pytest.raises(ValueError, match="random"):
-            MixedNestedMNL(
-                ct,
-                formula="cost + time - 1",
-                nests=nests,
-                n_draws=50,
-            )
+        model = ChoiceModel(
+            ct,
+            formula="cost + time - 1",
+            nests=nests,
+            n_draws=50,
+        )
+        assert not model._is_mixed
 
     def test_mixed_nested_logit_estimation(self):
         """MixedNestedMNL should estimate and return a FitResult."""
         ct, nests = make_mixed_nested_data(n_obs=200)
 
-        model = MixedNestedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             nests=nests,
@@ -116,7 +114,7 @@ class TestMixedNestedMNL:
         """MixedNestedMNL should handle multiple random parameters."""
         ct, nests = make_mixed_nested_data(n_obs=200)
 
-        model = MixedNestedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             nests=nests,
@@ -142,7 +140,7 @@ class TestMixedNestedMNL:
         """MixedNestedMNL should handle mix of fixed and random parameters."""
         ct, nests = make_mixed_nested_data(n_obs=200)
 
-        model = MixedNestedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             nests=nests,
@@ -162,7 +160,7 @@ class TestMixedNestedMNL:
         """MixedNestedMNL should work with lognormal distribution."""
         ct, nests = make_mixed_nested_data(n_obs=200)
 
-        model = MixedNestedMNL(
+        model = ChoiceModel(
             ct,
             formula="cost + time - 1",
             nests=nests,

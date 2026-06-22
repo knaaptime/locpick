@@ -21,6 +21,7 @@ Mixed Logit <user-guide/mixed>
 Spatial Mixed Logit <user-guide/spatial_mixed>
 Spatial Nested Logit <user-guide/spatial_nested>
 Spatial Mixed-Nested Logit <user-guide/spatial_mixed_nested>
+SAR-MNL Demo <user-guide/sar_mnl_demo>
 Simulated Location Choice Demo <user-guide/livelike_locpick_household_tract_demo>
 Spatial Models Demo <user-guide/spatial_models_demo>
 Sampling Correction <user-guide/sampling>

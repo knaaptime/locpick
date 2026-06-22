@@ -13,7 +13,7 @@ import numpy.testing as npt
 import pandas as pd
 import pytest
 
-from locpick import MNL, ChoiceTable, EstimationProblem
+from locpick import ChoiceModel, ChoiceTable, EstimationProblem
 from locpick.data import ChoiceArrays
 
 # ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ class TestInclusionProbabilities:
         from locpick.data.problem import EstimationProblem
 
         problem = EstimationProblem(arrays=arrays_with_both)
-        model = MNL(data=None, problem=problem)
+        model = ChoiceModel(data=None, problem=problem)
         result = model.fit()
 
         # Verify the model ran successfully
@@ -298,7 +298,7 @@ class TestInclusionProbabilities:
         from locpick.data.problem import EstimationProblem
 
         problem = EstimationProblem(arrays=arrays_with_rates)
-        model = MNL(data=None, problem=problem)
+        model = ChoiceModel(data=None, problem=problem)
         result = model.fit()
 
         # Verify the model ran successfully
@@ -487,7 +487,7 @@ class TestSamplingCorrectionRecovery:
             seed=42,
         )
 
-        model = MNL(ct, formula="altval - 1")
+        model = ChoiceModel(ct, formula="altval - 1")
         result = model.fit()
 
         # The coefficient should be recoverable (within 30% tolerance)

@@ -69,6 +69,9 @@ from .dgp import (
     NestedSCLDataset as NestedSCLDataset,
 )
 from .dgp import (
+    SARMNLDataset as SARMNLDataset,
+)
+from .dgp import (
     SCLDataset as SCLDataset,
 )
 from .dgp import (
@@ -93,22 +96,13 @@ from .dgp import (
     simulate_nested_scl as simulate_nested_scl,
 )
 from .dgp import (
+    simulate_sar_mnl as simulate_sar_mnl,
+)
+from .dgp import (
     simulate_scl as simulate_scl,
 )
 from .models import (
-    MNL as MNL,
-)
-from .models import (
     ChoiceModel as ChoiceModel,
-)
-from .models import (
-    MixedMNL as MixedMNL,
-)
-from .models import (
-    MixedNestedMNL as MixedNestedMNL,
-)
-from .models import (
-    NestedMNL as NestedMNL,
 )
 from .models import (
     NestingTree as NestingTree,

@@ -52,15 +52,15 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._jax.objective import Objective
-from locpick._kernels.constants import NEG_INF
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.models._spatial import (
+from .._jax.objective import Objective
+from .._kernels.constants import NEG_INF
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..results.fit_result import FitResult
+from ._spatial import (
     naturalize_rho,
 )
-from locpick.models.base import BaseChoiceModel, SpatialMixin, _safe_inv, _sandwich_inv
-from locpick.results.fit_result import FitResult
+from .base import BaseChoiceModel, SpatialMixin, _safe_inv, _sandwich_inv
 
 # ---------------------------------------------------------------------------
 # Distribution specifications
@@ -439,21 +439,7 @@ def _mixed_logit_probs_numpy(
     log_probs_draws = np.zeros((n_obs, n_draws, n_alts), dtype=np.float64)
 
     for r in range(n_draws):
-        # Realise random coefficients for this draw
-        beta_r = np.zeros(k_random)
-        for p in range(k_random):
-            z_p = draws[:, r, p]  # (n_obs,)
-            mean_p = np.full(n_obs, beta_random_means[p])
-            spread_p = np.full(n_obs, beta_random_spreads[p])
-            beta_r[p] = _apply_distribution(
-                z_p[:, None],
-                mean_p[:, None],
-                spread_p[:, None],
-                random_distributions[p],
-            ).ravel()[0]  # scalar for this draw
-
-        # Actually, we need per-observation random coefficients
-        # beta_r[n, p] = mean_p + spread_p * z[n, r, p]
+        # Realise per-observation random coefficients for this draw
         beta_random_r = np.zeros((n_obs, k_random))
         for p in range(k_random):
             z_p = draws[:, r, p]  # (n_obs,)
@@ -630,90 +616,6 @@ def _mixed_logit_ll_numpy(
     return float(np.sum(log_sim_probs))
 
 
-def _mixed_logit_gradient_numpy(
-    params: np.ndarray,
-    random_col_indices: list[int],
-    k_fixed: int,
-    k_random: int,
-    random_distributions: list[str],
-    draws: np.ndarray,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """Compute mixed logit gradient via finite differences (NumPy backend).
-
-    Parameters
-    ----------
-    params : np.ndarray, shape (k_fixed + 2 * k_random,)
-        Full parameter vector: [beta_fixed, beta_random_means, beta_random_spreads].
-    random_col_indices, k_fixed, k_random, random_distributions, draws, design_matrix, chosen, n_obs, n_alts, available, inclusion_probs, weights
-        See :func:`_mixed_logit_ll_numpy`.
-
-    Returns
-    -------
-    np.ndarray, shape (k_fixed + 2 * k_random,)
-        Gradient of the simulated log-likelihood.
-    """
-    eps = 1e-5
-    n_params = len(params)
-    grad = np.zeros(n_params)
-
-    for i in range(n_params):
-        params_plus = params.copy()
-        params_plus[i] += eps
-        params_minus = params.copy()
-        params_minus[i] -= eps
-
-        def _unpack(p):
-            bf = p[:k_fixed]
-            rm = p[k_fixed : k_fixed + k_random]
-            rs = p[k_fixed + k_random :]
-            return bf, rm, rs
-
-        bf_plus, rm_plus, rs_plus = _unpack(params_plus)
-        bf_minus, rm_minus, rs_minus = _unpack(params_minus)
-
-        ll_plus = _mixed_logit_ll_numpy(
-            bf_plus,
-            rm_plus,
-            rs_plus,
-            random_distributions,
-            draws,
-            design_matrix,
-            chosen,
-            random_col_indices,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-        ll_minus = _mixed_logit_ll_numpy(
-            bf_minus,
-            rm_minus,
-            rs_minus,
-            random_distributions,
-            draws,
-            design_matrix,
-            chosen,
-            random_col_indices,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-
-        grad[i] = (ll_plus - ll_minus) / (2 * eps)
-
-    return grad
-
-
 # ---------------------------------------------------------------------------
 # MixedLogit model class
 # ---------------------------------------------------------------------------
@@ -755,7 +657,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
     Examples
     --------
     >>> from locpick import ChoiceTable
-    >>> from locpick.models.mixed import MixedLogit, ParamDistribution
+    >>> from .mixed import MixedLogit, ParamDistribution
     >>> ct = ChoiceTable.from_tables(choosers, alternatives, chosen)
     >>> model = MixedLogit(
     ...     ct, formula="cost + time - 1",
@@ -910,11 +812,9 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         """Build optimization objective for mixed logit estimation."""
         random_col_indices = self._random_col_indices
         random_distributions = self._random_distributions
-        k_fixed = self._k_fixed
-        k_random = self._k_random
 
         if self._is_spatial:
-            from locpick._jax.builders import build_mscl_objective
+            from .._jax.builders import build_mscl_objective
 
             return build_mscl_objective(
                 arrays,
@@ -928,7 +828,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
 
         backend = (self._backend or os.environ.get("LOCPICK_MIXED_BACKEND", "")).lower()
         if backend != "numpy":
-            from locpick._jax.builders import build_mixed_logit_objective
+            from .._jax.builders import build_mixed_logit_objective
 
             return build_mixed_logit_objective(
                 arrays,
@@ -937,58 +837,8 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
                 draws=self._draws,
             )
 
-        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
-        chosen = np.asarray(arrays.chosen, dtype=np.float64)
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        available = arrays.available
-        weights = arrays.weights
-
-        from locpick._sampling.correction import get_sampling_correction
-
-        inclusion_probs = get_sampling_correction(arrays)
-
-        def ll_fn(params):
-            beta_fixed = params[:k_fixed]
-            beta_random_means = params[k_fixed : k_fixed + k_random]
-            beta_random_spreads = params[k_fixed + k_random :]
-            return _mixed_logit_ll_numpy(
-                beta_fixed,
-                beta_random_means,
-                beta_random_spreads,
-                random_distributions,
-                self._draws,
-                dm,
-                chosen,
-                random_col_indices,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        def grad_fn(params):
-            return _mixed_logit_gradient_numpy(
-                params,
-                random_col_indices,
-                k_fixed,
-                k_random,
-                random_distributions,
-                self._draws,
-                dm,
-                chosen,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        return Objective.from_numpy(
-            ll_fn=ll_fn,
-            grad_fn=grad_fn,
-            param_names=list(self._full_param_names),
+        raise NotImplementedError(
+            "MixedMNL NumPy backend has been removed. Use ChoiceModel (JAX backend)."
         )
 
     def _build_fit_result(
@@ -1289,7 +1139,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         V = (dm @ beta_full).reshape(n_obs, n_alts)
 
         # Add sampling correction if present
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V = apply_sampling_correction(V, arrays)
 
@@ -1321,7 +1171,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
             Simulated choices with columns ``draw``, ``obs_id``,
             ``alt_id``, and ``probability``.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before simulation.")
@@ -1390,7 +1240,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -1436,7 +1286,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -1490,7 +1340,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -1544,7 +1394,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -1592,7 +1442,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Sandwich (robust) covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1631,7 +1481,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Cluster-robust covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1773,7 +1623,7 @@ class MixedMNL(BaseChoiceModel, SpatialMixin):
             draws = self._draws
 
         # Resolve canonical sampling correction tensor.
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         sampling_correction = get_sampling_correction(arrays)
 

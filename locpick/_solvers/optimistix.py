@@ -66,10 +66,6 @@ class OptimistixSolver:
         for multi-start runs (only used when ``n_starts > 1``).
     seed : int
         Random seed for multi-start perturbations.
-    compute_hessian : bool
-        Kept for API compatibility.  Hessian is now computed lazily by
-        the model via :meth:`Objective.hessian` when standard errors
-        are requested, rather than eagerly in the solver.
     """
 
     # Map of method names to Optimistix solver constructors
@@ -90,7 +86,6 @@ class OptimistixSolver:
         n_starts: int = 1,
         start_scale: float = 1.0,
         seed: int = 0,
-        compute_hessian: bool = True,
     ):
         self.method = method
         self.rtol = rtol
@@ -100,7 +95,6 @@ class OptimistixSolver:
         self.n_starts = n_starts
         self.start_scale = start_scale
         self.seed = seed
-        self.compute_hessian = compute_hessian
 
     def _make_solver(self):
         """Create the Optimistix solver instance."""
@@ -198,7 +192,7 @@ class OptimistixSolver:
         -------
         SolverResult
         """
-        from locpick._jax.objective import Objective
+        from .._jax.objective import Objective
 
         if not isinstance(objective, Objective):
             raise TypeError("OptimistixSolver.solve expects an Objective instance.")
@@ -262,7 +256,6 @@ class OptimistixSolver:
                         "rtol": float(self.rtol),
                         "atol": float(self.atol),
                         "maxiter": int(self.maxiter),
-                        "compute_hessian": bool(self.compute_hessian),
                         "n_starts": int(self.n_starts),
                         "start_scale": float(self.start_scale),
                         "seed": int(self.seed),
@@ -436,7 +429,6 @@ class OptimistixSolver:
             "rtol": float(self.rtol),
             "atol": float(self.atol),
             "maxiter": int(self.maxiter),
-            "compute_hessian": bool(self.compute_hessian),
             "n_starts": int(self.n_starts),
             "start_scale": float(self.start_scale),
             "seed": int(self.seed),

@@ -16,23 +16,23 @@ The kernels are standalone, testable, composable JAX functions that can be
 JIT-compiled and vmap'd independently of any model class.
 """
 
-from locpick._jax.builders import (
+from .builders import (
     build_mixed_logit_objective,
     build_mnl_objective,
     build_mscl_objective,
     build_nested_objective,
     build_scl_objective,
 )
-from locpick._jax.data import ChoiceDataJAX, EdgeDataJAX
-from locpick._jax.kernels import (
+from .data import ChoiceDataJAX, EdgeDataJAX
+from .kernels import (
     mixed_logit_ll,
     mnl_log_probs,
     mnl_probs,
     nested_log_probs,
     scl_log_probs,
 )
-from locpick._jax.objective import Objective
-from locpick._jax.transforms import Identity, ParamTransform, Sigmoid, SoftPlus
+from .objective import Objective
+from .transforms import Identity, ParamTransform, Sigmoid, SoftPlus
 
 __all__ = [
     "ChoiceDataJAX",

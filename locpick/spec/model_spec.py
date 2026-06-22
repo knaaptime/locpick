@@ -7,7 +7,7 @@ and generated interaction variables.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Optional
 
 from .terms import InteractionTerm, ScopedTerm, interaction
 
@@ -198,7 +198,7 @@ class ModelSpec:
         import numpy as np
         import pandas as pd
 
-        from locpick.data import ChoiceArrays
+        from ..data import ChoiceArrays
 
         df = data.to_frame()
         n_obs = data.n_observations
@@ -328,44 +328,3 @@ class ModelSpec:
         elif self.scoped_terms:
             return f"ModelSpec(scoped_terms={self.scoped_terms!r})"
         return "ModelSpec()"
-
-
-# Backward-compat re-export. The real implementation is in locpick.models.mixed.
-@dataclass
-class ParamDistribution:
-    """Distribution specification for a random parameter (mixed logit).
-
-    .. deprecated::
-        Import from ``locpick.mixed`` or ``locpick`` instead.
-        This stub is kept for backward compatibility.
-
-    Parameters
-    ----------
-    distribution : str
-        Distribution name: ``"normal"``, ``"lognormal"``,
-        ``"triangular"``, or ``"uniform"``.
-    param : ParamRef or str
-        The parameter to assign a random distribution to.
-    """
-
-    distribution: str
-    param: Union[Any, str]
-
-    def __post_init__(self) -> None:
-        valid = {"normal", "lognormal", "triangular", "uniform"}
-        if self.distribution not in valid:
-            raise ValueError(
-                f"Unknown distribution '{self.distribution}'. Must be one of {valid}."
-            )
-
-    @property
-    def param_name(self) -> str:
-        """Return the parameter name as a string."""
-        if hasattr(self.param, "name"):
-            return self.param.name
-        return str(self.param)
-
-    @property
-    def n_params(self) -> int:
-        """Number of distribution parameters (always 2: mean and spread)."""
-        return 2

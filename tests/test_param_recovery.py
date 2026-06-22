@@ -13,7 +13,7 @@ because MLE estimates have sampling variability.
 
 import numpy.testing as npt
 
-from locpick import MNL
+from locpick import ChoiceModel
 from locpick.dgp import (
     simulate_mixed_logit,
     simulate_mnl,
@@ -21,8 +21,7 @@ from locpick.dgp import (
     simulate_nested_logit,
     simulate_scl,
 )
-from locpick.models.mixed import MixedMNL, ParamDistribution
-from locpick.models.nested import NestedMNL
+from locpick.models.mixed import ParamDistribution
 
 # ---------------------------------------------------------------------------
 # MNL parameter recovery
@@ -35,7 +34,7 @@ class TestMNLRecovery:
     def test_mnl_recovers_alt_and_interaction_params(self):
         """MNL should recover both alternative-level and interaction parameters."""
         dataset = simulate_mnl(n_obs=10000, n_alts=6, seed=2026)
-        model = MNL(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -58,7 +57,7 @@ class TestMNLRecovery:
             interaction_params={},
             seed=42,
         )
-        model = MNL(dataset.choice_table, "alt_feature - 1")
+        model = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -79,7 +78,7 @@ class TestNestedLogitRecovery:
     def test_nested_logit_recovers_beta_params(self):
         """Nested logit should recover beta coefficients within tolerance."""
         dataset = simulate_nested_logit(n_obs=10000, n_alts=4, seed=2026)
-        model = NestedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time - 1",
             nests=dataset.nests,
@@ -98,7 +97,7 @@ class TestNestedLogitRecovery:
     def test_nested_logit_recovers_lambda_params(self):
         """Nested logit should recover nest dissimilarity parameters."""
         dataset = simulate_nested_logit(n_obs=10000, n_alts=4, seed=2026)
-        model = NestedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time - 1",
             nests=dataset.nests,
@@ -122,7 +121,7 @@ class TestNestedLogitRecovery:
             nest_lambdas={"transit": 0.99, "auto": 0.99},
             seed=42,
         )
-        model = NestedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time - 1",
             nests=dataset.nests,
@@ -145,7 +144,7 @@ class TestSCLRecovery:
     def test_scl_recovers_beta_params(self):
         """SCL should recover beta coefficients within tolerance."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -164,7 +163,7 @@ class TestSCLRecovery:
     def test_scl_recovers_rho(self):
         """SCL should recover the dissimilarity parameter ρ."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -182,7 +181,7 @@ class TestSCLRecovery:
     def test_scl_mnl_data_rho_near_one(self):
         """When data is MNL (rho≈1), estimated rho should be > 0."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.99, seed=42)
-        model = MNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -204,7 +203,7 @@ class TestMixedLogitRecovery:
     def test_mixed_logit_recovers_fixed_params(self):
         """Mixed logit should recover fixed coefficients within tolerance."""
         dataset = simulate_mixed_logit(n_obs=5000, n_alts=4, seed=2026)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             random_params={
@@ -226,7 +225,7 @@ class TestMixedLogitRecovery:
     def test_mixed_logit_recovers_random_param_means(self):
         """Mixed logit should recover random coefficient means."""
         dataset = simulate_mixed_logit(n_obs=5000, n_alts=4, seed=2026)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             random_params={
@@ -248,7 +247,7 @@ class TestMixedLogitRecovery:
     def test_mixed_logit_zero_spread_reduces_to_mnl(self):
         """When all spreads are zero, mixed logit should recover MNL params."""
         dataset = simulate_mnl(n_obs=10000, n_alts=4, seed=42)
-        model = MNL(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -269,7 +268,7 @@ class TestMSCLRecovery:
     def test_mscl_recovers_fixed_params(self):
         """MSCL should recover fixed coefficients within tolerance."""
         dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -290,7 +289,7 @@ class TestMSCLRecovery:
     def test_mscl_recovers_rho(self):
         """MSCL should recover the dissimilarity parameter ρ."""
         dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
-        model = MixedMNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,
@@ -313,7 +312,7 @@ class TestMSCLRecovery:
     def test_mscl_no_random_params_recovers_scl(self):
         """MSCL with no random params should behave like SCL."""
         dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=42)
-        model = MNL(
+        model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
             graph=dataset.adjacency,

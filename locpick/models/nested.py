@@ -39,15 +39,16 @@ from typing import Optional, Union
 import numpy as np
 import pandas as pd
 
-from locpick._jax.objective import Objective
-from locpick._solvers import Solver, SolverResult
-from locpick.data.arrays import ChoiceArrays
-from locpick.models._spatial import (
+from .._jax.objective import Objective
+from .._solvers import Solver, SolverResult
+from ..data.arrays import ChoiceArrays
+from ..results.fit_result import FitResult
+from ._spatial import (
     EdgeStructure,
     _resolve_spatial_graph,
     naturalize_rho,
 )
-from locpick.models.base import (
+from .base import (
     BaseChoiceModel,
     SpatialMixin,
     _compute_fit_statistics,
@@ -55,7 +56,6 @@ from locpick.models.base import (
     _safe_inv,
     _sandwich_inv,
 )
-from locpick.results.fit_result import FitResult
 
 # ---------------------------------------------------------------------------
 # Nest specification
@@ -266,7 +266,7 @@ def _nested_logit_probs_numpy(
     else:
         avail = np.ones((n_obs, n_alts), dtype=np.float64)
 
-    from locpick._kernels.constants import NEG_INF
+    from .._kernels.constants import NEG_INF
 
     utilities = np.where(avail > 0, utilities, NEG_INF)
 
@@ -385,77 +385,6 @@ def _nested_logit_ll_numpy(
     return float(log_chosen.sum())
 
 
-def _nested_logit_gradient_numpy(
-    beta: np.ndarray,
-    alpha: np.ndarray,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    nest_matrix: np.ndarray,
-    n_obs: int,
-    n_alts: int,
-    available: Optional[np.ndarray] = None,
-    inclusion_probs: Optional[np.ndarray] = None,
-    weights: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """Compute nested logit gradient via finite differences (NumPy backend).
-
-    This is a fallback gradient that uses finite differences. A proper
-    analytical gradient will be implemented in a future version.
-
-    Parameters
-    ----------
-    beta, alpha, design_matrix, chosen, nest_matrix, n_obs, n_alts, available, inclusion_probs, weights
-        See :func:`_nested_logit_ll_numpy`.
-
-    Returns
-    -------
-    np.ndarray, shape (k + n_nests,)
-        Gradient of the log-likelihood with respect to [beta, alpha].
-    """
-    params = np.concatenate([beta, alpha])
-    eps = 1e-5
-    n_params = len(params)
-    grad = np.zeros(n_params)
-
-    for i in range(n_params):
-        params_plus = params.copy()
-        params_plus[i] += eps
-        params_minus = params.copy()
-        params_minus[i] -= eps
-
-        beta_plus, alpha_plus = params_plus[: len(beta)], params_plus[len(beta) :]
-        beta_minus, alpha_minus = params_minus[: len(beta)], params_minus[len(beta) :]
-
-        ll_plus = _nested_logit_ll_numpy(
-            beta_plus,
-            alpha_plus,
-            design_matrix,
-            chosen,
-            nest_matrix,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-        ll_minus = _nested_logit_ll_numpy(
-            beta_minus,
-            alpha_minus,
-            design_matrix,
-            chosen,
-            nest_matrix,
-            n_obs,
-            n_alts,
-            available=available,
-            inclusion_probs=inclusion_probs,
-            weights=weights,
-        )
-
-        grad[i] = (ll_plus - ll_minus) / (2 * eps)
-
-    return grad
-
-
 # ---------------------------------------------------------------------------
 # NestedLogit model class
 # ---------------------------------------------------------------------------
@@ -485,7 +414,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
     Examples
     --------
     >>> from locpick import ChoiceTable, MultinomialLogit
-    >>> from locpick.models.nested import NestedLogit, NestSpec, NestingTree
+    >>> from .nested import NestedLogit, NestSpec, NestingTree
     >>> nests = NestingTree([
     ...     NestSpec("transit", alt_ids=[0, 1, 2]),
     ...     NestSpec("auto", alt_ids=[3, 4]),
@@ -551,7 +480,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         self._validate_graph_size(arrays)
 
         # Build per-nest EdgeStructure / EdgeDataJAX from the global graph.
-        from locpick._jax.data import EdgeDataJAX
+        from .._jax.data import EdgeDataJAX
 
         n_nests = self._nests.n_nests
         self._edge_structs = []
@@ -599,67 +528,19 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         nest_matrix = self._nest_matrix
 
         if self._is_spatial:
-            from locpick._jax.builders import build_nested_scl_objective
+            from .._jax.builders import build_nested_scl_objective
 
             return build_nested_scl_objective(arrays, nest_matrix, self._edge_data_list)
 
         # Try JAX backend first (default when available)
         backend = (self._backend or os.environ.get("LOCPICK_NESTED_BACKEND", "")).lower()
         if backend != "numpy":
-            from locpick._jax.builders import build_nested_objective
+            from .._jax.builders import build_nested_objective
 
             return build_nested_objective(arrays, nest_matrix)
 
-        # NumPy backend
-        dm = np.asarray(arrays.design_matrix, dtype=np.float64)
-        chosen = np.asarray(arrays.chosen, dtype=np.float64)
-        n_obs = arrays.n_obs
-        n_alts = arrays.n_alts
-        available = arrays.available
-        weights = arrays.weights
-
-        from locpick._sampling.correction import get_sampling_correction
-
-        inclusion_probs = get_sampling_correction(arrays)
-        k = dm.shape[1]
-
-        def ll_fn(params):
-            beta = params[:k]
-            alpha = params[k:]
-            return _nested_logit_ll_numpy(
-                beta,
-                alpha,
-                dm,
-                chosen,
-                nest_matrix,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        def grad_fn(params):
-            beta = params[:k]
-            alpha = params[k:]
-            return _nested_logit_gradient_numpy(
-                beta,
-                alpha,
-                dm,
-                chosen,
-                nest_matrix,
-                n_obs,
-                n_alts,
-                available=available,
-                inclusion_probs=inclusion_probs,
-                weights=weights,
-            )
-
-        return Objective.from_numpy(
-            ll_fn=ll_fn,
-            grad_fn=grad_fn,
-            param_names=list(arrays.param_names)
-            + [f"nest_{name}" for name in self._nests.nest_names],
+        raise NotImplementedError(
+            "NestedMNL NumPy backend has been removed. Use ChoiceModel (JAX backend)."
         )
 
     def _build_fit_result(
@@ -895,7 +776,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         V = (dm @ beta).reshape(n_obs, n_alts)
 
         # Add sampling correction if present
-        from locpick._sampling.correction import apply_sampling_correction
+        from .._sampling.correction import apply_sampling_correction
 
         V = apply_sampling_correction(V, arrays)
 
@@ -927,7 +808,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
             Simulated choices with columns ``draw``, ``obs_id``,
             ``alt_id``, and ``probability``.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before simulation.")
@@ -996,7 +877,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -1043,7 +924,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-marginal effects, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing marginal effects.")
@@ -1094,7 +975,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Direct elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -1142,7 +1023,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         pd.Series
             Cross-elasticities, indexed by (obs_id, alt_id).
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated before computing elasticities.")
@@ -1188,7 +1069,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Sandwich (robust) covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1227,7 +1108,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         np.ndarray, shape (n_parameters, n_parameters)
             Cluster-robust covariance matrix.
         """
-        from locpick.data.choicetable import ChoiceTable
+        from ..data.choicetable import ChoiceTable
 
         if self._arrays is None:
             raise RuntimeError("Model must be estimated first.")
@@ -1342,7 +1223,7 @@ class NestedMNL(BaseChoiceModel, SpatialMixin):
         nest_matrix = self._nests.build_nest_matrix(alt_ids)
 
         # Resolve canonical sampling correction tensor.
-        from locpick._sampling.correction import get_sampling_correction
+        from .._sampling.correction import get_sampling_correction
 
         sampling_correction = get_sampling_correction(arrays)
 

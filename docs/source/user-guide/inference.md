@@ -40,8 +40,8 @@ Compare two nested models:
 ```python
 from locpick import lr_test
 
-restricted = MNL(ct, formula="cost + time").fit()
-unrestricted = NestedMNL(ct, formula="cost + time", nests=tree).fit()
+restricted = ChoiceModel(ct, formula="cost + time").fit()
+unrestricted = ChoiceModel(ct, formula="cost + time", nests=tree).fit()
 
 result = lr_test(restricted, unrestricted)
 print(result.summary())
@@ -75,8 +75,8 @@ restrictive nested or mixed alternative:
 ```python
 from locpick import hausman_test
 
-mnl_fit = MNL(ct, formula="cost + time").fit()
-nested_fit = NestedMNL(ct, formula="cost + time", nests=tree).fit()
+mnl_fit = ChoiceModel(ct, formula="cost + time").fit()
+nested_fit = ChoiceModel(ct, formula="cost + time", nests=tree).fit()
 
 # H0: MNL is consistent (IIA holds). Compare on the common parameters.
 result = hausman_test(efficient=mnl_fit, consistent=nested_fit)

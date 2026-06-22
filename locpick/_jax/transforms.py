@@ -71,6 +71,21 @@ class SoftPlus:
         return jnp.log(jnp.maximum(jax_sigmoid(x), 1e-30))
 
 
+class Tanh:
+    """Tanh transformation: x → tanh(x).
+
+    Maps unconstrained parameters to (-1, 1).  Used for the SAR
+    spatial autoregressive parameter ρ ∈ (-1, 1).
+    """
+
+    def constrain(self, x: jnp.ndarray) -> jnp.ndarray:
+        return jnp.tanh(x)
+
+    def log_det_jac(self, x: jnp.ndarray) -> jnp.ndarray:
+        """log |d(tanh(x))/dx| = log(1 - tanh(x)^2) = log(sech^2(x))."""
+        return jnp.log(jnp.maximum(1.0 - jnp.tanh(x) ** 2, 1e-30))
+
+
 class Exp:
     """Exponential transformation: x → exp(x).
 
@@ -100,7 +115,7 @@ class ParamTransform:
 
     Examples
     --------
-    >>> from locpick._jax.transforms import ParamTransform, Identity, Sigmoid
+    >>> from .transforms import ParamTransform, Identity, Sigmoid
     >>> # SCL model: [beta_0, beta_1, rho] → [beta_0, beta_1, sigmoid(alpha_rho)]
     >>> pt = ParamTransform([Identity(), Identity(), Sigmoid(0, 1)])
     >>> x = jnp.array([0.5, -0.1, 0.0])
@@ -179,6 +194,22 @@ class ParamTransform:
         transforms.extend([Identity()] * k_random)  # random means
         transforms.extend([SoftPlus()] * k_random)  # random spreads
         return cls(transforms)
+
+    @classmethod
+    def for_sar_mnl(cls, k: int):
+        """Create a transform for SAR-MNL models.
+
+        Parameters
+        ----------
+        k : int
+            Number of utility coefficients (beta parameters).
+
+        Returns
+        -------
+        ParamTransform
+            Transform with Identity for betas and Tanh for rho.
+        """
+        return cls([Identity()] * k + [Tanh()])
 
     @classmethod
     def from_bounds(cls, bounds: list[tuple[float, float] | None]):

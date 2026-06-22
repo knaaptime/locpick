@@ -1,8 +1,7 @@
 """JAX-ready data containers for choice model estimation.
 
 These containers hold pre-converted JAX arrays, built once and shared
-across all solvers.  They replace the ad-hoc numpy→JAX conversion that
-was duplicated inside each model's ``_build_*_jax`` closure.
+across all solvers.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from locpick._sampling.correction import get_sampling_correction
+from .._sampling.correction import get_sampling_correction
 
 
 @jax.tree_util.register_pytree_node_class

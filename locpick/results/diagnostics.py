@@ -14,7 +14,7 @@ from scipy import stats
 from scipy.linalg import cho_factor, cho_solve
 
 if TYPE_CHECKING:
-    from locpick.results.fit_result import FitResult
+    from .fit_result import FitResult
 
 
 @dataclass
