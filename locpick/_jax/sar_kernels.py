@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import scipy.sparse as sp
 
 from .data import ChoiceDataJAX
@@ -30,7 +31,7 @@ from .kernels import (
     nested_log_probs,
 )
 from .objective import Objective
-from .transforms import Identity, ParamTransform, Sigmoid, SoftPlus, Tanh
+from .transforms import Identity, ParamTransform, Sigmoid, Tanh
 
 # Threshold for switching from dense solve to conjugate gradient.
 _DENSE_CUTOFF = 2000
@@ -80,9 +81,9 @@ def _sar_mnl_ll_core(
     A = jnp.eye(n_alts) - rho * W_dense
     V_filtered = jax.scipy.linalg.solve(A, V_base.T).T  # (n_obs, n_alts)
 
-    # Variance normalisation: D = diag(A^{-1})
-    A_inv = jax.scipy.linalg.inv(A)
-    D = jnp.diag(A_inv)  # (n_alts,)
+    # Variance normalisation: D = diag(A^{-1}) via power series
+    # (avoids O(J³) full inverse — same approach as CG path)
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]  # normalise each alternative by d_jj
 
     # MNL log-probabilities
@@ -110,8 +111,7 @@ def _sar_mnl_ll_contribs_core(
 
     A = jnp.eye(n_alts) - rho * W_dense
     V_filtered = jax.scipy.linalg.solve(A, V_base.T).T
-    A_inv = jax.scipy.linalg.inv(A)
-    D = jnp.diag(A_inv)
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = mnl_log_probs(V_star, available)
@@ -311,7 +311,7 @@ def build_sar_mnl_objective(arrays, W_sparse: sp.csr_array, use_cg: bool = False
 
 
 # ---------------------------------------------------------------------------
-# SAR + Nested
+# SAR-Nested Logit
 # ---------------------------------------------------------------------------
 
 
@@ -323,22 +323,18 @@ def _sar_nested_ll_core(
     weights,
     inclusion_probs,
     W_dense,
-    nest_matrix,
     n_obs,
     n_alts,
+    nest_matrix,
+    k,
     n_nests,
 ):
-    """SAR + Nested PML log-likelihood.
-
-    Layout: [beta_1..k, alpha_rho, alpha_lambda_1..M]
-    Spatial filter applied to utilities, then nested GEV.
-    """
-    k = design_matrix.shape[1]
+    """SAR-Nested PML log-likelihood — dense solve path."""
     beta = params[:k]
     alpha_rho = params[k]
     alpha_lambdas = params[k + 1 : k + 1 + n_nests]
     rho = jnp.tanh(alpha_rho)
-    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))  # sigmoid → (0, 1]
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
 
     V_base = compute_utilities(
         design_matrix,
@@ -348,29 +344,172 @@ def _sar_nested_ll_core(
         inclusion_probs=inclusion_probs,
         available=available,
     )
-
     A = jnp.eye(n_alts) - rho * W_dense
     V_filtered = jax.scipy.linalg.solve(A, V_base.T).T
-    D = jnp.diag(jax.scipy.linalg.inv(A))
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
     return compute_ll(log_probs, chosen, weights)
 
 
-def build_sar_nested_objective(arrays, W_sparse, nest_matrix) -> Objective:
-    """Build Objective for SAR + Nested estimation."""
+def _sar_nested_ll_cg_core(
+    params,
+    design_matrix,
+    available,
+    chosen,
+    weights,
+    inclusion_probs,
+    W_dense,
+    n_obs,
+    n_alts,
+    nest_matrix,
+    k,
+    n_nests,
+):
+    """SAR-Nested PML log-likelihood — CG solve path."""
+    beta = params[:k]
+    alpha_rho = params[k]
+    alpha_lambdas = params[k + 1 : k + 1 + n_nests]
+    rho = jnp.tanh(alpha_rho)
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+
+    V_base = compute_utilities(
+        design_matrix,
+        beta,
+        n_obs,
+        n_alts,
+        inclusion_probs=inclusion_probs,
+        available=available,
+    )
+    A = jnp.eye(n_alts) - rho * W_dense
+    V_filtered = _cg_solve(A, V_base.T, n_alts).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    V_star = V_filtered / D[None, :]
+
+    log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
+    return compute_ll(log_probs, chosen, weights)
+
+
+def _sar_nested_ll_contribs_core(
+    params,
+    design_matrix,
+    available,
+    chosen,
+    weights,
+    inclusion_probs,
+    W_dense,
+    n_obs,
+    n_alts,
+    nest_matrix,
+    k,
+    n_nests,
+):
+    """SAR-Nested per-observation LL contributions — dense path."""
+    beta = params[:k]
+    alpha_rho = params[k]
+    alpha_lambdas = params[k + 1 : k + 1 + n_nests]
+    rho = jnp.tanh(alpha_rho)
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+
+    V_base = compute_utilities(
+        design_matrix,
+        beta,
+        n_obs,
+        n_alts,
+        inclusion_probs=inclusion_probs,
+        available=available,
+    )
+    A = jnp.eye(n_alts) - rho * W_dense
+    V_filtered = jax.scipy.linalg.solve(A, V_base.T).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    V_star = V_filtered / D[None, :]
+
+    log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
+    return compute_ll_contribs(log_probs, chosen, weights)
+
+
+def _sar_nested_ll_contribs_cg_core(
+    params,
+    design_matrix,
+    available,
+    chosen,
+    weights,
+    inclusion_probs,
+    W_dense,
+    n_obs,
+    n_alts,
+    nest_matrix,
+    k,
+    n_nests,
+):
+    """SAR-Nested per-observation LL contributions — CG path."""
+    beta = params[:k]
+    alpha_rho = params[k]
+    alpha_lambdas = params[k + 1 : k + 1 + n_nests]
+    rho = jnp.tanh(alpha_rho)
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+
+    V_base = compute_utilities(
+        design_matrix,
+        beta,
+        n_obs,
+        n_alts,
+        inclusion_probs=inclusion_probs,
+        available=available,
+    )
+    A = jnp.eye(n_alts) - rho * W_dense
+    V_filtered = _cg_solve(A, V_base.T, n_alts).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    V_star = V_filtered / D[None, :]
+
+    log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
+    return compute_ll_contribs(log_probs, chosen, weights)
+
+
+def build_sar_nested_objective(
+    arrays,
+    W_sparse: sp.csr_array,
+    nest_matrix: np.ndarray,
+    use_cg: bool = False,
+) -> Objective:
+    """Build an Objective for SAR-Nested PML estimation.
+
+    Applies the SAR spatial filter globally, then applies nested logit
+    nesting structure to the spatially-filtered utilities.
+
+    Parameters
+    ----------
+    arrays : ChoiceArrays
+    W_sparse : scipy.sparse.csr_array
+        Row-standardised alt×alt spatial weights matrix.
+    nest_matrix : np.ndarray, shape (n_alts, n_nests)
+        Alternative-to-nest membership matrix.
+    use_cg : bool, default False
+        If True, use conjugate-gradient solve for large n_alts.
+
+    Returns
+    -------
+    Objective
+    """
     data = ChoiceDataJAX.from_arrays(arrays)
     W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
     k = arrays.design_matrix.shape[1]
+    nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
     n_nests = nest_matrix.shape[1]
-    nest_matrix_jax = jnp.array(nest_matrix, dtype=jnp.float64)
+
+    if use_cg:
+        ll_core = _sar_nested_ll_cg_core
+        ll_contribs_core = _sar_nested_ll_contribs_cg_core
+    else:
+        ll_core = _sar_nested_ll_core
+        ll_contribs_core = _sar_nested_ll_contribs_core
 
     @jax.jit
     def _ll_jax(params):
-        return _sar_nested_ll_core(
+        return ll_core(
             params,
             data.design_matrix,
             data.available,
@@ -378,15 +517,33 @@ def build_sar_nested_objective(arrays, W_sparse, nest_matrix) -> Objective:
             data.weights,
             data.inclusion_probs,
             W_dense,
-            nest_matrix_jax,
             n_obs,
             n_alts,
+            nest_matrix_jax,
+            k,
+            n_nests,
+        )
+
+    @jax.jit
+    def _ll_contribs_jax(params):
+        return ll_contribs_core(
+            params,
+            data.design_matrix,
+            data.available,
+            data.chosen,
+            data.weights,
+            data.inclusion_probs,
+            W_dense,
+            n_obs,
+            n_alts,
+            nest_matrix_jax,
+            k,
             n_nests,
         )
 
     @jax.jit
     def _grad_jax(params):
-        return jax.grad(_sar_nested_ll_core, argnums=0)(
+        return jax.grad(ll_core, argnums=0)(
             params,
             data.design_matrix,
             data.available,
@@ -394,131 +551,167 @@ def build_sar_nested_objective(arrays, W_sparse, nest_matrix) -> Objective:
             data.weights,
             data.inclusion_probs,
             W_dense,
-            nest_matrix_jax,
             n_obs,
             n_alts,
+            nest_matrix_jax,
+            k,
             n_nests,
         )
 
-    param_names = list(arrays.param_names) + ["rho"]
-    param_names += [f"lambda_{i}" for i in range(n_nests)]
-    # Transform: Identity for beta, Tanh for rho, Sigmoid for lambdas
-    transforms = [Identity()] * k + [Tanh()] + [Sigmoid(0, 1)] * n_nests
-    transform = ParamTransform(transforms)
+    param_names = list(arrays.param_names) + ["rho"] + [f"lambda_{i}" for i in range(n_nests)]
+    transforms = [Identity() for _ in range(k)] + [Tanh()] + [Sigmoid() for _ in range(n_nests)]
+    transform = ParamTransform(transforms=transforms)
 
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
     )
 
 
 # ---------------------------------------------------------------------------
-# SAR + Mixed
+# SAR-Mixed Logit
 # ---------------------------------------------------------------------------
 
 
 def _sar_mixed_ll_core(
     params,
-    dm_fixed,
-    dm_random,
-    available,
-    chosen,
-    weights,
-    inclusion_probs,
+    data,
     W_dense,
-    dist_codes,
-    draws,
     n_obs,
     n_alts,
     k_fixed,
     k_random,
     n_draws,
+    use_cg: bool,
 ):
-    """SAR + Mixed simulated PML log-likelihood.
+    """SAR-Mixed simulated PML log-likelihood."""
+    from .kernels import mixed_logit_ll
 
-    Layout: [beta_fixed, alpha_rho, mean_*, sd_*]
-    Spatial filter applied to fixed utility; random part added after.
-    """
     beta_fixed = params[:k_fixed]
     alpha_rho = params[k_fixed]
     beta_random_means = params[k_fixed + 1 : k_fixed + 1 + k_random]
     beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
     rho = jnp.tanh(alpha_rho)
-    spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))  # softplus
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    # Fixed utility
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    else:
+        v_fixed = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    # Apply SAR filter to fixed utility
+    A = jnp.eye(n_alts) - rho * W_dense
+    if use_cg:
+        v_fixed_filtered = _cg_solve(A, v_fixed.T, n_alts).T
+    else:
+        v_fixed_filtered = jax.scipy.linalg.solve(A, v_fixed.T).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    v_fixed_star = v_fixed_filtered / D[None, :]
+
+    return mixed_logit_ll(
+        V_fixed=v_fixed_star,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+    )
+
+
+def _sar_mixed_ll_contribs_core(
+    params,
+    data,
+    W_dense,
+    n_obs,
+    n_alts,
+    k_fixed,
+    k_random,
+    n_draws,
+    use_cg: bool,
+):
+    """SAR-Mixed per-observation LL contributions."""
+    from .kernels import mixed_logit_ll_contribs
+
+    beta_fixed = params[:k_fixed]
+    alpha_rho = params[k_fixed]
+    beta_random_means = params[k_fixed + 1 : k_fixed + 1 + k_random]
+    beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
+    rho = jnp.tanh(alpha_rho)
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    else:
+        v_fixed = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     A = jnp.eye(n_alts) - rho * W_dense
-    A_inv = jax.scipy.linalg.inv(A)
-    D = jnp.diag(A_inv)
-
-    # Fixed utility (spatially filtered + normalised)
-    if dm_fixed is not None and k_fixed > 0:
-        V_fixed_base = (dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    if use_cg:
+        v_fixed_filtered = _cg_solve(A, v_fixed.T, n_alts).T
     else:
-        V_fixed_base = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+        v_fixed_filtered = jax.scipy.linalg.solve(A, v_fixed.T).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    v_fixed_star = v_fixed_filtered / D[None, :]
 
-    if inclusion_probs is not None:
-        V_fixed_base = V_fixed_base + jnp.log(jnp.maximum(inclusion_probs, 1e-30))
-
-    V_fixed_filtered = jax.scipy.linalg.solve(A, V_fixed_base.T).T
-    V_fixed_star = V_fixed_filtered / D[None, :]
-
-    # Simulated likelihood: average over draws
-    means = beta_random_means[None, :]
-
-    def _prob_single_draw(r):
-        z_r = draws[:, r, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50, 50))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        abs_z = jnp.abs(z_r)
-        tri_sign = jnp.where(z_r >= 0, 1.0, -1.0)
-        beta_triangular = means + spreads * tri_sign * (jnp.sqrt(2.0 * abs_z) - 1.0)
-
-        beta_r = jnp.where(
-            dist_codes == 0,
-            beta_normal,
-            jnp.where(
-                dist_codes == 1,
-                beta_lognormal,
-                jnp.where(dist_codes == 2, beta_triangular, beta_uniform),
-            ),
-        )  # (n_obs, k_random)
-
-        # Random utility: broadcast per-obs random coefficients with design matrix
-        V_random = jnp.sum(
-            dm_random.reshape(n_obs, n_alts, k_random) * beta_r[:, None, :],
-            axis=2,
-        )
-        V_total = V_fixed_star + V_random
-        V_masked = jnp.where(available > 0, V_total, -1e30)
-        log_sum_exp = jax.scipy.special.logsumexp(V_masked, axis=1)
-        log_probs = V_masked - log_sum_exp[:, None]
-        log_probs = jnp.where(available > 0, log_probs, -1e30)
-        # Per-obs probability for this draw
-        return jnp.exp((log_probs * chosen).sum(axis=1))
-
-    probs_sim = jax.vmap(_prob_single_draw)(jnp.arange(n_draws)).mean(axis=0)
-    ll = jnp.sum(jnp.log(jnp.maximum(probs_sim, 1e-30)) * weights)
-    return ll
+    return mixed_logit_ll_contribs(
+        V_fixed=v_fixed_star,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+    )
 
 
 def build_sar_mixed_objective(
-    arrays, W_sparse, random_col_indices, random_distributions, draws
+    arrays,
+    W_sparse: sp.csr_array,
+    random_col_indices,
+    random_distributions,
+    draws,
+    use_cg: bool = False,
 ) -> Objective:
-    """Build Objective for SAR + Mixed estimation."""
+    """Build an Objective for SAR-Mixed PML estimation.
+
+    Applies the SAR spatial filter to the fixed utility component, then
+    adds random utility per draw and computes simulated MNL probabilities.
+
+    Parameters
+    ----------
+    arrays : ChoiceArrays
+    W_sparse : scipy.sparse.csr_array
+    random_col_indices : list[int]
+    random_distributions : list[str]
+    draws : np.ndarray, shape (n_obs, n_draws, k_random)
+    use_cg : bool, default False
+
+    Returns
+    -------
+    Objective
+    """
     data = ChoiceDataJAX.from_arrays(
         arrays,
         draws=draws,
@@ -536,93 +729,95 @@ def build_sar_mixed_objective(
     def _ll_jax(params):
         return _sar_mixed_ll_core(
             params,
-            data.dm_fixed,
-            data.dm_random,
-            data.available,
-            data.chosen,
-            data.weights,
-            data.inclusion_probs,
+            data,
             W_dense,
-            data.dist_codes,
-            data.draws,
             n_obs,
             n_alts,
             k_fixed,
             k_random,
             n_draws,
+            use_cg,
+        )
+
+    @jax.jit
+    def _ll_contribs_jax(params):
+        return _sar_mixed_ll_contribs_core(
+            params,
+            data,
+            W_dense,
+            n_obs,
+            n_alts,
+            k_fixed,
+            k_random,
+            n_draws,
+            use_cg,
         )
 
     @jax.jit
     def _grad_jax(params):
         return jax.grad(_sar_mixed_ll_core, argnums=0)(
             params,
-            data.dm_fixed,
-            data.dm_random,
-            data.available,
-            data.chosen,
-            data.weights,
-            data.inclusion_probs,
+            data,
             W_dense,
-            data.dist_codes,
-            data.draws,
             n_obs,
             n_alts,
             k_fixed,
             k_random,
             n_draws,
+            use_cg,
         )
 
     param_names_list = list(arrays.param_names)
-    fixed_names = [name for i, name in enumerate(param_names_list) if i not in random_col_indices]
-    random_names = [param_names_list[i] for i in random_col_indices]
-    display_names = (
-        fixed_names
+    fixed_param_names = [
+        name for i, name in enumerate(param_names_list) if i not in random_col_indices
+    ]
+    random_param_names = [param_names_list[i] for i in random_col_indices]
+    display_param_names = (
+        fixed_param_names
         + ["rho"]
-        + [f"mean_{n}" for n in random_names]
-        + [f"sd_{n}" for n in random_names]
+        + [f"mean_{name}" for name in random_param_names]
+        + [f"sd_{name}" for name in random_param_names]
     )
 
     transforms = (
-        [Identity()] * k_fixed + [Tanh()] + [Identity()] * k_random + [SoftPlus()] * k_random
+        [Identity() for _ in range(k_fixed)]
+        + [Tanh()]
+        + [Identity() for _ in range(k_random)]
+        + [Identity() for _ in range(k_random)]  # softplus applied inside kernel
     )
-    transform = ParamTransform(transforms)
+    transform = ParamTransform(transforms=transforms)
 
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
-        param_names=display_names,
+        loglike_contribs_jax=_ll_contribs_jax,
+        param_names=display_param_names,
         transform=transform,
     )
 
 
 # ---------------------------------------------------------------------------
-# SAR + Mixed + Nested
+# SAR-Mixed-Nested Logit
 # ---------------------------------------------------------------------------
 
 
 def _sar_mixed_nested_ll_core(
     params,
-    dm_fixed,
-    dm_random,
-    available,
-    chosen,
-    weights,
-    inclusion_probs,
+    data,
     W_dense,
-    nest_matrix,
-    dist_codes,
-    draws,
     n_obs,
     n_alts,
+    nest_matrix,
     k_fixed,
+    n_nests,
     k_random,
     n_draws,
-    n_nests,
+    nest_alt_indices,
+    use_cg: bool,
 ):
-    """SAR + Mixed + Nested simulated PML log-likelihood.
+    """SAR-Mixed-Nested simulated PML log-likelihood."""
+    from .kernels import mixed_nested_logit_ll
 
-    Layout: [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]
-    """
     beta_fixed = params[:k_fixed]
     alpha_rho = params[k_fixed]
     alpha_lambdas = params[k_fixed + 1 : k_fixed + 1 + n_nests]
@@ -630,72 +825,136 @@ def _sar_mixed_nested_ll_core(
     beta_random_spreads_raw = params[k_fixed + 1 + n_nests + k_random :]
     rho = jnp.tanh(alpha_rho)
     lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
-    spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    # Fixed utility
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    else:
+        v_fixed = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    # Apply SAR filter to fixed utility
+    A = jnp.eye(n_alts) - rho * W_dense
+    if use_cg:
+        v_fixed_filtered = _cg_solve(A, v_fixed.T, n_alts).T
+    else:
+        v_fixed_filtered = jax.scipy.linalg.solve(A, v_fixed.T).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    v_fixed_star = v_fixed_filtered / D[None, :]
+
+    return mixed_nested_logit_ll(
+        V_fixed=v_fixed_star,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        lambdas=lambdas,
+        nest_matrix=nest_matrix,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+        n_nests=n_nests,
+    )
+
+
+def _sar_mixed_nested_ll_contribs_core(
+    params,
+    data,
+    W_dense,
+    n_obs,
+    n_alts,
+    nest_matrix,
+    k_fixed,
+    n_nests,
+    k_random,
+    n_draws,
+    nest_alt_indices,
+    use_cg: bool,
+):
+    """SAR-Mixed-Nested per-observation LL contributions."""
+    from .kernels import mixed_nested_logit_ll_contribs
+
+    beta_fixed = params[:k_fixed]
+    alpha_rho = params[k_fixed]
+    alpha_lambdas = params[k_fixed + 1 : k_fixed + 1 + n_nests]
+    beta_random_means = params[k_fixed + 1 + n_nests : k_fixed + 1 + n_nests + k_random]
+    beta_random_spreads_raw = params[k_fixed + 1 + n_nests + k_random :]
+    rho = jnp.tanh(alpha_rho)
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    else:
+        v_fixed = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     A = jnp.eye(n_alts) - rho * W_dense
-    A_inv = jax.scipy.linalg.inv(A)
-    D = jnp.diag(A_inv)
-
-    if dm_fixed is not None and k_fixed > 0:
-        V_fixed_base = (dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    if use_cg:
+        v_fixed_filtered = _cg_solve(A, v_fixed.T, n_alts).T
     else:
-        V_fixed_base = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
-    if inclusion_probs is not None:
-        V_fixed_base = V_fixed_base + jnp.log(jnp.maximum(inclusion_probs, 1e-30))
+        v_fixed_filtered = jax.scipy.linalg.solve(A, v_fixed.T).T
+    D = _diag_inv_power_series(rho, W_dense, n_alts)
+    v_fixed_star = v_fixed_filtered / D[None, :]
 
-    V_fixed_filtered = jax.scipy.linalg.solve(A, V_fixed_base.T).T
-    V_fixed_star = V_fixed_filtered / D[None, :]
-
-    means = beta_random_means[None, :]
-
-    def _prob_single_draw(r):
-        z_r = draws[:, r, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50, 50))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        abs_z = jnp.abs(z_r)
-        tri_sign = jnp.where(z_r >= 0, 1.0, -1.0)
-        beta_triangular = means + spreads * tri_sign * (jnp.sqrt(2.0 * abs_z) - 1.0)
-
-        beta_r = jnp.where(
-            dist_codes == 0,
-            beta_normal,
-            jnp.where(
-                dist_codes == 1,
-                beta_lognormal,
-                jnp.where(dist_codes == 2, beta_triangular, beta_uniform),
-            ),
-        )  # (n_obs, k_random)
-
-        # Random utility: broadcast per-obs random coefficients with design matrix
-        V_random = jnp.sum(
-            dm_random.reshape(n_obs, n_alts, k_random) * beta_r[:, None, :],
-            axis=2,
-        )
-        V_total = V_fixed_star + V_random
-        log_probs = nested_log_probs(V_total, lambdas, nest_matrix, available)
-        return jnp.exp((log_probs * chosen).sum(axis=1))
-
-    probs_sim = jax.vmap(_prob_single_draw)(jnp.arange(n_draws)).mean(axis=0)
-    ll = jnp.sum(jnp.log(jnp.maximum(probs_sim, 1e-30)) * weights)
-    return ll
+    return mixed_nested_logit_ll_contribs(
+        V_fixed=v_fixed_star,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        lambdas=lambdas,
+        nest_matrix=nest_matrix,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=n_obs,
+        n_alts=n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+        n_nests=n_nests,
+    )
 
 
 def build_sar_mixed_nested_objective(
-    arrays, W_sparse, nest_matrix, random_col_indices, random_distributions, draws
+    arrays,
+    W_sparse: sp.csr_array,
+    nest_matrix: np.ndarray,
+    random_col_indices,
+    random_distributions,
+    draws,
+    use_cg: bool = False,
 ) -> Objective:
-    """Build Objective for SAR + Mixed + Nested estimation."""
+    """Build an Objective for SAR-Mixed-Nested PML estimation.
+
+    Applies the SAR spatial filter to the fixed utility, adds random
+    utility per draw, then applies nested logit nesting.
+
+    Parameters
+    ----------
+    arrays : ChoiceArrays
+    W_sparse : scipy.sparse.csr_array
+    nest_matrix : np.ndarray, shape (n_alts, n_nests)
+    random_col_indices : list[int]
+    random_distributions : list[str]
+    draws : np.ndarray, shape (n_obs, n_draws, k_random)
+    use_cg : bool, default False
+
+    Returns
+    -------
+    Objective
+    """
     data = ChoiceDataJAX.from_arrays(
         arrays,
         draws=draws,
@@ -705,79 +964,94 @@ def build_sar_mixed_nested_objective(
     W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
-    k_fixed = len(data.fixed_col_indices) if data.fixed_col_indices else 0
-    k_random = len(random_col_indices)
-    n_draws = draws.shape[1]
+    nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
     n_nests = nest_matrix.shape[1]
-    nest_matrix_jax = jnp.array(nest_matrix, dtype=jnp.float64)
+    k = arrays.design_matrix.shape[1]
+    k_random = len(random_col_indices)
+    k_fixed = k - k_random
+    n_draws = draws.shape[1]
+
+    nest_alt_indices = tuple(
+        tuple(int(i) for i in np.where(nest_matrix[:, m] > 0)[0]) for m in range(n_nests)
+    )
 
     @jax.jit
     def _ll_jax(params):
         return _sar_mixed_nested_ll_core(
             params,
-            data.dm_fixed,
-            data.dm_random,
-            data.available,
-            data.chosen,
-            data.weights,
-            data.inclusion_probs,
+            data,
             W_dense,
-            nest_matrix_jax,
-            data.dist_codes,
-            data.draws,
             n_obs,
             n_alts,
+            nest_matrix_jax,
             k_fixed,
+            n_nests,
             k_random,
             n_draws,
+            nest_alt_indices,
+            use_cg,
+        )
+
+    @jax.jit
+    def _ll_contribs_jax(params):
+        return _sar_mixed_nested_ll_contribs_core(
+            params,
+            data,
+            W_dense,
+            n_obs,
+            n_alts,
+            nest_matrix_jax,
+            k_fixed,
             n_nests,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+            use_cg,
         )
 
     @jax.jit
     def _grad_jax(params):
         return jax.grad(_sar_mixed_nested_ll_core, argnums=0)(
             params,
-            data.dm_fixed,
-            data.dm_random,
-            data.available,
-            data.chosen,
-            data.weights,
-            data.inclusion_probs,
+            data,
             W_dense,
-            nest_matrix_jax,
-            data.dist_codes,
-            data.draws,
             n_obs,
             n_alts,
+            nest_matrix_jax,
             k_fixed,
+            n_nests,
             k_random,
             n_draws,
-            n_nests,
+            nest_alt_indices,
+            use_cg,
         )
 
     param_names_list = list(arrays.param_names)
-    fixed_names = [name for i, name in enumerate(param_names_list) if i not in random_col_indices]
-    random_names = [param_names_list[i] for i in random_col_indices]
-    display_names = (
-        fixed_names
+    fixed_param_names = [
+        name for i, name in enumerate(param_names_list) if i not in random_col_indices
+    ]
+    random_param_names = [param_names_list[i] for i in random_col_indices]
+    display_param_names = (
+        fixed_param_names
         + ["rho"]
         + [f"lambda_{i}" for i in range(n_nests)]
-        + [f"mean_{n}" for n in random_names]
-        + [f"sd_{n}" for n in random_names]
+        + [f"mean_{name}" for name in random_param_names]
+        + [f"sd_{name}" for name in random_param_names]
     )
 
     transforms = (
-        [Identity()] * k_fixed
+        [Identity() for _ in range(k_fixed)]
         + [Tanh()]
-        + [Sigmoid(0, 1)] * n_nests
-        + [Identity()] * k_random
-        + [SoftPlus()] * k_random
+        + [Sigmoid() for _ in range(n_nests)]
+        + [Identity() for _ in range(k_random)]
+        + [Identity() for _ in range(k_random)]  # softplus applied inside kernel
     )
-    transform = ParamTransform(transforms)
+    transform = ParamTransform(transforms=transforms)
 
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
-        param_names=display_names,
+        loglike_contribs_jax=_ll_contribs_jax,
+        param_names=display_param_names,
         transform=transform,
     )

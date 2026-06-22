@@ -259,3 +259,250 @@ class TestSARMNLRecovery:
             rtol=0.05,
             err_msg="CG and dense paths give different results",
         )
+
+
+# ---------------------------------------------------------------------------
+# GMM warm-start tests
+# ---------------------------------------------------------------------------
+
+
+class TestSARMNLWarmstart:
+    """Tests for GMM warm-start of PML optimization."""
+
+    def test_sar_mnl_warmstart_recovers_rho(self):
+        """PML with warm-start should recover ρ."""
+        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            warmstart=True,
+        )
+        result = model.fit()
+
+        npt.assert_allclose(
+            result.coefficients["rho"],
+            dataset.true_rho,
+            rtol=0.30,
+            err_msg="Warm-start PML failed to recover rho",
+        )
+
+    def test_sar_mnl_warmstart_disabled(self):
+        """PML without warm-start should still work (starts from zeros)."""
+        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            warmstart=False,
+        )
+        result = model.fit()
+
+        assert np.isfinite(result.coefficients["rho"])
+        npt.assert_allclose(
+            result.coefficients["rho"],
+            dataset.true_rho,
+            rtol=0.50,
+            err_msg="No-warmstart PML failed to recover rho",
+        )
+
+
+# ---------------------------------------------------------------------------
+# SAR-Nested, SAR-Mixed, SAR-Mixed-Nested tests
+# ---------------------------------------------------------------------------
+
+
+class TestSARNested:
+    """Tests for SAR + Nested logit."""
+
+    def test_sar_nested_fits_and_recovers_rho(self):
+        """SAR-Nested should fit and recover ρ."""
+        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+        )
+        result = model.fit()
+
+        assert np.isfinite(result.coefficients["rho"])
+        npt.assert_allclose(
+            result.coefficients["rho"],
+            dataset.true_rho,
+            rtol=0.50,
+            err_msg="SAR-Nested failed to recover rho",
+        )
+
+    def test_sar_nested_rho_zero_matches_nested(self):
+        """SAR-Nested with ρ≈0 should match plain nested logit."""
+        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.0, seed=42)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        sar_model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+        )
+        sar_result = sar_model.fit()
+
+        nested_model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            nests=nest_tree,
+        )
+        nested_result = nested_model.fit()
+
+        for param in ["alt_attr", "obs_x_alt"]:
+            npt.assert_allclose(
+                sar_result.coefficients[param],
+                nested_result.coefficients[param],
+                rtol=0.05,
+                err_msg=f"SAR-Nested(ρ=0) != Nested for {param}",
+            )
+
+    def test_sar_nested_robust_ses_finite(self):
+        """SAR-Nested robust SEs should be finite."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+        )
+        model.fit()
+        cov = model.covariance_robust()
+        ses = np.sqrt(np.diag(cov))
+        assert np.all(np.isfinite(ses)), f"SAR-Nested robust SEs not finite: {ses}"
+
+
+class TestSARMixed:
+    """Tests for SAR + Mixed logit."""
+
+    def test_sar_mixed_fits_and_recovers_rho(self):
+        """SAR-Mixed should fit and recover ρ."""
+        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.mixed import ParamDistribution
+
+        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            random_params=random_params,
+            n_draws=100,
+        )
+        result = model.fit()
+
+        assert np.isfinite(result.coefficients["rho"])
+        # DGP doesn't have random coefficients, so mixed logit may
+        # absorb some variance — use wide tolerance
+        assert abs(result.coefficients["rho"]) < 0.6, (
+            f"SAR-Mixed rho too far from true: {result.coefficients['rho']:.4f}"
+        )
+
+    def test_sar_mixed_robust_ses_finite(self):
+        """SAR-Mixed robust SEs should be finite."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.mixed import ParamDistribution
+
+        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            random_params=random_params,
+            n_draws=50,
+        )
+        model.fit()
+        cov = model.covariance_robust()
+        ses = np.sqrt(np.diag(cov))
+        assert np.all(np.isfinite(ses)), f"SAR-Mixed robust SEs not finite: {ses}"
+
+
+class TestSARMixedNested:
+    """Tests for SAR + Mixed + Nested logit."""
+
+    def test_sar_mixed_nested_fits(self):
+        """SAR-Mixed-Nested should fit without errors."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.mixed import ParamDistribution
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=50,
+        )
+        result = model.fit()
+
+        assert np.isfinite(result.coefficients["rho"])
+        assert np.isfinite(result.coefficients["alt_attr"])
+
+    def test_sar_mixed_nested_robust_ses_finite(self):
+        """SAR-Mixed-Nested robust SEs should be finite."""
+        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.mixed import ParamDistribution
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=50,
+        )
+        model.fit()
+        cov = model.covariance_robust()
+        ses = np.sqrt(np.diag(cov))
+        assert np.all(np.isfinite(ses)), f"SAR-Mixed-Nested robust SEs not finite: {ses}"

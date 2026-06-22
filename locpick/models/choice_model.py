@@ -129,6 +129,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         solver_options: Optional[dict] = None,
         backend: Optional[str] = None,
         estimator: str = "auto",
+        warmstart: bool = True,
     ):
         # Handle the legacy `problem` parameter by wrapping it as EstimationProblem
         if problem is not None:
@@ -151,6 +152,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         self._graph_input = graph
         self._lag = lag  # True = SAR spatial lag, False = SCL (default)
         self._estimator = estimator  # SAR estimator: auto, pml, pml_cg, linearized_gmm
+        self._warmstart = warmstart  # Use GMM estimates as PML starting values
 
         # Mixed logit settings
         self._n_draws = n_draws if n_draws is not None else 100
@@ -415,7 +417,21 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             names_base = param_names_all
             if self._is_spatial:
                 # SCL or SAR: [beta, alpha_rho]
-                x0 = np.concatenate([x0_base, np.zeros(1)])
+                if self._is_spatial_lag and self._warmstart and self._W_sparse is not None:
+                    # GMM warm-start: use linearized GMM estimates as starting values
+                    try:
+                        from .._kernels.sar_mnl_numpy import fit_linearized_gmm
+
+                        gmm = fit_linearized_gmm(arrays, self._W_sparse)
+                        beta_gmm = gmm["beta"]
+                        rho_gmm = float(np.clip(gmm["rho"], -0.99, 0.99))
+                        alpha_rho_gmm = float(np.arctanh(rho_gmm))
+                        x0 = np.concatenate([beta_gmm, [alpha_rho_gmm]])
+                    except Exception:
+                        # Fallback to zeros if GMM fails
+                        x0 = np.concatenate([x0_base, np.zeros(1)])
+                else:
+                    x0 = np.concatenate([x0_base, np.zeros(1)])
                 names = list(names_base) + ["alpha_rho"]
             else:
                 x0 = x0_base
@@ -584,7 +600,12 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_nested_objective
 
-                return build_sar_nested_objective(arrays, self._W_sparse, self._nest_matrix)
+                use_cg = self._estimator == "pml_cg" or (
+                    self._estimator == "auto" and arrays.n_alts > 2000
+                )
+                return build_sar_nested_objective(
+                    arrays, self._W_sparse, self._nest_matrix, use_cg=use_cg
+                )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_nested_scl_objective
 
@@ -598,12 +619,16 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_objective
 
+                use_cg = self._estimator == "pml_cg" or (
+                    self._estimator == "auto" and arrays.n_alts > 2000
+                )
                 return build_sar_mixed_objective(
                     arrays,
                     self._W_sparse,
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
+                    use_cg=use_cg,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mscl_objective
@@ -631,6 +656,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_nested_objective
 
+                use_cg = self._estimator == "pml_cg" or (
+                    self._estimator == "auto" and arrays.n_alts > 2000
+                )
                 return build_sar_mixed_nested_objective(
                     arrays,
                     self._W_sparse,
@@ -638,6 +666,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
+                    use_cg=use_cg,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mnscl_objective

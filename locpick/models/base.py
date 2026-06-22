@@ -341,6 +341,31 @@ class BaseChoiceModel(ABC):
     # Estimation
     # ------------------------------------------------------------------
 
+    def warmup(self) -> "BaseChoiceModel":
+        """Trigger JAX JIT compilation of the objective and gradient.
+
+        Calls the log-likelihood and gradient functions once with dummy
+        parameters to force JAX to compile the JIT-compiled closures.
+        Subsequent ``fit()`` calls will skip compilation and run faster.
+
+        Returns
+        -------
+        BaseChoiceModel
+            ``self`` for chaining: ``model = ChoiceModel(...).warmup()``.
+        """
+        arrays = self._get_arrays()
+        self._arrays = arrays
+        self._pre_fit(arrays)
+        objective = self._build_objective(arrays)
+        self._objective = objective
+        x0, param_names, bounds, fixed_mask = self._get_solver_inputs(arrays)
+        # Trigger compilation by calling fn and grad once
+        if objective.fn is not None:
+            objective.fn(x0)
+        if objective.grad is not None:
+            objective.grad(x0)
+        return self
+
     def fit(self, **kwargs) -> FitResult:
         """Estimate the model and return results.
 
