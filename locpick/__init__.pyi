@@ -102,9 +102,6 @@ from .dgp import (
     simulate_scl as simulate_scl,
 )
 from .models import (
-    SARMNL as SARMNL,
-)
-from .models import (
     ChoiceModel as ChoiceModel,
 )
 from .models import (

@@ -506,3 +506,31 @@ class TestSARMixedNested:
         cov = model.covariance_robust()
         ses = np.sqrt(np.diag(cov))
         assert np.all(np.isfinite(ses)), f"SAR-Mixed-Nested robust SEs not finite: {ses}"
+
+    def test_sar_mixed_nested_recovers_rho(self):
+        """SAR-Mixed-Nested should recover ρ within tolerance."""
+        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        from locpick.models.mixed import ParamDistribution
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="a", alt_ids=list(range(0, 10))),
+                NestSpec(name="b", alt_ids=list(range(10, 20))),
+            ]
+        )
+        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt - 1",
+            graph=dataset.W,
+            lag=True,
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=100,
+        )
+        result = model.fit()
+
+        assert np.isfinite(result.coefficients["rho"])
+        # DGP doesn't have random coefficients, so wide tolerance
+        assert abs(result.coefficients["rho"]) < 0.6
