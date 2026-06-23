@@ -391,8 +391,3 @@ def _scl_ll_numpy(
         chosen_log_probs = chosen_log_probs * w
 
     return float(chosen_log_probs.sum())
-
-
-# ---------------------------------------------------------------------------
-# (Public ``SCL`` factory removed — construct ``ChoiceModel`` directly with
-# ``graph=`` instead.)

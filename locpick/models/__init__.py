@@ -3,10 +3,10 @@
 This package provides:
 
 - :mod:`locpick.models.base` — ``ChoiceModel`` protocol
-- :mod:`locpick.models.mnl` — ``MultinomialLogit`` class
-- :mod:`locpick.models.nested` — ``NestedLogit``, ``NestSpec``, ``NestingTree``
-- :mod:`locpick.models.mixed` — ``MixedLogit``, ``ParamDistribution``
-- :mod:`locpick.models.mixed_nested` — ``MixedNestedMNL``
+- :mod:`locpick.models.choice_model` — ``ChoiceModel`` unified class
+- :mod:`locpick.models.nested` — ``NestSpec``, ``NestingTree``
+- :mod:`locpick.models.mixed` — ``ParamDistribution``
+- :mod:`locpick.models.scl` — ``EdgeStructure``, ``naturalize_rho``
 
 Submodules and attributes are loaded lazily following SPEC 1
 (https://scientific-python.org/specs/spec-0001/).

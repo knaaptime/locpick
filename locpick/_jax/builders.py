@@ -330,6 +330,77 @@ _mscl_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(2, 3, 4))
+def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
+    """Pure JAX MSCL per-observation LL contributions.
+
+    Identical to ``_mscl_ll_kernel`` but returns per-observation ``(n_obs,)``
+    array instead of a scalar sum.
+    """
+    from jax.scipy.special import logsumexp as jax_logsumexp
+
+    beta_fixed = params[:k_fixed]
+    alpha_rho = params[k_fixed]
+    beta_random_means = params[k_fixed + 1 : k_fixed + 1 + k_random]
+    beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
+
+    rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    def _ll_single_draw(r):
+        z_r = data.draws[:, r, :]
+        means = beta_random_means[None, :]
+        spreads = beta_random_spreads[None, :]
+        beta_normal = means + spreads * z_r
+        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
+        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
+        d = 0.3989422804014327
+        poly = t * (
+            0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+        )
+        phi_z = jnp.where(
+            z_r >= 0,
+            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
+            d * jnp.exp(-0.5 * z_r * z_r) * poly,
+        )
+        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
+        mask = phi_z <= 0.5
+        beta_triangular = jnp.where(
+            mask,
+            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
+            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        )
+        dist = data.dist_codes[None, :]
+        beta_random_r = jnp.where(
+            dist == 0,
+            beta_normal,
+            jnp.where(
+                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+            ),
+        )
+        v_random = jnp.sum(
+            data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
+            axis=2,
+        )
+        V = v_fixed + v_random
+        log_probs = scl_log_probs(V, rho, data.edge_data, data.available)
+        log_L_n = (log_probs * data.chosen).sum(axis=1)
+        return log_L_n
+
+    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
+    return log_L_sim * data.weights
+
+
 # ---------------------------------------------------------------------------
 # Mixed Nested SCL (MNSCL) objective
 # ---------------------------------------------------------------------------
@@ -499,6 +570,133 @@ _mnscl_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(5, 6, 7, 8, 9))
+def _mnscl_ll_contribs_kernel(
+    params,
+    data,
+    nest_matrix,
+    edge_data_list,
+    k,
+    n_nests,
+    k_fixed,
+    k_random,
+    n_draws,
+    nest_alt_indices,
+):
+    """Pure JAX MNSCL per-observation LL contributions.
+
+    Identical to ``_mnscl_ll_kernel`` but returns per-observation ``(n_obs,)``
+    array instead of a scalar sum.
+    """
+    # Delegate to the LL kernel and convert to per-observation.
+    # The MNSCL kernel is complex (nested SCL + mixed logit), so we reuse
+    # the same internal logic but return per-observation contributions.
+    # We do this by calling the kernel's internal _ll_single_draw and
+    # returning log_L_sim * weights instead of sum.
+    # However, since the kernel is JIT-compiled with static args, the simplest
+    # approach is to compute the scalar LL and subtract to get per-obs.
+    # Actually, we need the per-observation values. Let's just call the
+    # existing kernel and use a wrapper that extracts per-obs.
+    #
+    # For now, we use the same kernel but return per-observation by
+    # duplicating the logic. This is not ideal but correct.
+    from .kernels import scl_log_probs_and_inclusive_value
+
+    beta_fixed = params[:k_fixed]
+    alpha_rhos = params[k_fixed : k_fixed + n_nests]
+    alpha_lambdas = params[k_fixed + n_nests : k_fixed + 2 * n_nests]
+    beta_random_means = params[k_fixed + 2 * n_nests : k_fixed + 2 * n_nests + k_random]
+    beta_random_spreads_raw = params[k_fixed + 2 * n_nests + k_random :]
+
+    rhos = 1.0 / (1.0 + jnp.exp(-alpha_rhos))
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    def _ll_single_draw(r):
+        z_r = data.draws[:, r, :]
+        means = beta_random_means[None, :]
+        spreads = beta_random_spreads[None, :]
+        beta_normal = means + spreads * z_r
+        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
+        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
+        d = 0.3989422804014327
+        poly = t * (
+            0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+        )
+        phi_z = jnp.where(
+            z_r >= 0,
+            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
+            d * jnp.exp(-0.5 * z_r * z_r) * poly,
+        )
+        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
+        mask = phi_z <= 0.5
+        beta_triangular = jnp.where(
+            mask,
+            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
+            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        )
+        dist = data.dist_codes[None, :]
+        beta_random_r = jnp.where(
+            dist == 0,
+            beta_normal,
+            jnp.where(
+                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
+            ),
+        )
+        v_random = jnp.sum(
+            data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
+            axis=2,
+        )
+        V = v_fixed + v_random
+
+        nest_log_G = jnp.zeros((data.n_obs, n_nests), dtype=jnp.float64)
+        log_probs_full = jnp.full((data.n_obs, data.n_alts), _NEG_INF, dtype=jnp.float64)
+
+        for m in range(n_nests):
+            nest_alts = nest_alt_indices[m]
+            n_nest_alts = len(nest_alts)
+            if n_nest_alts == 0:
+                continue
+            V_m = jnp.column_stack([V[:, alt] for alt in nest_alts])
+            if data.available is not None:
+                avail_m = jnp.column_stack([data.available[:, alt] for alt in nest_alts])
+            else:
+                avail_m = jnp.ones((data.n_obs, n_nest_alts), dtype=jnp.float64)
+            log_probs_m, log_G_m = scl_log_probs_and_inclusive_value(
+                V_m, rhos[m], edge_data_list[m], avail_m
+            )
+            nest_log_G = nest_log_G.at[:, m].set(log_G_m)
+            for idx, alt_global in enumerate(nest_alts):
+                log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+
+        nest_exponents = lambdas[None, :] * nest_log_G
+        log_denom_top = jax_logsumexp(nest_exponents, axis=1)
+        log_P_nest = nest_exponents - log_denom_top[:, None]
+
+        for m in range(n_nests):
+            nest_alts = nest_alt_indices[m]
+            for alt_global in nest_alts:
+                old_log_prob = log_probs_full[:, alt_global]
+                new_log_prob = old_log_prob + log_P_nest[:, m]
+                log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+
+        log_L_n = (log_probs_full * data.chosen).sum(axis=1)
+        return log_L_n
+
+    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
+    return log_L_sim * data.weights
+
+
 def build_mnscl_objective(
     arrays,
     nest_matrix,
@@ -578,6 +776,20 @@ def build_mnscl_objective(
             nest_alt_indices,
         )
 
+    def _ll_contribs_jax(params):
+        return _mnscl_ll_contribs_kernel(
+            params,
+            data,
+            nest_matrix_jax,
+            edge_data_list,
+            k,
+            n_nests,
+            k_fixed,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
         name
@@ -606,6 +818,7 @@ def build_mnscl_objective(
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
     )
@@ -669,6 +882,9 @@ def build_mscl_objective(
     def _grad_jax(params):
         return _mscl_grad_kernel(params, data, k_fixed, k_random, n_draws)
 
+    def _ll_contribs_jax(params):
+        return _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws)
+
     # Parameter names
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
@@ -689,6 +905,7 @@ def build_mscl_objective(
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=display_param_names,
         transform=transform,
     )
@@ -726,6 +943,25 @@ _nested_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(3,))
+def _nested_ll_contribs_kernel(params, data, nest_matrix, k):
+    """Pure JAX nested logit per-observation LL contributions."""
+    beta = params[:k]
+    alpha = params[k:]
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha))
+
+    V = compute_utilities(
+        data.design_matrix,
+        beta,
+        data.n_obs,
+        data.n_alts,
+        inclusion_probs=data.inclusion_probs,
+        available=data.available,
+    )
+    log_probs = nested_log_probs(V, lambdas, nest_matrix, data.available)
+    return compute_ll_contribs(log_probs, data.chosen, data.weights)
+
+
 def build_nested_objective(arrays, nest_matrix) -> Objective:
     """Build an Objective for nested logit estimation using JAX.
 
@@ -754,6 +990,9 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
     def _grad_jax(params):
         return _nested_grad_kernel(params, data, nest_matrix_jax, k)
 
+    def _ll_contribs_jax(params):
+        return _nested_ll_contribs_kernel(params, data, nest_matrix_jax, k)
+
     param_names = list(arrays.param_names) + [f"nest_alpha_{i}" for i in range(n_nests)]
 
     # Sigmoid transform for nest parameters, identity for beta
@@ -763,6 +1002,7 @@ def build_nested_objective(arrays, nest_matrix) -> Objective:
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
     )
@@ -866,6 +1106,63 @@ _nested_scl_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(4, 5))
+def _nested_scl_ll_contribs_kernel(params, data, nest_matrix, edge_data_list, k, nest_alt_indices):
+    """Pure JAX nested SCL per-observation LL contributions."""
+    # Same as _nested_scl_ll_kernel but returns per-observation contributions
+    from .kernels import scl_log_probs_and_inclusive_value
+
+    beta = params[:k]
+    n_nests = nest_matrix.shape[1]
+    alpha_rhos = params[k : k + n_nests]
+    alpha_lambdas = params[k + n_nests :]
+
+    rhos = 1.0 / (1.0 + jnp.exp(-alpha_rhos))
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
+
+    V = compute_utilities(
+        data.design_matrix,
+        beta,
+        data.n_obs,
+        data.n_alts,
+        inclusion_probs=data.inclusion_probs,
+        available=data.available,
+    )
+
+    nest_log_G = jnp.zeros((data.n_obs, n_nests), dtype=jnp.float64)
+    log_probs_full = jnp.full((data.n_obs, data.n_alts), _NEG_INF, dtype=jnp.float64)
+
+    for m in range(n_nests):
+        nest_alts = nest_alt_indices[m]
+        n_nest_alts = len(nest_alts)
+        if n_nest_alts == 0:
+            continue
+        V_m = jnp.column_stack([V[:, alt] for alt in nest_alts])
+        if data.available is not None:
+            avail_m = jnp.column_stack([data.available[:, alt] for alt in nest_alts])
+        else:
+            avail_m = jnp.ones((data.n_obs, n_nest_alts), dtype=jnp.float64)
+        log_probs_m, log_G_m = scl_log_probs_and_inclusive_value(
+            V_m, rhos[m], edge_data_list[m], avail_m
+        )
+        nest_log_G = nest_log_G.at[:, m].set(log_G_m)
+        for idx, alt_global in enumerate(nest_alts):
+            log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+
+    nest_exponents = lambdas[None, :] * nest_log_G
+    log_denom_top = jax_logsumexp(nest_exponents, axis=1)
+    log_P_nest = nest_exponents - log_denom_top[:, None]
+
+    for m in range(n_nests):
+        nest_alts = nest_alt_indices[m]
+        for alt_global in nest_alts:
+            old_log_prob = log_probs_full[:, alt_global]
+            new_log_prob = old_log_prob + log_P_nest[:, m]
+            log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+
+    return compute_ll_contribs(log_probs_full, data.chosen, data.weights)
+
+
 def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective:
     """Build an Objective for nested SCL estimation using JAX.
 
@@ -905,6 +1202,11 @@ def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective
             params, data, nest_matrix_jax, edge_data_list, k, nest_alt_indices
         )
 
+    def _ll_contribs_jax(params):
+        return _nested_scl_ll_contribs_kernel(
+            params, data, nest_matrix_jax, edge_data_list, k, nest_alt_indices
+        )
+
     param_names = (
         list(arrays.param_names)
         + [f"rho_{i}" for i in range(n_nests)]
@@ -922,6 +1224,7 @@ def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
     )
@@ -977,6 +1280,41 @@ _mixed_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(2, 3, 4))
+def _mixed_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
+    """Pure JAX mixed logit per-observation LL contributions."""
+    from .kernels import mixed_logit_ll_contribs
+
+    beta_fixed = params[:k_fixed]
+    beta_random_means = params[k_fixed : k_fixed + k_random]
+    beta_random_spreads_raw = params[k_fixed + k_random :]
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    return mixed_logit_ll_contribs(
+        V_fixed=v_fixed,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=data.n_obs,
+        n_alts=data.n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+    )
+
+
 def build_mixed_logit_objective(
     arrays,
     random_col_indices,
@@ -1021,6 +1359,9 @@ def build_mixed_logit_objective(
     def _grad_jax(params):
         return _mixed_grad_kernel(params, data, k_fixed, k_random, n_draws)
 
+    def _ll_contribs_jax(params):
+        return _mixed_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws)
+
     # Parameter names
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
@@ -1044,6 +1385,7 @@ def build_mixed_logit_objective(
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=display_param_names,
         transform=transform,
     )
@@ -1135,6 +1477,56 @@ _mixed_nested_grad_kernel = jax.jit(
 )
 
 
+@functools.partial(jax.jit, static_argnums=(3, 4, 5, 6, 7))
+def _mixed_nested_ll_contribs_kernel(
+    params,
+    data,
+    nest_matrix,
+    k_fixed,
+    n_nests,
+    k_random,
+    n_draws,
+    nest_alt_indices,
+):
+    """Pure JAX mixed nested logit per-observation LL contributions."""
+    from .kernels import mixed_nested_logit_ll_contribs
+
+    beta_fixed = params[:k_fixed]
+    alpha_nest = params[k_fixed : k_fixed + n_nests]
+    beta_random_means = params[k_fixed + n_nests : k_fixed + n_nests + k_random]
+    beta_random_spreads_raw = params[k_fixed + n_nests + k_random :]
+
+    lambdas = 1.0 / (1.0 + jnp.exp(-alpha_nest))
+    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+
+    if data.dm_fixed is not None and k_fixed > 0:
+        v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
+    else:
+        v_fixed = jnp.zeros((data.n_obs, data.n_alts), dtype=jnp.float64)
+
+    if data.inclusion_probs is not None:
+        v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
+
+    return mixed_nested_logit_ll_contribs(
+        V_fixed=v_fixed,
+        dm_random=data.dm_random,
+        beta_random_means=beta_random_means,
+        beta_random_spreads=beta_random_spreads,
+        dist_codes=data.dist_codes,
+        draws=data.draws,
+        lambdas=lambdas,
+        nest_matrix=nest_matrix,
+        chosen=data.chosen,
+        weights=data.weights,
+        available=data.available,
+        n_obs=data.n_obs,
+        n_alts=data.n_alts,
+        k_random=k_random,
+        n_draws=n_draws,
+        n_nests=n_nests,
+    )
+
+
 def build_mixed_nested_objective(
     arrays,
     nest_matrix,
@@ -1208,6 +1600,18 @@ def build_mixed_nested_objective(
             nest_alt_indices,
         )
 
+    def _ll_contribs_jax(params):
+        return _mixed_nested_ll_contribs_kernel(
+            params,
+            data,
+            nest_matrix_jax,
+            k_fixed,
+            n_nests,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
         name
@@ -1234,6 +1638,7 @@ def build_mixed_nested_objective(
     return Objective.from_jax(
         ll_fn=_ll_jax,
         grad_fn=_grad_jax,
+        loglike_contribs_jax=_ll_contribs_jax,
         param_names=display_param_names,
         transform=transform,
     )

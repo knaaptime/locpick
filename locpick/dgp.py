@@ -2006,21 +2006,17 @@ def simulate_sar_mnl(
     choosers = pd.DataFrame({"obs_feature": obs_feature}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alt_data = {col: rng.standard_normal(n_alts) for col in alt_params}
-    alternatives = pd.DataFrame(alt_data, index=alt_ids)
+    alt_attr = rng.standard_normal(n_alts)
+    alternatives = pd.DataFrame({"alt_attr": alt_attr}, index=alt_ids)
 
     # --- Interactions (chooser × alternative) --------------------------
     interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
     obs_feat_tiled = np.repeat(obs_feature, n_alts)
-    # Use the first alternative column as the basis for interaction terms
-    first_alt_col = next(iter(alt_params))
-    first_alt_values = alternatives[first_alt_col].to_numpy()
-    first_alt_tiled = np.tile(first_alt_values, n_obs)
-    interactions = {}
-    for col in interaction_params:
-        interactions[col] = pd.Series(
-            obs_feat_tiled * first_alt_tiled, index=interaction_index, name=col
-        )
+    alt_attr_tiled = np.tile(alt_attr, n_obs)
+    obs_x_alt_values = obs_feat_tiled * alt_attr_tiled
+    interactions = {
+        "obs_x_alt": pd.Series(obs_x_alt_values, index=interaction_index, name="obs_x_alt")
+    }
 
     # --- Base utilities: V_base = Zβ + Xγ  (n_obs × n_alts) -------------
     V_base = np.zeros((n_obs, n_alts))

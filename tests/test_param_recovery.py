@@ -16,6 +16,7 @@ import numpy.testing as npt
 from locpick import ChoiceModel
 from locpick.dgp import (
     simulate_mixed_logit,
+    simulate_mixed_nested_logit,
     simulate_mnl,
     simulate_mscl,
     simulate_nested_logit,
@@ -328,3 +329,108 @@ class TestMSCLRecovery:
                 rtol=0.30,
                 err_msg=f"MSCL (no random) failed to recover {param_name}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Mixed Nested Logit parameter recovery
+# ---------------------------------------------------------------------------
+
+
+class TestMixedNestedRecovery:
+    """Parameter recovery tests for mixed nested logit."""
+
+    def test_mixed_nested_recovers_beta_params(self):
+        """Mixed nested logit should recover fixed beta coefficients."""
+        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="transit", alt_ids=[0, 1]),
+                NestSpec(name="auto", alt_ids=[2, 3]),
+            ]
+        )
+        random_params = {
+            "time": ParamDistribution(distribution="normal", param="time"),
+        }
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="cost + time + income_x_cost - 1",
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=500,
+        )
+        result = model.fit()
+
+        for param_name in ["cost", "income_x_cost"]:
+            true_val = dataset.true_params[param_name]
+            npt.assert_allclose(
+                result.coefficients[param_name],
+                true_val,
+                rtol=0.50,
+                err_msg=f"Mixed nested failed to recover {param_name}",
+            )
+
+    def test_mixed_nested_recovers_lambda_params(self):
+        """Mixed nested logit should recover nest dissimilarity parameters."""
+        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="transit", alt_ids=[0, 1]),
+                NestSpec(name="auto", alt_ids=[2, 3]),
+            ]
+        )
+        random_params = {
+            "time": ParamDistribution(distribution="normal", param="time"),
+        }
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="cost + time + income_x_cost - 1",
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=500,
+        )
+        result = model.fit()
+
+        for nest_name, true_lambda in dataset.true_lambdas.items():
+            est_lambda = result.coefficients.get(f"lambda_{nest_name}")
+            if est_lambda is not None:
+                # Lambda recovery is noisy with random coefficients
+                assert abs(est_lambda - true_lambda) < 0.35, (
+                    f"Mixed nested failed to recover lambda_{nest_name}: "
+                    f"got {est_lambda:.4f}, true {true_lambda:.4f}"
+                )
+
+    def test_mixed_nested_recovers_random_means(self):
+        """Mixed nested logit should recover random parameter means."""
+        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        from locpick.models.nested import NestingTree, NestSpec
+
+        nest_tree = NestingTree(
+            nests=[
+                NestSpec(name="transit", alt_ids=[0, 1]),
+                NestSpec(name="auto", alt_ids=[2, 3]),
+            ]
+        )
+        random_params = {
+            "time": ParamDistribution(distribution="normal", param="time"),
+        }
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="cost + time + income_x_cost - 1",
+            nests=nest_tree,
+            random_params=random_params,
+            n_draws=500,
+        )
+        result = model.fit()
+
+        for param_name, true_mean in dataset.true_random_means.items():
+            est_mean = result.coefficients.get(f"mean_{param_name}")
+            if est_mean is not None:
+                # Random mean recovery is noisy — check sign and rough magnitude
+                assert abs(est_mean - true_mean) < 0.5, (
+                    f"Mixed nested failed to recover mean_{param_name}: "
+                    f"got {est_mean:.4f}, true {true_mean:.4f}"
+                )
