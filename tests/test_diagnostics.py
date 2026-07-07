@@ -19,12 +19,16 @@ class TestLikelihoodRatioTest:
 
     def test_lr_test_statistic_and_df(self):
         """LR statistic = 2*(LL_unrestricted - LL_restricted), df = param diff."""
-        dataset = simulate_mnl(n_obs=2000, n_alts=10, seed=42)
+        dataset = simulate_mnl(
+            n_obs=2000, n_alts=10, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
 
         model_restricted = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result_restricted = model_restricted.fit()
 
-        model_unrestricted = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model_unrestricted = ChoiceModel(
+            dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result_unrestricted = model_unrestricted.fit()
 
         test = lr_test(result_restricted, result_unrestricted)
@@ -35,11 +39,13 @@ class TestLikelihoodRatioTest:
 
     def test_lr_test_p_value(self):
         """P-value should come from chi2.sf(statistic, df)."""
-        dataset = simulate_mnl(n_obs=2000, n_alts=10, seed=42)
+        dataset = simulate_mnl(
+            n_obs=2000, n_alts=10, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
 
         model_r = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result_r = model_r.fit()
-        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result_u = model_u.fit()
 
         test = lr_test(result_r, result_u)
@@ -48,11 +54,13 @@ class TestLikelihoodRatioTest:
 
     def test_lr_test_significant_when_restriction_false(self):
         """LR test should reject when the restricted model omits a relevant variable."""
-        dataset = simulate_mnl(n_obs=5000, n_alts=10, seed=42)
+        dataset = simulate_mnl(
+            n_obs=5000, n_alts=10, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
 
         model_r = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result_r = model_r.fit()
-        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result_u = model_u.fit()
 
         test = lr_test(result_r, result_u)
@@ -75,10 +83,12 @@ class TestLikelihoodRatioTest:
 
     def test_lr_test_summary(self):
         """Summary should contain key information."""
-        dataset = simulate_mnl(n_obs=500, n_alts=5, seed=42)
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=5, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
         model_r = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result_r = model_r.fit()
-        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result_u = model_u.fit()
 
         test = lr_test(result_r, result_u)
@@ -88,10 +98,12 @@ class TestLikelihoodRatioTest:
 
     def test_lr_test_critical_value(self):
         """Critical value at 5% should match chi2.ppf(0.95, df)."""
-        dataset = simulate_mnl(n_obs=500, n_alts=5, seed=42)
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=5, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
         model_r = ChoiceModel(dataset.choice_table, "alt_feature - 1")
         result_r = model_r.fit()
-        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        model_u = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result_u = model_u.fit()
 
         test = lr_test(result_r, result_u)

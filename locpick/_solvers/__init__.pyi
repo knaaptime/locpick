@@ -23,9 +23,6 @@ from .protocol import (
     SolverResult as SolverResult,
 )
 from .protocol import (
-    get_default_solver as get_default_solver,
-)
-from .protocol import (
     get_solver as get_solver,
 )
 from .protocol import (

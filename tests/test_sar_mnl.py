@@ -23,16 +23,18 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_recovers_beta_params(self):
         """SAR-MNL should recover beta coefficients within tolerance."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.3, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
         result = model.fit()
 
-        for param_name in ["alt_attr", "obs_x_alt"]:
+        for param_name in ["alt_attr", "obs_x_alt_attr"]:
             true_val = dataset.true_params[param_name]
             npt.assert_allclose(
                 result.coefficients[param_name],
@@ -43,10 +45,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_recovers_rho(self):
         """SAR-MNL should recover the spatial autoregressive parameter ρ."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.3, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -62,20 +66,22 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_rho_zero_recovers_mnl(self):
         """When ρ=0, SAR-MNL should recover standard MNL estimates."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.0, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.0, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         # Fit SAR-MNL
         sar_model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
         sar_result = sar_model.fit()
         # Fit standard MNL (via ChoiceModel without W)
-        mnl_model = ChoiceModel(dataset.choice_table, formula="alt_attr + obs_x_alt - 1")
+        mnl_model = ChoiceModel(dataset.choice_table, formula="alt_attr + obs_x_alt_attr - 1")
         mnl_result = mnl_model.fit()
 
-        for param_name in ["alt_attr", "obs_x_alt"]:
+        for param_name in ["alt_attr", "obs_x_alt_attr"]:
             npt.assert_allclose(
                 sar_result.coefficients[param_name],
                 mnl_result.coefficients[param_name],
@@ -87,10 +93,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_recovers_rho_low_spatial_dep(self):
         """SAR-MNL should detect low spatial dependence (ρ=0.05) is near zero."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.05, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.05, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -101,10 +109,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_recovers_rho_moderate_spatial_dep(self):
         """SAR-MNL should recover ρ at moderate spatial dependence (ρ=0.5)."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.5, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.5, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -118,10 +128,17 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_smaller_n_alts(self):
         """SAR-MNL should work with a small number of alternatives."""
-        dataset = simulate_sar_mnl(n_obs=3000, n_alts=12, rho=0.2, n_neighbors=3, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=3000,
+            n_alts=12,
+            rho=0.2,
+            n_neighbors=3,
+            seed=42,
+            interaction_params={"obs_x_alt_attr": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -134,28 +151,30 @@ class TestSARMNLRecovery:
         """Graph, scipy.sparse, and dense W produce identical results."""
         import scipy.sparse as sp
 
-        dataset = simulate_sar_mnl(n_obs=3000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=3000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         W_graph = dataset.W  # libpysal.graph.Graph
         W_sparse = sp.csr_array(W_graph.sparse)  # scipy.sparse
         W_dense = W_sparse.toarray()  # dense numpy
 
         model1 = ChoiceModel(
             dataset.choice_table,
-            "alt_attr + obs_x_alt - 1",
+            "alt_attr + obs_x_alt_attr - 1",
             graph=W_graph,
             lag=True,
         )
         result1 = model1.fit()
         model2 = ChoiceModel(
             dataset.choice_table,
-            "alt_attr + obs_x_alt - 1",
+            "alt_attr + obs_x_alt_attr - 1",
             graph=W_sparse,
             lag=True,
         )
         result2 = model2.fit()
         model3 = ChoiceModel(
             dataset.choice_table,
-            "alt_attr + obs_x_alt - 1",
+            "alt_attr + obs_x_alt_attr - 1",
             graph=W_dense,
             lag=True,
         )
@@ -176,10 +195,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_probabilities_sum_to_one(self):
         """Choice probabilities should sum to 1 across alternatives."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -194,10 +215,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_marginal_effects_structure(self):
         """Marginal effects: direct + indirect = total; indirect > 0 when ρ > 0."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.3, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.3, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
         )
@@ -214,10 +237,12 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_gmm_recovers_rho(self):
         """Linearized GMM should recover ρ at moderate spatial dependence."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.3, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             estimator="linearized_gmm",
@@ -232,11 +257,13 @@ class TestSARMNLRecovery:
 
     def test_sar_mnl_cg_matches_dense(self):
         """CG path should give similar results to dense path."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
 
         model_dense = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             estimator="pml",
@@ -245,7 +272,7 @@ class TestSARMNLRecovery:
 
         model_cg = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             estimator="pml_cg",
@@ -271,10 +298,12 @@ class TestSARMNLWarmstart:
 
     def test_sar_mnl_warmstart_recovers_rho(self):
         """PML with warm-start should recover ρ."""
-        dataset = simulate_sar_mnl(n_obs=5000, n_alts=50, rho=0.3, seed=2026)
+        dataset = simulate_sar_mnl(
+            n_obs=5000, n_alts=50, rho=0.3, seed=2026, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             warmstart=True,
@@ -290,10 +319,12 @@ class TestSARMNLWarmstart:
 
     def test_sar_mnl_warmstart_disabled(self):
         """PML without warm-start should still work (starts from zeros)."""
-        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=2000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             warmstart=False,
@@ -319,7 +350,9 @@ class TestSARNested:
 
     def test_sar_nested_fits_and_recovers_rho(self):
         """SAR-Nested should fit and recover ρ."""
-        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=2000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
@@ -330,7 +363,7 @@ class TestSARNested:
         )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,
@@ -347,7 +380,9 @@ class TestSARNested:
 
     def test_sar_nested_rho_zero_matches_nested(self):
         """SAR-Nested with ρ≈0 should match plain nested logit."""
-        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.0, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=2000, n_alts=20, rho=0.0, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
@@ -358,7 +393,7 @@ class TestSARNested:
         )
         sar_model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,
@@ -367,12 +402,12 @@ class TestSARNested:
 
         nested_model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             nests=nest_tree,
         )
         nested_result = nested_model.fit()
 
-        for param in ["alt_attr", "obs_x_alt"]:
+        for param in ["alt_attr", "obs_x_alt_attr"]:
             npt.assert_allclose(
                 sar_result.coefficients[param],
                 nested_result.coefficients[param],
@@ -382,7 +417,9 @@ class TestSARNested:
 
     def test_sar_nested_robust_ses_finite(self):
         """SAR-Nested robust SEs should be finite."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
@@ -393,7 +430,7 @@ class TestSARNested:
         )
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,
@@ -409,13 +446,17 @@ class TestSARMixed:
 
     def test_sar_mixed_fits_and_recovers_rho(self):
         """SAR-Mixed should fit and recover ρ."""
-        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=2000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.mixed import ParamDistribution
 
-        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        random_params = {
+            "obs_x_alt_attr": ParamDistribution(distribution="normal", param="obs_x_alt_attr")
+        }
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             random_params=random_params,
@@ -432,13 +473,17 @@ class TestSARMixed:
 
     def test_sar_mixed_robust_ses_finite(self):
         """SAR-Mixed robust SEs should be finite."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.mixed import ParamDistribution
 
-        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        random_params = {
+            "obs_x_alt_attr": ParamDistribution(distribution="normal", param="obs_x_alt_attr")
+        }
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             random_params=random_params,
@@ -455,7 +500,9 @@ class TestSARMixedNested:
 
     def test_sar_mixed_nested_fits(self):
         """SAR-Mixed-Nested should fit without errors."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.mixed import ParamDistribution
         from locpick.models.nested import NestingTree, NestSpec
 
@@ -465,10 +512,12 @@ class TestSARMixedNested:
                 NestSpec(name="b", alt_ids=list(range(10, 20))),
             ]
         )
-        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        random_params = {
+            "obs_x_alt_attr": ParamDistribution(distribution="normal", param="obs_x_alt_attr")
+        }
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,
@@ -482,7 +531,9 @@ class TestSARMixedNested:
 
     def test_sar_mixed_nested_robust_ses_finite(self):
         """SAR-Mixed-Nested robust SEs should be finite."""
-        dataset = simulate_sar_mnl(n_obs=1000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.mixed import ParamDistribution
         from locpick.models.nested import NestingTree, NestSpec
 
@@ -492,10 +543,12 @@ class TestSARMixedNested:
                 NestSpec(name="b", alt_ids=list(range(10, 20))),
             ]
         )
-        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        random_params = {
+            "obs_x_alt_attr": ParamDistribution(distribution="normal", param="obs_x_alt_attr")
+        }
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,
@@ -509,7 +562,9 @@ class TestSARMixedNested:
 
     def test_sar_mixed_nested_recovers_rho(self):
         """SAR-Mixed-Nested should recover ρ within tolerance."""
-        dataset = simulate_sar_mnl(n_obs=2000, n_alts=20, rho=0.2, seed=42)
+        dataset = simulate_sar_mnl(
+            n_obs=2000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+        )
         from locpick.models.mixed import ParamDistribution
         from locpick.models.nested import NestingTree, NestSpec
 
@@ -519,10 +574,12 @@ class TestSARMixedNested:
                 NestSpec(name="b", alt_ids=list(range(10, 20))),
             ]
         )
-        random_params = {"obs_x_alt": ParamDistribution(distribution="normal", param="obs_x_alt")}
+        random_params = {
+            "obs_x_alt_attr": ParamDistribution(distribution="normal", param="obs_x_alt_attr")
+        }
         model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_attr + obs_x_alt - 1",
+            formula="alt_attr + obs_x_alt_attr - 1",
             graph=dataset.W,
             lag=True,
             nests=nest_tree,

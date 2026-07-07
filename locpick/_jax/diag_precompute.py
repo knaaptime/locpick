@@ -401,7 +401,7 @@ class DiagPrecompute:
     def eval_jax(self, rho):
         """Evaluate D(ρ) in pure JAX."""
         if self.method == "chebyshev":
-            return chebyshev_diag_eval_jax(self.chb_pre, rho)
+            return chebyshev_diag_eval_jax(self.cheb_pre, rho)
         return aaa_diag_eval_jax(self.aaa_pre, rho)
 
 
@@ -436,7 +436,7 @@ def precompute_diagonal(
 
     if is_symmetric(W_sparse):
         pre = chebyshev_diag_precompute(W_sparse, order=order, rho_min=rho_min, rho_max=rho_max)
-        return DiagPrecompute(method="chebyshev", chb_pre=pre, n_alts=n)
+        return DiagPrecompute(method="chebyshev", cheb_pre=pre, n_alts=n)
 
     pre = aaa_diag_precompute(W_sparse, rho_min=rho_min, rho_max=rho_max, n_coarse=n_coarse)
     return DiagPrecompute(method="aaa", aaa_pre=pre, n_alts=n)

@@ -52,24 +52,45 @@ def _resolve_pairwise(
     n_obs, n_alts = alt_ids_matrix.shape
     values = np.full((n_obs, n_alts), np.nan, dtype=np.float64)
 
-    obs_to_row = {obs_id: i for i, obs_id in enumerate(obs_ids)}
-    obs_alt_sets = {obs_id: set(alt_ids_matrix[i, :].tolist()) for i, obs_id in enumerate(obs_ids)}
+    # Vectorized (obs_id, alt_id) -> (row, alt_pos) resolution.
+    #
+    # Build a hash lookup from (row, alt_id) to column position once, then
+    # resolve every series entry in a single vectorized reindex.  This
+    # replaces a per-entry ``np.where`` scan (O(nnz * n_alts)).
+    flat_rows = np.repeat(np.arange(n_obs), n_alts)
+    flat_alt = np.asarray(alt_ids_matrix).ravel()
+    flat_col = np.tile(np.arange(n_alts), n_obs)
+    lookup = pd.Series(flat_col, index=pd.MultiIndex.from_arrays([flat_rows, flat_alt]))
+    # Keep the first position for any repeated alt_id in a row (matches the
+    # previous ``matches[0]`` behaviour and keeps the index unique).
+    lookup = lookup[~lookup.index.duplicated(keep="first")]
 
     obs_level = series.index.get_level_values(0)
-    for obs_id in np.unique(obs_level):
-        if obs_id not in obs_alt_sets:
-            continue
-        provided_alts = set(series.xs(obs_id, level=0).index.tolist())
-        if provided_alts and provided_alts.isdisjoint(obs_alt_sets[obs_id]):
-            raise KeyError(f"Pairwise variable contains no alt_ids present for obs_id {obs_id!r}.")
+    alt_level = np.asarray(series.index.get_level_values(1))
+    entry_rows = pd.Index(obs_ids).get_indexer(obs_level)
 
-    for (obs_id, alt_id), value in series.items():
-        row = obs_to_row.get(obs_id)
-        if row is None:
-            continue
-        matches = np.where(alt_ids_matrix[row] == alt_id)[0]
-        if matches.size > 0:
-            values[row, int(matches[0])] = value
+    # Entries whose obs_id is not in the canonical set are silently skipped.
+    valid = entry_rows >= 0
+    rows_v = entry_rows[valid]
+    alt_v = alt_level[valid]
+    vals_v = series.to_numpy()[valid]
+
+    if rows_v.size:
+        target = lookup.reindex(pd.MultiIndex.from_arrays([rows_v, alt_v])).to_numpy()
+        found = ~np.isnan(target)
+
+        # An obs present in the canonical set but with no matching alt_ids is
+        # an error (all provided alts disjoint from that obs's alternatives).
+        rows_with_entry = np.unique(rows_v)
+        rows_with_found = np.unique(rows_v[found])
+        missing = np.setdiff1d(rows_with_entry, rows_with_found)
+        if missing.size:
+            bad_obs = obs_ids[missing[0]]
+            raise KeyError(
+                f"Pairwise variable contains no alt_ids present for obs_id {bad_obs!r}."
+            )
+
+        values[rows_v[found], target[found].astype(np.int64)] = vals_v[found]
 
     return xr.DataArray(
         values,

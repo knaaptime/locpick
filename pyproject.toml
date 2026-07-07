@@ -68,7 +68,6 @@ docs = [
 ]
 dev = [
     "locpick[test]",
-    "locpick[jax]",
     "locpick[optax]",
     "locpick[optimagic]",
     "locpick[docs]",

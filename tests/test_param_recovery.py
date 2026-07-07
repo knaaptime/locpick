@@ -34,8 +34,13 @@ class TestMNLRecovery:
 
     def test_mnl_recovers_alt_and_interaction_params(self):
         """MNL should recover both alternative-level and interaction parameters."""
-        dataset = simulate_mnl(n_obs=10000, n_alts=6, seed=2026)
-        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        dataset = simulate_mnl(
+            n_obs=10000,
+            n_alts=6,
+            seed=2026,
+            interaction_params={"obs_feature_x_alt_feature": 0.95},
+        )
+        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -44,8 +49,8 @@ class TestMNLRecovery:
             rtol=0.10,
         )
         npt.assert_allclose(
-            result.coefficients["obs_x_alt"],
-            dataset.true_params["obs_x_alt"],
+            result.coefficients["obs_feature_x_alt_feature"],
+            dataset.true_params["obs_feature_x_alt_feature"],
             rtol=0.10,
         )
 
@@ -78,7 +83,12 @@ class TestNestedLogitRecovery:
 
     def test_nested_logit_recovers_beta_params(self):
         """Nested logit should recover beta coefficients within tolerance."""
-        dataset = simulate_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        dataset = simulate_nested_logit(
+            n_obs=10000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time - 1",
@@ -97,7 +107,12 @@ class TestNestedLogitRecovery:
 
     def test_nested_logit_recovers_lambda_params(self):
         """Nested logit should recover nest dissimilarity parameters."""
-        dataset = simulate_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        dataset = simulate_nested_logit(
+            n_obs=10000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time - 1",
@@ -121,6 +136,7 @@ class TestNestedLogitRecovery:
             n_alts=4,
             nest_lambdas={"transit": 0.99, "auto": 0.99},
             seed=42,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
         )
         model = ChoiceModel(
             dataset.choice_table,
@@ -144,7 +160,13 @@ class TestSCLRecovery:
 
     def test_scl_recovers_beta_params(self):
         """SCL should recover beta coefficients within tolerance."""
-        dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
+        dataset = simulate_scl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.7,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -163,7 +185,13 @@ class TestSCLRecovery:
 
     def test_scl_recovers_rho(self):
         """SCL should recover the dissimilarity parameter ρ."""
-        dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
+        dataset = simulate_scl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.7,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -181,7 +209,13 @@ class TestSCLRecovery:
 
     def test_scl_mnl_data_rho_near_one(self):
         """When data is MNL (rho≈1), estimated rho should be > 0."""
-        dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.99, seed=42)
+        dataset = simulate_scl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.99,
+            seed=42,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -203,7 +237,12 @@ class TestMixedLogitRecovery:
 
     def test_mixed_logit_recovers_fixed_params(self):
         """Mixed logit should recover fixed coefficients within tolerance."""
-        dataset = simulate_mixed_logit(n_obs=5000, n_alts=4, seed=2026)
+        dataset = simulate_mixed_logit(
+            n_obs=5000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -225,7 +264,12 @@ class TestMixedLogitRecovery:
 
     def test_mixed_logit_recovers_random_param_means(self):
         """Mixed logit should recover random coefficient means."""
-        dataset = simulate_mixed_logit(n_obs=5000, n_alts=4, seed=2026)
+        dataset = simulate_mixed_logit(
+            n_obs=5000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -247,8 +291,13 @@ class TestMixedLogitRecovery:
 
     def test_mixed_logit_zero_spread_reduces_to_mnl(self):
         """When all spreads are zero, mixed logit should recover MNL params."""
-        dataset = simulate_mnl(n_obs=10000, n_alts=4, seed=42)
-        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_x_alt - 1")
+        dataset = simulate_mnl(
+            n_obs=10000,
+            n_alts=4,
+            seed=42,
+            interaction_params={"obs_feature_x_alt_feature": 0.8},
+        )
+        model = ChoiceModel(dataset.choice_table, "alt_feature + obs_feature_x_alt_feature - 1")
         result = model.fit()
 
         npt.assert_allclose(
@@ -268,7 +317,13 @@ class TestMSCLRecovery:
 
     def test_mscl_recovers_fixed_params(self):
         """MSCL should recover fixed coefficients within tolerance."""
-        dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
+        dataset = simulate_mscl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.7,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -289,7 +344,13 @@ class TestMSCLRecovery:
 
     def test_mscl_recovers_rho(self):
         """MSCL should recover the dissimilarity parameter ρ."""
-        dataset = simulate_mscl(n_obs=3000, n_alts=6, rho=0.7, seed=2026)
+        dataset = simulate_mscl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.7,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -312,7 +373,13 @@ class TestMSCLRecovery:
 
     def test_mscl_no_random_params_recovers_scl(self):
         """MSCL with no random params should behave like SCL."""
-        dataset = simulate_scl(n_obs=3000, n_alts=6, rho=0.7, seed=42)
+        dataset = simulate_scl(
+            n_obs=3000,
+            n_alts=6,
+            rho=0.7,
+            seed=42,
+            interaction_params={"income_x_cost": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost - 1",
@@ -341,7 +408,12 @@ class TestMixedNestedRecovery:
 
     def test_mixed_nested_recovers_beta_params(self):
         """Mixed nested logit should recover fixed beta coefficients."""
-        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        dataset = simulate_mixed_nested_logit(
+            n_obs=10000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
@@ -373,7 +445,12 @@ class TestMixedNestedRecovery:
 
     def test_mixed_nested_recovers_lambda_params(self):
         """Mixed nested logit should recover nest dissimilarity parameters."""
-        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        dataset = simulate_mixed_nested_logit(
+            n_obs=10000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
@@ -405,7 +482,12 @@ class TestMixedNestedRecovery:
 
     def test_mixed_nested_recovers_random_means(self):
         """Mixed nested logit should recover random parameter means."""
-        dataset = simulate_mixed_nested_logit(n_obs=10000, n_alts=4, seed=2026)
+        dataset = simulate_mixed_nested_logit(
+            n_obs=10000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8},
+        )
         from locpick.models.nested import NestingTree, NestSpec
 
         nest_tree = NestingTree(
