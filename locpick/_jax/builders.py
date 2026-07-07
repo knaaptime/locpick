@@ -25,6 +25,7 @@ from jax.scipy.special import logsumexp as jax_logsumexp
 from .data import ChoiceDataJAX
 from .kernels import (
     _NEG_INF,
+    _normal_cdf,
     compute_ll,
     compute_ll_contribs,
     compute_utilities,
@@ -268,17 +269,7 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         # Uniform on [μ - σ, μ + σ]
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         # Symmetric triangular on [μ - σ, μ + σ]
@@ -316,7 +307,7 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -361,17 +352,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         spreads = beta_random_spreads[None, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -396,7 +377,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         log_L_n = (log_probs * data.chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * data.weights
 
@@ -476,17 +457,7 @@ def _mnscl_ll_kernel(
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -556,7 +527,7 @@ def _mnscl_ll_kernel(
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -626,17 +597,7 @@ def _mnscl_ll_contribs_kernel(
         spreads = beta_random_spreads[None, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -692,7 +653,7 @@ def _mnscl_ll_contribs_kernel(
         log_L_n = (log_probs_full * data.chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * data.weights
 

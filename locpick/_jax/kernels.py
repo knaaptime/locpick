@@ -36,6 +36,17 @@ from jax.scipy.special import logsumexp as jax_logsumexp  # noqa: E402
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
 
 
+def _normal_cdf(z):
+    """Standard normal CDF Φ(z), JAX-native and differentiable.
+
+    Replaces the hand-coded Abramowitz-Stegun 26.2.17 polynomial
+    approximation that was copy-pasted across 6+ locations.
+    """
+    from jax.scipy.stats import norm
+
+    return norm.cdf(z)
+
+
 # ---------------------------------------------------------------------------
 # MNL kernel
 # ---------------------------------------------------------------------------
@@ -503,17 +514,7 @@ def mixed_logit_ll(
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Transform standard normal draws to uniform via CDF
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         # Uniform on [μ - σ, μ + σ]
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         # Symmetric triangular on [μ - σ, μ + σ]
@@ -555,7 +556,7 @@ def mixed_logit_ll(
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -595,17 +596,7 @@ def mixed_logit_ll_contribs(
         z_r = draws[:, r, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -632,7 +623,7 @@ def mixed_logit_ll_contribs(
         log_L_n = (log_probs * chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * weights
 
@@ -715,17 +706,7 @@ def mixed_nested_logit_ll(
         # Generate random coefficients (same as mixed_logit_ll)
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -762,7 +743,7 @@ def mixed_nested_logit_ll(
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -803,17 +784,7 @@ def mixed_nested_logit_ll_contribs(
         z_r = draws[:, r, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -840,7 +811,7 @@ def mixed_nested_logit_ll_contribs(
         log_L_n = (log_probs * chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * weights
 
