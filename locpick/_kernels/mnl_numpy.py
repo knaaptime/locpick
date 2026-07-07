@@ -170,64 +170,6 @@ def mnl_log_likelihood_numpy(
 
 
 # ---------------------------------------------------------------------------
-# MNL gradient kernel
-# ---------------------------------------------------------------------------
-
-
-def mnl_gradient_numpy(
-    beta: np.ndarray,
-    design_matrix: np.ndarray,
-    chosen: np.ndarray,
-    available: np.ndarray,
-    n_obs: int,
-    n_alts: int,
-    weights: OptionalArray = None,
-    inclusion_probs: OptionalArray = None,
-) -> np.ndarray:
-    """Compute the MNL gradient.
-
-    Parameters
-    ----------
-    beta : np.ndarray, shape (n_params,)
-        Parameter vector.
-    design_matrix : np.ndarray, shape (n_obs * n_alts, n_params)
-        Design matrix.
-    chosen : np.ndarray, shape (n_obs, n_alts)
-        Binary chosen-alternative indicators.
-    available : np.ndarray, shape (n_obs, n_alts)
-        Binary availability mask.
-    n_obs : int
-        Number of observations.
-    n_alts : int
-        Number of alternatives per observation.
-    weights : np.ndarray or None, shape (n_obs,)
-        Observation weights.
-    inclusion_probs : np.ndarray or None, shape (n_obs, n_alts)
-        Inclusion probabilities.
-
-    Returns
-    -------
-    np.ndarray, shape (n_params,)
-        Gradient vector.
-    """
-    # Step 1: systematic utility
-    utilities = (design_matrix @ beta).reshape(n_obs, n_alts)
-
-    # Steps 2–4: probabilities
-    probs = mnl_probs_numpy(utilities, available, inclusion_probs)
-
-    # Step 5: residual = chosen - probs, masked by availability
-    residual = chosen - probs
-    residual = residual * available  # zero out unavailable
-
-    if weights is not None:
-        residual = residual * weights.reshape(n_obs, 1)
-
-    grad = design_matrix.T @ residual.ravel()
-    return grad
-
-
-# ---------------------------------------------------------------------------
 # MNL observation-level scores kernel
 # ---------------------------------------------------------------------------
 

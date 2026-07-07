@@ -17,6 +17,7 @@ MixedNestedMNL.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import numpy as np
@@ -30,7 +31,6 @@ from ..results.fit_result import FitResult
 from ._spatial import (
     EdgeStructure,
     _resolve_spatial_graph,
-    naturalize_rho,
 )
 from .base import (
     BaseChoiceModel,
@@ -41,7 +41,67 @@ from .base import (
     _sandwich_inv,
 )
 from .mixed import ParamDistribution, _resolve_draws
-from .nested import NestingTree, naturalize_nest_params
+from .nested import NestingTree
+
+
+@dataclass
+class ParamLayout:
+    """Describes how to extract display-scale parameters from the unconstrained vector.
+
+    Encapsulates the parameter layout for a specific model variant,
+    replacing the 8+ branches in ``_build_fit_result`` with a single
+    data-driven extraction.
+
+    Attributes
+    ----------
+    display_names : list[str]
+        Names of display-scale parameters.
+    transforms : list[tuple[int, str, float | None]]
+        One per display parameter: (raw_idx, transform_type, value).
+        transform_type is "identity", "sigmoid", "tanh", or "softplus".
+        value is the natural-scale value (for delta-method SE); None for identity.
+    """
+
+    display_names: list[str]
+    transforms: list[tuple[int, str, float | None]]
+
+    def extract(self, all_params: np.ndarray) -> tuple[np.ndarray, list[str], list[dict]]:
+        """Extract display-scale values, names, and transform_spec from unconstrained params.
+
+        Parameters
+        ----------
+        all_params : np.ndarray
+            Full parameter vector in unconstrained (optimizer) space.
+
+        Returns
+        -------
+        display_values : np.ndarray
+        display_names : list[str]
+        transform_spec : list[dict]
+            For ``_compute_se_generic``.
+        """
+        display_values = np.empty(len(self.transforms), dtype=np.float64)
+        transform_spec = []
+        for i, (raw_idx, ttype, _) in enumerate(self.transforms):
+            raw_val = float(all_params[raw_idx])
+            if ttype == "identity":
+                display_values[i] = raw_val
+            elif ttype == "sigmoid":
+                display_values[i] = 1.0 / (1.0 + np.exp(-raw_val))
+            elif ttype == "tanh":
+                display_values[i] = np.tanh(raw_val)
+            elif ttype == "softplus":
+                display_values[i] = abs(raw_val)
+            else:
+                display_values[i] = raw_val
+            transform_spec.append(
+                {
+                    "raw_idx": raw_idx,
+                    "type": ttype,
+                    "value": float(display_values[i]) if ttype != "identity" else None,
+                }
+            )
+        return display_values, self.display_names, transform_spec
 
 
 class ChoiceModel(BaseChoiceModel, SpatialMixin):
@@ -735,6 +795,148 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     # Fit result construction
     # ------------------------------------------------------------------
 
+    def _build_param_layout(self, arrays: ChoiceArrays) -> ParamLayout:
+        """Build the parameter layout for the current model variant.
+
+        Encapsulates how to extract display-scale parameters from the
+        unconstrained optimizer vector.  Called once per fit.
+        """
+        k = arrays.design_matrix.shape[1]
+        param_names_all = list(arrays.param_names)
+        n_nests = self._nests.n_nests if self._is_nested else 0
+        k_fixed = self._k_fixed if self._is_mixed else k
+        k_random = self._k_random if self._is_mixed else 0
+
+        # --- Pure MNL / SCL / SAR ---
+        if not self._is_nested and not self._is_mixed:
+            names = param_names_all + (["rho"] if self._is_spatial else [])
+            transforms = [{"raw_idx": j, "type": "identity"} for j in range(k)]
+            if self._is_spatial_lag:
+                transforms.append({"raw_idx": k, "type": "tanh", "value": None})
+            elif self._is_spatial_scl:
+                transforms.append({"raw_idx": k, "type": "sigmoid", "value": None})
+            return ParamLayout(
+                display_names=names,
+                transforms=[(t["raw_idx"], t["type"], t.get("value")) for t in transforms],
+            )
+
+        # --- Nested (no random) ---
+        if self._is_nested and not self._is_mixed:
+            if self._is_spatial_lag:
+                # [beta, alpha_rho, alpha_lambda_1..M]
+                names = param_names_all + ["rho"] + [f"lambda_{n}" for n in self._nests.nest_names]
+                transforms = (
+                    [(j, "identity", None) for j in range(k)]
+                    + [(k, "tanh", None)]
+                    + [(k + 1 + m, "sigmoid", None) for m in range(n_nests)]
+                )
+            elif self._is_spatial_scl:
+                # [beta, alpha_rho_1..M, alpha_lambda_1..M]
+                names = (
+                    param_names_all
+                    + [f"rho_{n}" for n in self._nests.nest_names]
+                    + [f"lambda_{n}" for n in self._nests.nest_names]
+                )
+                transforms = (
+                    [(j, "identity", None) for j in range(k)]
+                    + [(k + m, "sigmoid", None) for m in range(n_nests)]
+                    + [(k + n_nests + m, "sigmoid", None) for m in range(n_nests)]
+                )
+            else:
+                # [beta, alpha_nest]
+                names = param_names_all + [f"lambda_{n}" for n in self._nests.nest_names]
+                transforms = [(j, "identity", None) for j in range(k)] + [
+                    (k + m, "sigmoid", None) for m in range(n_nests)
+                ]
+            return ParamLayout(display_names=names, transforms=transforms)
+
+        # --- Mixed (no nests) ---
+        if self._is_mixed and not self._is_nested:
+            if self._is_spatial_lag or self._is_spatial_scl:
+                # [beta_fixed, alpha_rho, mean_*, sd_*]
+                ttype = "tanh" if self._is_spatial_lag else "sigmoid"
+                names = (
+                    list(self._fixed_names)
+                    + ["rho"]
+                    + [f"mean_{n}" for n in self._random_param_names]
+                    + [f"sd_{n}" for n in self._random_param_names]
+                )
+                transforms = (
+                    [(j, "identity", None) for j in range(k_fixed)]
+                    + [(k_fixed, ttype, None)]
+                    + [(k_fixed + 1 + j, "identity", None) for j in range(k_random)]
+                    + [(k_fixed + 1 + k_random + j, "softplus", None) for j in range(k_random)]
+                )
+            else:
+                # [beta_fixed, mean_*, sd_*]
+                names = list(self._full_param_names)
+                transforms = [(j, "identity", None) for j in range(len(names))]
+            return ParamLayout(display_names=names, transforms=transforms)
+
+        # --- Mixed Nested ---
+        if self._is_nested and self._is_mixed:
+            fixed_param_names = [
+                name for name in param_names_all if name not in self._random_params
+            ]
+            if self._is_spatial_lag:
+                # [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]
+                names = (
+                    fixed_param_names
+                    + ["rho"]
+                    + [f"lambda_{n}" for n in self._nests.nest_names]
+                    + [f"mean_{n}" for n in self._random_param_names]
+                    + [f"sd_{n}" for n in self._random_param_names]
+                )
+                transforms = (
+                    [(j, "identity", None) for j in range(k_fixed)]
+                    + [(k_fixed, "tanh", None)]
+                    + [(k_fixed + 1 + m, "sigmoid", None) for m in range(n_nests)]
+                    + [(k_fixed + 1 + n_nests + j, "identity", None) for j in range(k_random)]
+                    + [
+                        (k_fixed + 1 + n_nests + k_random + j, "softplus", None)
+                        for j in range(k_random)
+                    ]
+                )
+            elif self._is_spatial_scl:
+                # [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
+                names = (
+                    fixed_param_names
+                    + [f"rho_{n}" for n in self._nests.nest_names]
+                    + [f"lambda_{n}" for n in self._nests.nest_names]
+                    + [f"mean_{n}" for n in self._random_param_names]
+                    + [f"sd_{n}" for n in self._random_param_names]
+                )
+                transforms = (
+                    [(j, "identity", None) for j in range(k_fixed)]
+                    + [(k_fixed + m, "sigmoid", None) for m in range(n_nests)]
+                    + [(k_fixed + n_nests + m, "sigmoid", None) for m in range(n_nests)]
+                    + [(k_fixed + 2 * n_nests + j, "identity", None) for j in range(k_random)]
+                    + [
+                        (k_fixed + 2 * n_nests + k_random + j, "softplus", None)
+                        for j in range(k_random)
+                    ]
+                )
+            else:
+                # [beta_fixed, alpha_nest, mean_*, sd_*]
+                names = (
+                    fixed_param_names
+                    + [f"lambda_{n}" for n in self._nests.nest_names]
+                    + [f"mean_{n}" for n in self._random_param_names]
+                    + [f"sd_{n}" for n in self._random_param_names]
+                )
+                transforms = (
+                    [(j, "identity", None) for j in range(k_fixed)]
+                    + [(k_fixed + m, "sigmoid", None) for m in range(n_nests)]
+                    + [(k_fixed + n_nests + j, "identity", None) for j in range(k_random)]
+                    + [
+                        (k_fixed + n_nests + k_random + j, "softplus", None)
+                        for j in range(k_random)
+                    ]
+                )
+            return ParamLayout(display_names=names, transforms=transforms)
+
+        raise RuntimeError("Unknown model configuration")
+
     def _build_fit_result(
         self,
         solver_result: SolverResult,
@@ -742,297 +944,12 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     ) -> FitResult:
         """Build a FitResult from solver output."""
         all_params = solver_result.coefficients
-        k = arrays.design_matrix.shape[1]
-        param_names_all = list(arrays.param_names)
-
-        # --- Pure MNL / SCL / SAR ---
-        if not self._is_nested and not self._is_mixed:
-            if self._is_spatial_lag:
-                # SAR: Layout [beta_1..k, alpha_rho], rho = tanh(alpha_rho)
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                rho = np.tanh(alpha_rho)
-                display_values = np.concatenate([beta, [rho]])
-                display_names = param_names_all + ["rho"]
-            elif self._is_spatial_scl:
-                # SCL: Layout [beta_1..k, alpha_rho], rho = sigmoid(alpha_rho)
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                rho = naturalize_rho(alpha_rho)
-                display_values = np.concatenate([beta, [rho]])
-                display_names = param_names_all + ["rho"]
-            else:
-                display_values = all_params
-                display_names = param_names_all
-
-            # Build transform spec for data-driven SE computation
-            if self._is_spatial_lag:
-                transform_spec = [{"raw_idx": j, "type": "identity"} for j in range(k)] + [
-                    {"raw_idx": k, "type": "tanh", "value": rho}
-                ]
-            elif self._is_spatial_scl:
-                transform_spec = [{"raw_idx": j, "type": "identity"} for j in range(k)] + [
-                    {"raw_idx": k, "type": "sigmoid", "value": rho}
-                ]
-            else:
-                transform_spec = [
-                    {"raw_idx": j, "type": "identity"} for j in range(len(all_params))
-                ]
-            std_errors = self._compute_se_generic(all_params, transform_spec)
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Nested (no random) ---
-        if self._is_nested and not self._is_mixed:
-            n_nests = self._nests.n_nests
-            if self._is_spatial_lag:
-                # SAR + Nested: Layout [beta, alpha_rho, alpha_lambda_1..M]
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                alpha_lambda = all_params[k + 1 : k + 1 + n_nests]
-                rho = np.tanh(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate([beta, [rho], lambdas])
-                display_names = (
-                    param_names_all
-                    + ["rho"]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k)]
-                    + [{"raw_idx": k, "type": "tanh", "value": rho}]
-                    + [
-                        {"raw_idx": k + 1 + m, "type": "sigmoid", "value": lambdas[m]}
-                        for m in range(n_nests)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            elif self._is_spatial_scl:
-                # SCL + Nested: Layout [beta, alpha_rho_1..M, alpha_lambda_1..M]
-                beta = all_params[:k]
-                alpha_rho = all_params[k : k + n_nests]
-                alpha_lambda = all_params[k + n_nests : k + 2 * n_nests]
-                rhos = naturalize_rho(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate([beta, rhos, lambdas])
-                display_names = (
-                    param_names_all
-                    + [f"rho_{name}" for name in self._nests.nest_names]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k)]
-                    + [
-                        {"raw_idx": k + m, "type": "sigmoid", "value": rhos[m]}
-                        for m in range(n_nests)
-                    ]
-                    + [
-                        {"raw_idx": k + n_nests + m, "type": "sigmoid", "value": lambdas[m]}
-                        for m in range(n_nests)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            else:
-                # Layout: [beta, alpha_nest]
-                beta = all_params[:k]
-                alpha = all_params[k:]
-                lambdas = naturalize_nest_params(alpha)
-                display_values = np.concatenate([beta, lambdas])
-                display_names = param_names_all + [
-                    f"lambda_{name}" for name in self._nests.nest_names
-                ]
-                transform_spec = [{"raw_idx": j, "type": "identity"} for j in range(k)] + [
-                    {"raw_idx": k + m, "type": "sigmoid", "value": lambdas[m]}
-                    for m in range(n_nests)
-                ]
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Mixed (no nests) ---
-        if self._is_mixed and not self._is_nested:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            if self._is_spatial_lag:
-                # SAR + Mixed: Layout [beta_fixed, alpha_rho, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                rho = np.tanh(alpha_rho)
-                beta_random_means = all_params[k_fixed + 1 : k_fixed + 1 + k_random]
-                beta_random_spreads = all_params[k_fixed + 1 + k_random :]
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], beta_random_means, beta_random_spreads]
-                )
-                display_names = (
-                    list(self._fixed_names)
-                    + ["rho"]
-                    + [f"mean_{n}" for n in self._random_param_names]
-                    + [f"sd_{n}" for n in self._random_param_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k_fixed)]
-                    + [{"raw_idx": k_fixed, "type": "tanh", "value": rho}]
-                    + [
-                        {"raw_idx": k_fixed + 1 + j, "type": "identity"}
-                        for j in range(2 * k_random)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            elif self._is_spatial_scl:
-                # SCL + Mixed (MSCL): Layout [beta_fixed, alpha_rho, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                rho = naturalize_rho(alpha_rho)
-                beta_random_means = all_params[k_fixed + 1 : k_fixed + 1 + k_random]
-                beta_random_spreads = all_params[k_fixed + 1 + k_random :]
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], beta_random_means, beta_random_spreads]
-                )
-                display_names = (
-                    list(self._fixed_names)
-                    + ["rho"]
-                    + [f"mean_{n}" for n in self._random_param_names]
-                    + [f"sd_{n}" for n in self._random_param_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k_fixed)]
-                    + [{"raw_idx": k_fixed, "type": "sigmoid", "value": rho}]
-                    + [
-                        {"raw_idx": k_fixed + 1 + j, "type": "identity"}
-                        for j in range(2 * k_random)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            else:
-                # Layout: [beta_fixed, mean_*, sd_*]
-                display_values = all_params
-                display_names = list(self._full_param_names)
-                transform_spec = [
-                    {"raw_idx": j, "type": "identity"} for j in range(len(all_params))
-                ]
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Mixed Nested ---
-        if self._is_nested and self._is_mixed:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            n_nests = self._nests.n_nests
-            fixed_param_names = [
-                name for name in param_names_all if name not in self._random_params
-            ]
-
-            if self._is_spatial_lag:
-                # SAR + Mixed + Nested: Layout [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                alpha_lambda = all_params[k_fixed + 1 : k_fixed + 1 + n_nests]
-                beta_random_means = all_params[
-                    k_fixed + 1 + n_nests : k_fixed + 1 + n_nests + k_random
-                ]
-                beta_random_spreads = all_params[k_fixed + 1 + n_nests + k_random :]
-                rho = np.tanh(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + ["rho"]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k_fixed)]
-                    + [{"raw_idx": k_fixed, "type": "tanh", "value": rho}]
-                    + [
-                        {"raw_idx": k_fixed + 1 + m, "type": "sigmoid", "value": lambdas[m]}
-                        for m in range(n_nests)
-                    ]
-                    + [
-                        {"raw_idx": k_fixed + 1 + n_nests + j, "type": "identity"}
-                        for j in range(2 * k_random)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            elif self._is_spatial_scl:
-                # SCL + Mixed + Nested: Layout [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed : k_fixed + n_nests]
-                alpha_lambda = all_params[k_fixed + n_nests : k_fixed + 2 * n_nests]
-                beta_random_means = all_params[
-                    k_fixed + 2 * n_nests : k_fixed + 2 * n_nests + k_random
-                ]
-                beta_random_spreads = all_params[k_fixed + 2 * n_nests + k_random :]
-                rhos = naturalize_rho(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate(
-                    [beta_fixed, rhos, lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + [f"rho_{name}" for name in self._nests.nest_names]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k_fixed)]
-                    + [
-                        {"raw_idx": k_fixed + m, "type": "sigmoid", "value": rhos[m]}
-                        for m in range(n_nests)
-                    ]
-                    + [
-                        {"raw_idx": k_fixed + n_nests + m, "type": "sigmoid", "value": lambdas[m]}
-                        for m in range(n_nests)
-                    ]
-                    + [
-                        {"raw_idx": k_fixed + 2 * n_nests + j, "type": "identity"}
-                        for j in range(2 * k_random)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-            else:
-                # Layout: [beta_fixed, alpha_nest, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_nest = all_params[k_fixed : k_fixed + n_nests]
-                beta_random_means = all_params[k_fixed + n_nests : k_fixed + n_nests + k_random]
-                beta_random_spreads = all_params[k_fixed + n_nests + k_random :]
-                lambdas = naturalize_nest_params(alpha_nest)
-                display_values = np.concatenate(
-                    [beta_fixed, lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                transform_spec = (
-                    [{"raw_idx": j, "type": "identity"} for j in range(k_fixed)]
-                    + [
-                        {"raw_idx": k_fixed + m, "type": "sigmoid", "value": lambdas[m]}
-                        for m in range(n_nests)
-                    ]
-                    + [
-                        {"raw_idx": k_fixed + n_nests + j, "type": "identity"}
-                        for j in range(2 * k_random)
-                    ]
-                )
-                std_errors = self._compute_se_generic(all_params, transform_spec)
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        raise RuntimeError("Unknown model configuration")
+        layout = self._build_param_layout(arrays)
+        display_values, display_names, transform_spec = layout.extract(all_params)
+        std_errors = self._compute_se_generic(all_params, transform_spec)
+        return self._make_fit_result(
+            solver_result, arrays, display_values, display_names, std_errors
+        )
 
     # ------------------------------------------------------------------
     # Standard error computation helpers
