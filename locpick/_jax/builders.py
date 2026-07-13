@@ -89,7 +89,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _ll_jax(beta):
         return _mnl_ll_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -101,7 +101,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _ll_contribs_jax(beta):
         return _mnl_ll_contribs_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -113,7 +113,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _grad_jax(beta):
         return _mnl_grad_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -505,22 +505,22 @@ def _mnscl_ll_kernel(
             )
 
             nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-
-            for idx, alt_global in enumerate(nest_alts):
-                log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+            # Vectorized scatter (replaces per-alt .at[].set() loop)
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
         # Top-level NL: compute nest probabilities
         nest_exponents = lambdas[None, :] * nest_log_G  # (n_obs, n_nests)
         log_denom_top = jax_logsumexp(nest_exponents, axis=1)  # (n_obs,)
         log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
 
-        # Combine: P_i = P_SCL(i|m) * P_NL(m)
+        # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
         for m in range(n_nests):
             nest_alts = nest_alt_indices[m]
-            for alt_global in nest_alts:
-                old_log_prob = log_probs_full[:, alt_global]
-                new_log_prob = old_log_prob + log_P_nest[:, m]
-                log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+            if len(nest_alts) == 0:
+                continue
+            old = log_probs_full[:, list(nest_alts)]
+            new = old + log_P_nest[:, m][:, None]
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
         # Chosen log-probability
         log_L_n = (log_probs_full * data.chosen).sum(axis=1)
@@ -636,19 +636,21 @@ def _mnscl_ll_contribs_kernel(
                 V_m, rhos[m], edge_data_list[m], avail_m
             )
             nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-            for idx, alt_global in enumerate(nest_alts):
-                log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+            # Vectorized scatter (replaces per-alt .at[].set() loop)
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
         nest_exponents = lambdas[None, :] * nest_log_G
         log_denom_top = jax_logsumexp(nest_exponents, axis=1)
         log_P_nest = nest_exponents - log_denom_top[:, None]
 
+        # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
         for m in range(n_nests):
             nest_alts = nest_alt_indices[m]
-            for alt_global in nest_alts:
-                old_log_prob = log_probs_full[:, alt_global]
-                new_log_prob = old_log_prob + log_P_nest[:, m]
-                log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+            if len(nest_alts) == 0:
+                continue
+            old = log_probs_full[:, list(nest_alts)]
+            new = old + log_P_nest[:, m][:, None]
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
         log_L_n = (log_probs_full * data.chosen).sum(axis=1)
         return log_L_n
@@ -1040,22 +1042,22 @@ def _nested_scl_ll_kernel(params, data, nest_matrix, edge_data_list, k, nest_alt
         # Store inclusive value
         nest_log_G = nest_log_G.at[:, m].set(log_G_m)
 
-        # Scatter probabilities back to full array
-        for idx, alt_global in enumerate(nest_alts):
-            log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+        # Scatter probabilities back to full array (vectorized)
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
     # Top-level NL: compute nest probabilities
     nest_exponents = lambdas[None, :] * nest_log_G  # (n_obs, n_nests)
     log_denom_top = jax_logsumexp(nest_exponents, axis=1)  # (n_obs,)
     log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
 
-    # Combine: P_i = P_SCL(i|m) * P_NL(m)
+    # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
     for m in range(n_nests):
         nest_alts = nest_alt_indices[m]
-        for alt_global in nest_alts:
-            old_log_prob = log_probs_full[:, alt_global]
-            new_log_prob = old_log_prob + log_P_nest[:, m]
-            log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+        if len(nest_alts) == 0:
+            continue
+        old = log_probs_full[:, list(nest_alts)]
+        new = old + log_P_nest[:, m][:, None]
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
     return compute_ll(log_probs_full, data.chosen, data.weights)
 
@@ -1107,8 +1109,7 @@ def _nested_scl_ll_contribs_kernel(params, data, nest_matrix, edge_data_list, k,
             V_m, rhos[m], edge_data_list[m], avail_m
         )
         nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-        for idx, alt_global in enumerate(nest_alts):
-            log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
     nest_exponents = lambdas[None, :] * nest_log_G
     log_denom_top = jax_logsumexp(nest_exponents, axis=1)
@@ -1116,10 +1117,11 @@ def _nested_scl_ll_contribs_kernel(params, data, nest_matrix, edge_data_list, k,
 
     for m in range(n_nests):
         nest_alts = nest_alt_indices[m]
-        for alt_global in nest_alts:
-            old_log_prob = log_probs_full[:, alt_global]
-            new_log_prob = old_log_prob + log_P_nest[:, m]
-            log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+        if len(nest_alts) == 0:
+            continue
+        old = log_probs_full[:, list(nest_alts)]
+        new = old + log_P_nest[:, m][:, None]
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
     return compute_ll_contribs(log_probs_full, data.chosen, data.weights)
 

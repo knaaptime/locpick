@@ -384,35 +384,37 @@ def nested_log_probs(
     jnp.ndarray, shape (n_obs, n_alts)
         Log-probabilities for each (obs, alt) pair.
     """
-    n_obs = V.shape[0]
-    n_alts = V.shape[1]
-    n_nests = lambdas.shape[0]
+    V.shape[0]
+    V.shape[1]
+    lambdas.shape[0]
 
     # Mask unavailable
     V = jnp.where(available > 0, V, _NEG_INF)
 
-    # Determine each alternative's nest lambda
+    # Determine each alternative's nest lambda via vectorized broadcast.
+    # nest_matrix: (n_alts, n_nests), lambdas: (n_nests,)
     # long_lambda[j] = lambda_m if alt j is in nest m, else 1.0
     in_nest = nest_matrix.sum(axis=1) > 0  # (n_alts,) bool
-    long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0
-        long_lambda = jnp.where(mask_m, lambdas[m], long_lambda)
+    # An alt is in at most one nest.  Use +inf for non-member entries so min
+    # picks the correct lambda (lambdas are in (0,1], always < inf).
+    lambda_per_nest = jnp.where(nest_matrix > 0, lambdas[None, :], jnp.inf)
+    long_lambda = jnp.where(in_nest, lambda_per_nest.min(axis=1), 1.0)  # (n_alts,)
 
     # Scaled utilities: V_ij / lambda_m(j)
     scaled_V = V / long_lambda[None, :]  # (n_obs, n_alts)
 
     # Inclusive values for each nest: IV_m = logsumexp(V_ij / lambda_m for j in C_m)
-    # Build nest-specific masks and compute inclusive values
-    nest_ivs = []
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0  # (n_alts,)
-        # Mask out alternatives not in this nest
-        nest_V = jnp.where(mask_m[None, :], scaled_V, _NEG_INF)
-        nest_V = jnp.where(available > 0, nest_V, _NEG_INF)
-        iv_m = jax_logsumexp(nest_V, axis=1)  # (n_obs,)
-        nest_ivs.append(iv_m)
-    nest_iv = jnp.stack(nest_ivs, axis=1)  # (n_obs, n_nests)
+    # Vectorized: broadcast nest masks, compute logsumexp per nest in one pass.
+    # nest_matrix: (n_alts, n_nests) → masks (n_alts, n_nests)
+    nest_masks = nest_matrix > 0  # (n_alts, n_nests)
+    # scaled_V: (n_obs, n_alts) → (n_obs, n_alts, 1) * (1, n_alts, n_nests)
+    nest_V = jnp.where(
+        nest_masks[None, :, :],  # (1, n_alts, n_nests)
+        scaled_V[:, :, None],  # (n_obs, n_alts, 1)
+        _NEG_INF,
+    )  # (n_obs, n_alts, n_nests)
+    nest_V = jnp.where(available[:, :, None] > 0, nest_V, _NEG_INF)
+    nest_iv = jax_logsumexp(nest_V, axis=1)  # (n_obs, n_nests)
 
     # Nest exponents: lambda_m * IV_m
     nest_exponent = lambdas[None, :] * nest_iv  # (n_obs, n_nests)
@@ -427,21 +429,21 @@ def nested_log_probs(
     all_exponents = jnp.column_stack([nest_exponent, root_iv[:, None]])  # (n_obs, n_nests + 1)
     log_denom = jax_logsumexp(all_exponents, axis=1)  # (n_obs,)
 
-    # Compute log-probabilities for each alternative
-    log_probs = jnp.full((n_obs, n_alts), _NEG_INF, dtype=jnp.float64)
-
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0  # (n_alts,)
-        iv_m = nest_iv[:, m]  # (n_obs,)
-        lambda_m = lambdas[m]
-
-        # log P(j) = V_ij / lambda_m + (lambda_m - 1) * IV_m - log_denom
-        log_probs_m = scaled_V + (lambda_m - 1.0) * iv_m[:, None] - log_denom[:, None]
-        log_probs = jnp.where(mask_m[None, :], log_probs_m, log_probs)
+    # Compute log-probabilities for each alternative — vectorized over nests.
+    # log P(j) = V_ij / lambda_m(j) + (lambda_m(j) - 1) * IV_m(j) - log_denom
+    # For each alt j, IV_m(j) is the IV of the nest it belongs to.
+    # long_iv[j] = IV_m where j is in nest m.
+    # nest_iv: (n_obs, n_nests), nest_masks: (n_alts, n_nests) bool
+    # Use where (not multiplication) so non-member entries are -inf, not 0.
+    long_iv = jnp.where(
+        nest_masks[None, :, :],  # (1, n_alts, n_nests)
+        nest_iv[:, None, :],  # (n_obs, 1, n_nests)
+        _NEG_INF,
+    ).max(axis=2)  # (n_obs, n_alts)
+    log_probs_nested = scaled_V + (long_lambda - 1.0)[None, :] * long_iv - log_denom[:, None]
 
     # Root nest alternatives: log P(j) = V_ij - log_denom
-    log_probs_root = V - log_denom[:, None]
-    log_probs = jnp.where(root_mask[None, :], log_probs_root, log_probs)
+    log_probs = jnp.where(in_nest[None, :], log_probs_nested, V - log_denom[:, None])
 
     # Mask unavailable
     log_probs = jnp.where(available > 0, log_probs, _NEG_INF)

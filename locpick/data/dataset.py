@@ -50,6 +50,25 @@ def _resolve_pairwise(
         )
 
     n_obs, n_alts = alt_ids_matrix.shape
+    flat_alt = np.asarray(alt_ids_matrix).ravel()
+
+    # Fast path: the series already covers the full (obs, alt) grid in the
+    # canonical row-major order produced by the standard assembly path.  Then
+    # the values map directly onto ``(n_obs, n_alts)`` with a single reshape,
+    # avoiding the large intermediate lookup table and reindex below (which
+    # allocate several ``n_obs * n_alts`` arrays — costly at scale).
+    if len(series) == n_obs * n_alts:
+        alt_level_full = series.index.get_level_values(1).to_numpy()
+        if np.array_equal(alt_level_full, flat_alt) and np.array_equal(
+            series.index.get_level_values(0).to_numpy(),
+            np.repeat(np.asarray(obs_ids), n_alts),
+        ):
+            return xr.DataArray(
+                series.to_numpy(dtype=np.float64).reshape(n_obs, n_alts),
+                dims=("obs_id", "alt_pos"),
+                coords={"obs_id": obs_ids, "alt_pos": np.arange(n_alts)},
+            )
+
     values = np.full((n_obs, n_alts), np.nan, dtype=np.float64)
 
     # Vectorized (obs_id, alt_id) -> (row, alt_pos) resolution.
@@ -58,7 +77,6 @@ def _resolve_pairwise(
     # resolve every series entry in a single vectorized reindex.  This
     # replaces a per-entry ``np.where`` scan (O(nnz * n_alts)).
     flat_rows = np.repeat(np.arange(n_obs), n_alts)
-    flat_alt = np.asarray(alt_ids_matrix).ravel()
     flat_col = np.tile(np.arange(n_alts), n_obs)
     lookup = pd.Series(flat_col, index=pd.MultiIndex.from_arrays([flat_rows, flat_alt]))
     # Keep the first position for any repeated alt_id in a row (matches the
