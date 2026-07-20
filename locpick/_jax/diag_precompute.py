@@ -74,6 +74,7 @@ def chebyshev_diag_precompute(
     rho_min: float = -0.95,
     rho_max: float = 0.95,
     use_cholmod: bool = True,
+    diag_at_nodes=None,
 ) -> ChebyshevDiagPrecompute:
     """Precompute Chebyshev coefficients for ``diag((I - ρW)^{-1})``.
 
@@ -92,6 +93,10 @@ def chebyshev_diag_precompute(
         Upper bound of the ρ approximation interval.
     use_cholmod : bool, default True
         Whether to use CHOLMOD (if available).
+    diag_at_nodes : callable or None, default None
+        Optional ``rho_nodes -> (n_nodes, n_alts)`` evaluator for the exact
+        node diagonals.  When supplied it overrides the scipy factorisation
+        path (e.g. cholgraph's selected inverse).
 
     Returns
     -------
@@ -105,7 +110,10 @@ def chebyshev_diag_precompute(
     rho_nodes = 0.5 * (rho_max - rho_min) * nodes_cos + 0.5 * (rho_max + rho_min)
 
     # Evaluate diagonal at each node via sparse factorization
-    D_samples = evaluate_diagonal_at_nodes(W_sparse, rho_nodes, use_cholmod=use_cholmod)
+    if diag_at_nodes is not None:
+        D_samples = diag_at_nodes(rho_nodes)
+    else:
+        D_samples = evaluate_diagonal_at_nodes(W_sparse, rho_nodes, use_cholmod=use_cholmod)
     # D_samples: (order, n_alts)
 
     # DCT-I → Chebyshev coefficients per alternative
@@ -289,6 +297,7 @@ def aaa_diag_precompute(
     tol: float = 1e-10,
     max_iter: int = 30,
     use_cholmod: bool = False,
+    diag_at_nodes=None,
 ) -> AAADiagPrecompute:
     """Precompute AAA rational approximants for ``diag((I - ρW)^{-1})``.
 
@@ -310,6 +319,9 @@ def aaa_diag_precompute(
         Maximum AAA support points.
     use_cholmod : bool, default False
         Whether to use CHOLMOD (typically False for non-symmetric W).
+    diag_at_nodes : callable or None, default None
+        Optional ``rho_nodes -> (n_nodes, n_alts)`` evaluator for the exact
+        node diagonals, overriding the scipy factorisation path.
 
     Returns
     -------
@@ -323,7 +335,10 @@ def aaa_diag_precompute(
     rho_coarse = 0.5 * (rho_max - rho_min) * coarse_cos + 0.5 * (rho_max + rho_min)
 
     # Evaluate diagonal at coarse points (shared across all components)
-    D_coarse = evaluate_diagonal_at_nodes(W_sparse, rho_coarse, use_cholmod=use_cholmod)
+    if diag_at_nodes is not None:
+        D_coarse = diag_at_nodes(rho_coarse)
+    else:
+        D_coarse = evaluate_diagonal_at_nodes(W_sparse, rho_coarse, use_cholmod=use_cholmod)
     # D_coarse: (n_coarse, n_alts)
 
     # Fit AAA per component
@@ -438,6 +453,7 @@ def precompute_diagonal(
     order: int = 20,
     n_coarse: int = 30,
     method: str = "aaa",
+    diag_at_nodes=None,
 ) -> DiagPrecompute:
     """Precompute diagonal interpolation for ``diag((I - ρW)^{-1})``.
 
@@ -467,6 +483,10 @@ def precompute_diagonal(
     method : {"aaa", "chebyshev"}, default "aaa"
         Interpolation family.  ``"chebyshev"`` is retained for
         benchmarking and requires symmetric W.
+    diag_at_nodes : callable or None, default None
+        Optional ``rho_nodes -> (n_nodes, n_alts)`` evaluator for the exact
+        node diagonals, overriding the scipy factorisation path (e.g.
+        cholgraph's selected inverse for symmetrizable W).
 
     Returns
     -------
@@ -478,7 +498,9 @@ def precompute_diagonal(
     if method == "chebyshev":
         if not symmetric:
             raise ValueError("Chebyshev diagonal precompute requires a symmetric W.")
-        pre = chebyshev_diag_precompute(W_sparse, order=order, rho_min=rho_min, rho_max=rho_max)
+        pre = chebyshev_diag_precompute(
+            W_sparse, order=order, rho_min=rho_min, rho_max=rho_max, diag_at_nodes=diag_at_nodes
+        )
         return DiagPrecompute(method="chebyshev", cheb_pre=pre, n_alts=n)
     if method != "aaa":
         raise ValueError(f"Unknown method {method!r}; expected 'aaa' or 'chebyshev'.")
@@ -489,5 +511,6 @@ def precompute_diagonal(
         rho_max=rho_max,
         n_coarse=n_coarse,
         use_cholmod=symmetric,
+        diag_at_nodes=diag_at_nodes,
     )
     return DiagPrecompute(method="aaa", aaa_pre=pre, n_alts=n)

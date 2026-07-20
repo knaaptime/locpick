@@ -50,9 +50,14 @@ spatial = [
     "geopandas >= 0.13",
     "scikit-learn >= 1.2",
 ]
-# CHOLMOD-accelerated sparse SAR solves for symmetric weights.  Optional:
-# the sparse path falls back to SciPy SuperLU when scikit-sparse is absent.
+# Sparse SAR spatial-filter solves.  cholgraph (CHOLMOD) and klujax (KLU)
+# give JIT-native, differentiable solves for the estimation kernels; scikit-
+# sparse provides the CHOLMOD/KLU factorisations used off the JAX path
+# (prediction/scoring).  All optional: the estimator falls back to a dense
+# solve and the numpy paths to SciPy SuperLU when these are absent.
 sparse = [
+    "cholgraph >= 0.6",
+    "klujax >= 0.5",
     "scikit-sparse >= 0.4",
 ]
 test = [

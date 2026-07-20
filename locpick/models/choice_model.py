@@ -384,37 +384,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         # Resolve spatial graph if graph is provided
         if self._is_spatial:
             if self._is_spatial_lag:
-                # SAR: resolve W via _spatial_weights resolver
-                from ._spatial_weights import resolve_spatial_weights
-
-                self._W_sparse = resolve_spatial_weights(
-                    self._graph_input, arrays.n_alts, row_standardize=True
-                )[1]  # get the CSR sparse
-
-                # Precompute diagonal interpolation for variance normalization.
-                # D(ρ) = diag((I - ρW)^{-1}) depends only on ρ, so we
-                # precompute it at Chebyshev/AAA nodes and interpolate
-                # via pure JAX (differentiable, JIT-compatible).
-                # This replaces the 20-term power series approximation.
-                if arrays.n_alts > 50:
-                    from .._jax.diag_precompute import precompute_diagonal
-
-                    self._diag_precompute = precompute_diagonal(self._W_sparse)
-                else:
-                    self._diag_precompute = None
-
-                # Create sparse solve context for large n_alts.
-                # Uses CHOLMOD (symmetric W) or SuperLU (non-symmetric W)
-                # with symbolic factorization reuse + custom VJP for
-                # JAX autodiff.  Replaces dense LU (O(n³) per iteration).
-                if arrays.n_alts > 500:
-                    from .._jax.sparse_solve import SparseSolveContext, make_sparse_solve_fn
-
-                    self._sparse_solve_ctx = SparseSolveContext(self._W_sparse)
-                    self._sparse_solve_fn = make_sparse_solve_fn(self._sparse_solve_ctx)
-                else:
-                    self._sparse_solve_ctx = None
-                    self._sparse_solve_fn = None
+                self._setup_sar_filter(arrays)
             else:
                 # SCL: resolve via edge structure (existing behavior)
                 self._resolve_spatial_graph()
@@ -423,6 +393,73 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 # Build per-nest edge structures for nested spatial models
                 if self._is_nested:
                     self._build_per_nest_edges(arrays)
+
+    def _setup_sar_filter(self, arrays: ChoiceArrays) -> None:
+        """Resolve W and set up the SAR spatial-filter solve + variance diagonal.
+
+        The filter ``(I - ρW)^{-1} V_base`` and the normalisation diagonal
+        ``diag((I - ρW)^{-1})`` are the per-iteration spatial cost.  When a
+        pure-JAX sparse backend is available (cholgraph for symmetrizable W,
+        klujax otherwise) the solve becomes a sparse, differentiable, JIT
+        kernel; the diagonal is interpolated from exact nodes (cholgraph's
+        selected inverse when symmetrizable).  Otherwise both fall back to
+        the dense path.
+        """
+        from ._spatial_weights import resolve_spatial_weights
+
+        self._W_sparse = resolve_spatial_weights(
+            self._graph_input, arrays.n_alts, row_standardize=True
+        )[1]
+
+        # Prefer a pure-JAX sparse solve (cholgraph for symmetrizable W, klujax
+        # otherwise): differentiable and JIT-native.  When neither is installed,
+        # fall back to the scipy sparse custom-VJP path (CHOLMOD / KLU) — still
+        # sparse, never dense.  The dense solve is used only below the threshold.
+        self._sparse_solve_ctx = None
+        self._sparse_solve_fn = None
+        self._sparse_backend = None
+        diag_at_nodes = None
+        if arrays.n_alts > 500:
+            from .._jax.sparse_backends import cholgraph_node_diagonals, make_sparse_solve_fn
+
+            solve_fn, backend = make_sparse_solve_fn(self._W_sparse)
+            # solve_fn is None only when neither cholgraph nor klujax is
+            # installed; the estimation kernel is JIT-compiled, so the
+            # host-side scipy factorisation cannot run inside it and the dense
+            # solve is used instead.  (The numpy prediction path still uses the
+            # scipy sparse factorisation — see ``_sar_sparse_filter``.)
+            self._sparse_solve_fn = solve_fn
+            self._sparse_backend = backend
+            if backend == "cholgraph":
+                diag_at_nodes = lambda nodes: cholgraph_node_diagonals(  # noqa: E731
+                    self._W_sparse, nodes
+                )
+
+        # Precompute the differentiable, JIT-compatible variance diagonal
+        # interpolant; D(ρ) depends only on ρ.
+        if arrays.n_alts > 50:
+            from .._jax.diag_precompute import precompute_diagonal
+
+            self._diag_precompute = precompute_diagonal(
+                self._W_sparse, diag_at_nodes=diag_at_nodes
+            )
+        else:
+            self._diag_precompute = None
+
+    def _sar_sparse_filter(self, rho: float, V_base: np.ndarray):
+        """Apply the SAR filter in numpy via a sparse factorisation.
+
+        Returns ``(V_filtered, D)`` where ``V_filtered = (I - ρW)^{-1} V_base``
+        and ``D = diag((I - ρW)^{-1})``.  Uses CHOLMOD (symmetrizable W) or KLU
+        via :func:`create_factorization` rather than densifying ``W`` — this is
+        the numpy prediction/scoring counterpart to the JIT sparse solve.
+        """
+        from .._jax.sparse_solve import create_factorization
+
+        fact = create_factorization(self._W_sparse, float(rho))
+        V_filtered = fact.solve(V_base.T).T
+        D = fact.diagonal_inverse()
+        return V_filtered, D
 
     def _prepare_random_params(self, arrays: ChoiceArrays) -> None:
         """Identify random parameter columns and generate draws."""
@@ -1034,16 +1071,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             dm = np.asarray(arrays.design_matrix, dtype=np.float64)
             n_obs = arrays.n_obs
             n_alts = arrays.n_alts
-            W_dense = np.asarray(self._W_sparse.toarray(), dtype=np.float64)
 
             V_base = (dm @ beta_use).reshape(n_obs, n_alts)
             from .._sampling.correction import apply_sampling_correction
 
             V_base = apply_sampling_correction(V_base, arrays)
 
-            A = np.eye(n_alts) - rho * W_dense
-            V_filtered = np.linalg.solve(A, V_base.T).T
-            D = np.diag(np.linalg.inv(A))
+            V_filtered, D = self._sar_sparse_filter(rho, V_base)
             V_star = V_filtered / D[None, :]
 
             if arrays.available is not None:

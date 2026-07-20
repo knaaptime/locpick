@@ -25,31 +25,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
+from .sparse_backends import is_symmetrizable, symmetrize
+
 # ---------------------------------------------------------------------------
 # D-symmetrization
 # ---------------------------------------------------------------------------
-
-
-def d_symmetrize(W: sp.csr_matrix) -> sp.csc_matrix:
-    """D-symmetrize a row-standardised W.
-
-    For ``W = D⁻¹A`` (row-standardised, ``A`` symmetric adjacency),
-    ``W_sym = D^{1/2} W D^{-1/2} = D^{-1/2} A D^{-1/2}`` is symmetric
-    with the **same eigenvalues** as ``W``.
-
-    This makes ``I - ρW_sym`` SPD for ``|ρ| < 1``, enabling sparse Cholesky.
-
-    A key property: ``diag((I - ρW)^{-1}) = diag((I - ρW_sym)^{-1})``
-    because the similarity transform ``D^{-1/2} (·) D^{1/2}`` preserves
-    the diagonal (the D factors cancel on the diagonal).
-    """
-    n = W.shape[0]
-    degrees = np.asarray(W.sum(axis=1)).ravel()
-    D_sqrt = np.sqrt(degrees)
-    D_inv_sqrt = 1.0 / D_sqrt
-    W_coo = W.tocoo()
-    scaled_data = D_sqrt[W_coo.row] * W_coo.data * D_inv_sqrt[W_coo.col]
-    return sp.csc_matrix((scaled_data, (W_coo.row, W_coo.col)), shape=(n, n))
 
 
 def is_symmetric(W: sp.csr_matrix, tol: float = 1e-10) -> bool:
@@ -78,13 +58,14 @@ class CholmodFactorization:
     D_sqrt: np.ndarray
     D_inv_sqrt: np.ndarray
     n: int
+    W_sym: Any = None  # cached symmetric similar matrix (csc), reused on refactorize
 
     def solve(self, B: np.ndarray) -> np.ndarray:
         """Solve ``(I - ρW) X = B`` via the D-symmetrized Cholesky path.
 
-        Uses: ``(I - ρW)^{-1} = D^{-1/2} (I - ρW_sym)^{-1} D^{1/2}``
+        Uses: ``(I - ρW)^{-1} = diag(1/s) (I - ρW_sym)^{-1} diag(s)``
 
-        So: ``X = D^{-1/2} * cholesky_solve(D^{1/2} * B)``
+        So: ``X = (1/s) * cholesky_solve(s * B)`` where ``s = D_sqrt``.
         """
         B_scaled = self.D_sqrt[:, None] * B
         X_scaled = self.factor.solve(B_scaled, system="A")
@@ -103,8 +84,30 @@ class CholmodFactorization:
 
 
 @dataclass
+class KLUFactorization:
+    """KLU (SuiteSparse) LU factorization for non-symmetric W.
+
+    KLU is tuned for the circuit-simulation-style sparse systems that
+    spatial ``I - ρW`` resembles, and supports symbolic reuse: the fill-
+    reducing ordering is found once and re-applied by ``factorize`` for
+    each new ρ.
+    """
+
+    factor: Any
+    n: int
+
+    def solve(self, B: np.ndarray) -> np.ndarray:
+        """Solve ``(I - ρW) X = B``."""
+        return self.factor.solve(B)
+
+    def diagonal_inverse(self) -> np.ndarray:
+        """Compute ``diag((I - ρW)^{-1})`` via solves against the identity."""
+        return np.diag(self.factor.solve(np.eye(self.n)))
+
+
+@dataclass
 class SuperLUFactorization:
-    """SuperLU factorization for non-symmetric W."""
+    """SuperLU factorization — last-resort fallback when SuiteSparse is absent."""
 
     lu: Any
     n: int
@@ -129,11 +132,15 @@ def create_factorization(
     W_sparse: sp.csr_matrix,
     rho: float,
     use_cholmod: bool = True,
-) -> CholmodFactorization | SuperLUFactorization:
+) -> CholmodFactorization | KLUFactorization | SuperLUFactorization:
     """Create a sparse factorization of ``I - ρW``.
 
-    Attempts CHOLMOD (via D-symmetrization) first; falls back to SuperLU
-    if CHOLMOD is unavailable or W is non-symmetric.
+    Chooses the strongest available sparse solver — never dense:
+
+    - **CHOLMOD** (scikit-sparse) when ``W`` is symmetrizable, via the SPD
+      similar matrix ``I - ρW_sym``.
+    - **KLU** (scikit-sparse) for asymmetric ``W``.
+    - **SuperLU** (SciPy) as a last resort when SuiteSparse is unavailable.
 
     Parameters
     ----------
@@ -142,74 +149,69 @@ def create_factorization(
     rho : float
         Spatial autoregressive parameter.
     use_cholmod : bool, default True
-        Whether to attempt CHOLMOD (requires scikit-sparse).
+        Whether to attempt the CHOLMOD (symmetrizable) path.
 
     Returns
     -------
-    CholmodFactorization or SuperLUFactorization
+    CholmodFactorization, KLUFactorization or SuperLUFactorization
     """
     n = W_sparse.shape[0]
     W_csr = sp.csr_matrix(W_sparse, dtype=np.float64)
     W_csr.setdiag(0.0)
     W_csr.eliminate_zeros()
 
-    if use_cholmod and is_symmetric(W_csr):
+    if use_cholmod and is_symmetrizable(W_csr):
         try:
             from sksparse.cholmod import CholeskyFactor
 
-            W_sym = d_symmetrize(W_csr)
+            W_sym_csr, s = symmetrize(W_csr)
+            W_sym = sp.csc_matrix(W_sym_csr)
             A_sym = sp.eye(n, format="csc") - rho * W_sym
-            # Constructor does symbolic analysis, factorize does numeric
             factor = CholeskyFactor(A_sym)
             factor.factorize(A_sym)
-
-            degrees = np.asarray(W_csr.sum(axis=1)).ravel()
-            D_sqrt = np.sqrt(degrees)
-            D_inv_sqrt = 1.0 / D_sqrt
-
             return CholmodFactorization(
-                factor=factor,
-                D_sqrt=D_sqrt,
-                D_inv_sqrt=D_inv_sqrt,
-                n=n,
+                factor=factor, D_sqrt=s, D_inv_sqrt=1.0 / s, n=n, W_sym=W_sym
             )
         except ImportError:
             pass
 
-    # Fallback: SuperLU
+    # Asymmetric (or CHOLMOD unavailable): prefer KLU, else SuperLU.
     A = sp.eye(n, format="csc") - rho * W_csr
-    from scipy.sparse.linalg import splu
+    try:
+        from sksparse.klu import klu_factor
 
-    lu = splu(A)
-    return SuperLUFactorization(lu=lu, n=n)
+        return KLUFactorization(factor=klu_factor(sp.csc_array(A)), n=n)
+    except ImportError:
+        from scipy.sparse.linalg import splu
+
+        return SuperLUFactorization(lu=splu(A), n=n)
 
 
 def refactorize(
-    fact: CholmodFactorization | SuperLUFactorization,
+    fact: CholmodFactorization | KLUFactorization | SuperLUFactorization,
     W_sparse: sp.csr_matrix,
     rho: float,
-) -> CholmodFactorization | SuperLUFactorization:
+) -> CholmodFactorization | KLUFactorization | SuperLUFactorization:
     """Re-factorize ``I - ρW`` with a new ρ, reusing symbolic analysis.
 
-    For CHOLMOD: calls ``factor.cholesky_inplace(A)`` — reuses the
-    symbolic analysis (AMD ordering + elimination tree), only does
-    numeric factorization.  This saves ~64% of per-node cost.
-
-    For SuperLU: scipy's ``splu`` doesn't expose symbolic reuse directly,
-    so we re-factorize.  (SuperLU's symbolic phase is fast relative to
-    numeric for typical sparse W.)
+    CHOLMOD and KLU reuse the fill-reducing ordering (only numeric
+    factorization is redone); SuperLU re-factorizes from scratch.
     """
     n = W_sparse.shape[0]
-    W_csr = sp.csr_matrix(W_sparse, dtype=np.float64)
 
     if isinstance(fact, CholmodFactorization):
-        W_sym = d_symmetrize(W_csr)
-        A_sym = sp.eye(n, format="csc") - rho * W_sym
+        # W_sym is fixed; only ρ scales it, so reuse the cached matrix.
+        A_sym = sp.eye(n, format="csc") - rho * fact.W_sym
         fact.factor.factorize(A_sym)
         return fact
 
-    # SuperLU — re-factorize
+    W_csr = sp.csr_matrix(W_sparse, dtype=np.float64)
     A = sp.eye(n, format="csc") - rho * W_csr
+
+    if isinstance(fact, KLUFactorization):
+        fact.factor.factorize(sp.csc_array(A))
+        return fact
+
     from scipy.sparse.linalg import splu
 
     fact.lu = splu(A)
@@ -352,9 +354,12 @@ class SparseSolveContext:
             B_scaled = self._fact.D_inv_sqrt[:, None] * B.T  # (n_alts, n_obs)
             X_scaled = self._fact.factor.solve(B_scaled, system="A")  # (n_alts, n_obs)
             return (self._fact.D_sqrt[:, None] * X_scaled).T  # (n_obs, n_alts)
-        else:
-            # SuperLU: use transposed solve
-            return self._fact.lu.solve(B.T, trans="T").T
+        if isinstance(self._fact, KLUFactorization):
+            # KLU's transpose solve uses the row convention: passing B
+            # (n_obs, n_alts) solves ``(I - ρW)^T X = B^T`` and returns Xᵀ.
+            return self._fact.factor.solve(B, transpose=True)
+        # SuperLU: use transposed solve
+        return self._fact.lu.solve(B.T, trans="T").T
 
 
 def make_sparse_solve_fn(ctx: SparseSolveContext):
