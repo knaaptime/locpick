@@ -31,9 +31,6 @@ from ._spatial import (
     _resolve_spatial_graph as _resolve_spatial_graph,
 )
 from ._spatial import (
-    constrain_rho as constrain_rho,
-)
-from ._spatial import (
     naturalize_rho as naturalize_rho,
 )
 

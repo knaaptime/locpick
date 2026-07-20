@@ -384,10 +384,6 @@ def nested_log_probs(
     jnp.ndarray, shape (n_obs, n_alts)
         Log-probabilities for each (obs, alt) pair.
     """
-    V.shape[0]
-    V.shape[1]
-    lambdas.shape[0]
-
     # Mask unavailable
     V = jnp.where(available > 0, V, _NEG_INF)
 
@@ -695,7 +691,6 @@ def mixed_nested_logit_ll(
     spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     # Pre-compute nest membership for nested logit
-    nest_matrix.sum(axis=1) > 0  # (n_alts,) bool
     long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
     for m in range(n_nests):
         mask_m = nest_matrix[:, m] > 0

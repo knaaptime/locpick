@@ -2,7 +2,7 @@
 
 This package provides:
 
-- :mod:`locpick.models.base` — ``ChoiceModel`` protocol
+- :mod:`locpick.models.base` — ``ChoiceModelProtocol``, ``BaseChoiceModel``
 - :mod:`locpick.models.choice_model` — ``ChoiceModel`` unified class
 - :mod:`locpick.models.nested` — ``NestSpec``, ``NestingTree``
 - :mod:`locpick.models.mixed` — ``ParamDistribution``

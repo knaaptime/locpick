@@ -248,7 +248,7 @@ class TestInclusionProbabilities:
         from locpick.data.problem import EstimationProblem
 
         problem = EstimationProblem(arrays=arrays_with_both)
-        model = ChoiceModel(data=None, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
 
         # Verify the model ran successfully
@@ -298,7 +298,7 @@ class TestInclusionProbabilities:
         from locpick.data.problem import EstimationProblem
 
         problem = EstimationProblem(arrays=arrays_with_rates)
-        model = ChoiceModel(data=None, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
 
         # Verify the model ran successfully

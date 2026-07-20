@@ -740,7 +740,6 @@ class ChoiceTable:
         terms = [str(t) for t in f]
         # Only handle simple additive formulas: each term is a bare column
         # name (no operators, parentheses, or function calls).
-        set(":*(){}I()C()poly()bs()ns()scale()")
         if any(c in t for t in terms for c in [":", "*", "(", ")", "{", "}"]):
             return None
         # Reject the intercept term (handled by "- 1" in the formula string)

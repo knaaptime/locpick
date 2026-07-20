@@ -135,3 +135,54 @@ class TestBackendKernelInterfaces:
         )
 
         npt.assert_allclose(ll_jax, ll_np, rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("distribution", ["normal", "lognormal", "triangular", "uniform"])
+def test_random_coefficient_realisation_matches_jax(distribution):
+    """NumPy and JAX must realise the same mixing distribution.
+
+    The NumPy reference kernel previously applied the uniform inverse-CDF to
+    triangular draws, so the two backends disagreed for that distribution
+    while the tests comparing them only covered the normal case.
+    """
+    import jax.numpy as jnp
+    from jax.scipy.stats import norm
+
+    from locpick.models.mixed import realize_random_coefficients
+
+    rng = np.random.default_rng(0)
+    draws = rng.standard_normal((6, 9, 1))
+    mean, spread = np.array([0.5]), np.array([2.0])
+
+    from_numpy = realize_random_coefficients(draws, mean, spread, [distribution])[:, :, 0]
+
+    z = jnp.asarray(draws[:, :, 0])
+    phi = norm.cdf(z)
+    if distribution == "normal":
+        from_jax = mean[0] + spread[0] * z
+    elif distribution == "lognormal":
+        from_jax = jnp.exp(jnp.clip(mean[0] + spread[0] * z, -50, 50))
+    elif distribution == "uniform":
+        from_jax = mean[0] + spread[0] * (2 * phi - 1)
+    else:
+        from_jax = jnp.where(
+            phi <= 0.5,
+            mean[0] + spread[0] * (jnp.sqrt(2 * phi) - 1),
+            mean[0] + spread[0] * (1 - jnp.sqrt(2 * (1 - phi))),
+        )
+
+    npt.assert_allclose(from_numpy, np.asarray(from_jax), rtol=1e-5, atol=1e-5)
+
+
+def test_triangular_realisation_is_not_uniform():
+    """Pins the specific regression: triangular must not reduce to uniform."""
+    from locpick.models.mixed import realize_random_coefficients
+
+    rng = np.random.default_rng(1)
+    draws = rng.standard_normal((8, 12, 1))
+    mean, spread = np.array([0.0]), np.array([1.0])
+
+    triangular = realize_random_coefficients(draws, mean, spread, ["triangular"])
+    uniform = realize_random_coefficients(draws, mean, spread, ["uniform"])
+
+    assert np.abs(triangular - uniform).max() > 1e-3

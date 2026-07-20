@@ -157,7 +157,6 @@ def build_choice_dataset_from_long(
                 "number of alternatives."
             )
 
-    len(grouped)
     n_alts = first_len
 
     alt_ids_matrix = np.stack([g[alt_id_col].to_numpy() for _, g in grouped], axis=0)

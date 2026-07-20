@@ -1,9 +1,10 @@
 """Base class and protocol for choice model classes.
 
-This module defines the :class:`ChoiceModel` protocol and the
-:class:`BaseChoiceModel` abstract base class that all concrete
-model classes implement.  It also provides :class:`SpatialMixin`,
-a mixin for models that require a spatial adjacency graph.
+This module defines the :class:`ChoiceModelProtocol` protocol and the
+:class:`BaseChoiceModel` abstract base class behind
+:class:`~locpick.models.choice_model.ChoiceModel`.  It also provides
+:class:`SpatialMixin`, which resolves the spatial adjacency graph for
+models configured with ``graph=``.
 """
 
 from abc import ABC, abstractmethod
@@ -801,10 +802,6 @@ class SpatialMixin:
     that handle graph resolution, allocation computation, and
     ``EdgeStructure`` construction.  Subclasses that use this mixin
     must set ``self._graph_input`` before calling ``fit()``.
-
-    This mixin eliminates the duplicated graph-resolution boilerplate
-    that was previously copy-pasted across SCL, MSCL, NestedSCL, and
-    MNSCL.
     """
 
     _graph_input: Any

@@ -582,25 +582,14 @@ def _mixed_logit_ll_numpy(
 
     log_L_draws = np.zeros((n_obs, n_draws), dtype=np.float64)
 
+    # Shared realisation: this function previously inlined the distribution
+    # branches and applied the uniform inverse-CDF to triangular draws.
+    beta_random_draws = realize_random_coefficients(
+        draws, beta_random_means, beta_random_spreads, random_distributions
+    )
+
     for r in range(n_draws):
-        # Realise random coefficients for this draw
-        beta_random_r = np.zeros((n_obs, k_random))
-        for p in range(k_random):
-            z_p = draws[:, r, p]  # (n_obs,)
-            mean_p = beta_random_means[p]
-            spread_p = beta_random_spreads[p]
-
-            if random_distributions[p] == "normal":
-                beta_random_r[:, p] = mean_p + spread_p * z_p
-            elif random_distributions[p] == "lognormal":
-                # Clip exponent to avoid overflow
-                exponent = mean_p + spread_p * z_p
-                beta_random_r[:, p] = np.exp(np.clip(exponent, -50, 50))
-            elif random_distributions[p] in ("triangular", "uniform"):
-                from scipy.stats import norm as norm_dist
-
-                u = norm_dist.cdf(z_p)
-                beta_random_r[:, p] = mean_p + spread_p * (2 * u - 1)
+        beta_random_r = beta_random_draws[:, r, :]
 
         # Random utility component
         v_random = np.sum(

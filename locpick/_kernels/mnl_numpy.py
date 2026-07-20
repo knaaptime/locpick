@@ -11,7 +11,7 @@ source of truth for the MNL computation pipeline:
 5.  Compute probabilities: ``P = exp(log_probs)``
 
 Both the estimation objective (in
-:class:`~locpick.models.mnl.MultinomialLogit`) and the prediction
+:class:`~locpick.models.choice_model.ChoiceModel`) and the prediction
 methods (in :class:`~locpick.results.fit_result.FitResult`) should
 delegate to these functions rather than re-implementing the pipeline.
 """

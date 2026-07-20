@@ -178,14 +178,6 @@ def naturalize_nest_params(alpha: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-alpha))
 
 
-def constrain_nest_params(alpha: np.ndarray) -> np.ndarray:
-    """Apply logistic transform to enforce :math:`\\lambda \\in (0, 1]`.
-
-    Alias for :func:`naturalize_nest_params`.
-    """
-    return naturalize_nest_params(alpha)
-
-
 # ---------------------------------------------------------------------------
 # Nested logit probability kernel (NumPy)
 # ---------------------------------------------------------------------------

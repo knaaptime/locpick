@@ -13,7 +13,7 @@ Examples
 --------
 Import a model class directly from the package namespace::
 
-    from locpick import MultinomialLogit, ChoiceTable
+    from locpick import ChoiceModel, ChoiceTable
 """
 
 import contextlib

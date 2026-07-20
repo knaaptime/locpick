@@ -2,9 +2,10 @@
 
 This module exposes the graph-resolution helper, the ``rho`` link
 function, and the precomputed ``EdgeStructure`` consumed by the JAX
-spatial kernels.  Keeping these symbols here lets multiple model classes
-(MNL, NestedMNL, MixedMNL, MixedNestedMNL) opt into spatial estimation
-via a ``graph=`` argument without depending on the legacy ``SCL`` class.
+spatial kernels.  Keeping them here lets
+:class:`~locpick.models.choice_model.ChoiceModel` opt into spatial
+estimation via a ``graph=`` argument in any of its configurations
+(plain, nested, mixed, or mixed-nested).
 """
 
 from __future__ import annotations
@@ -98,11 +99,6 @@ def naturalize_rho(alpha_rho):
         \rho = \frac{1}{1 + \exp(-\alpha_\rho)}
     """
     return 1.0 / (1.0 + np.exp(-alpha_rho))
-
-
-def constrain_rho(alpha_rho):
-    """Alias for :func:`naturalize_rho`."""
-    return naturalize_rho(alpha_rho)
 
 
 # ---------------------------------------------------------------------------

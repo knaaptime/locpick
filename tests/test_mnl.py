@@ -1648,7 +1648,7 @@ class TestEstimationProblemIntegration:
         problem = EstimationProblem.from_choice_table(
             dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
         )
-        model_problem = ChoiceModel(data=dataset.choice_table, problem=problem)
+        model_problem = ChoiceModel(data=problem)
         result_problem = model_problem.fit()
 
         # Results should match
@@ -1683,7 +1683,7 @@ class TestEstimationProblemIntegration:
             param_fixed=[True, False],
         )
 
-        model = ChoiceModel(data=dataset.choice_table, problem=problem_fixed)
+        model = ChoiceModel(data=problem_fixed)
         result = model.fit()
 
         # The fixed parameter should remain at -0.5
@@ -1711,7 +1711,7 @@ class TestEstimationProblemIntegration:
             param_bounds=[(-1.0, 0.0), (None, None)],
         )
 
-        model = ChoiceModel(data=dataset.choice_table, problem=problem_bounded)
+        model = ChoiceModel(data=problem_bounded)
         result = model.fit()
 
         # alt_feature should be within bounds

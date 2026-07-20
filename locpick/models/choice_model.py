@@ -27,7 +27,6 @@ from .._jax.objective import Objective
 from .._kernels.constants import SAR_DENSE_CUTOFF
 from .._solvers import Solver, SolverResult
 from ..data.arrays import ChoiceArrays
-from ..data.problem import EstimationProblem
 from ..results.fit_result import FitResult
 from ._spatial import (
     EdgeStructure,
@@ -161,7 +160,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Number of draws for simulated maximum likelihood (mixed logit).
         Default 100.
     draw_type : str, optional
-        Type of draws: ``"qmc"`` (default), ``"halton"``, or ``"random"``.
+        Type of draws: ``"sobol"`` (default, also spelled ``"qmc"``),
+        ``"halton"``, ``"scrambled_halton"``, or ``"random"``.
     seed : int
         Random seed for draw generation. Default 42.
     weights : str or array-like, optional
@@ -195,7 +195,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         data,
         formula: Optional[str] = None,
         spec=None,
-        problem: Optional[EstimationProblem] = None,
         nests: Optional[NestingTree] = None,
         random_params: Optional[dict[str, ParamDistribution]] = None,
         graph=None,
@@ -211,10 +210,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         estimator: str = "auto",
         warmstart: bool = True,
     ):
-        # Handle the legacy `problem` parameter by wrapping it as EstimationProblem
-        if problem is not None:
-            data = problem
-
         super().__init__(
             data=data,
             formula=formula,

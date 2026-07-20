@@ -22,7 +22,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
 
@@ -102,10 +101,6 @@ class CholmodFactorization:
         M = self.factor.solve(I_n, system="A")
         return np.diag(M)
 
-    def logdet(self) -> float:
-        """Compute ``log|det(I - ρW)|`` = ``log|det(I - ρW_sym)|``."""
-        return self.factor.logdet()
-
 
 @dataclass
 class SuperLUFactorization:
@@ -123,12 +118,6 @@ class SuperLUFactorization:
         I_n = np.eye(self.n)
         M = self.lu.solve(I_n)
         return np.diag(M)
-
-    def logdet(self) -> float:
-        """Compute ``log|det(I - ρW)|`` from LU diagonal."""
-        L_diag = self.lu.L.diagonal()
-        U_diag = self.lu.U.diagonal()
-        return float(np.sum(np.log(np.abs(L_diag))) + np.sum(np.log(np.abs(U_diag))))
 
 
 # ---------------------------------------------------------------------------
@@ -368,70 +357,6 @@ class SparseSolveContext:
         else:
             # SuperLU: use transposed solve
             return self._fact.lu.solve(B.T, trans="T").T
-
-
-def _make_sparse_solve_fwd(ctx: SparseSolveContext):
-    """Create the forward pass function for the custom VJP.
-
-    Returns a function ``(rho, V_base) -> (V_filtered, residual)``
-    where residual is everything needed for the backward pass.
-    """
-
-    def _fwd(rho, V_base):
-        # Convert from JAX arrays to NumPy for scipy
-        rho_np = float(rho)
-        V_base_np = np.asarray(V_base)
-
-        # Call scipy sparse solve
-        V_filtered_np = ctx.solve(rho_np, V_base_np)
-
-        # Convert back to JAX arrays
-        V_filtered = jnp.asarray(V_filtered_np, dtype=jnp.float64)
-
-        # Residual: store V_filtered and rho for backward pass
-        # (W is available via ctx, no need to store it)
-        residual = (rho, V_filtered)
-        return V_filtered, residual
-
-    return _fwd
-
-
-def _make_sparse_solve_bwd(ctx: SparseSolveContext):
-    """Create the backward pass function for the custom VJP.
-
-    Implements the adjoint method for ``V_filtered = (I - ρW)^{-1} V_base``:
-
-    - ``dL/dV_base = (I - ρW)^{-T} * dL/dV_filtered``
-    - ``dL/dρ = -(dL/dV_filtered)^T * (I - ρW)^{-T} * W * V_filtered``
-
-    Both require a transposed solve, which uses the same factorization
-    (already computed in the forward pass).
-    """
-
-    def _bwd(residual, cotangent):
-        rho, V_filtered = residual
-
-        # Convert to NumPy for scipy
-        cot_np = np.asarray(cotangent)
-        V_filt_np = np.asarray(V_filtered)
-        float(rho)
-
-        # Adjoint solve: dL/dV_base = (I - ρW)^{-T} * cotangent
-        grad_V_base_np = ctx.solve_transpose(cot_np)
-
-        # Gradient w.r.t. rho:
-        # dL/dρ = -(dL/dV_filtered)^T * (I - ρW)^{-T} * W * V_filtered
-        # = -(adj_W_Vfiltered)^T * cotangent  where adj_W_Vfiltered = (I-ρW)^{-T} W V_filtered
-        W_V_filtered = ctx._W_dense @ V_filt_np.T  # (n_alts, n_obs)
-        adj_W_V = ctx.solve_transpose(W_V_filtered.T)  # (n_obs, n_alts)
-        grad_rho_np = -np.sum(cot_np * adj_W_V)
-
-        grad_V_base = jnp.asarray(grad_V_base_np, dtype=jnp.float64)
-        grad_rho = jnp.asarray(grad_rho_np, dtype=jnp.float64)
-
-        return grad_rho, grad_V_base
-
-    return _bwd
 
 
 def make_sparse_solve_fn(ctx: SparseSolveContext):

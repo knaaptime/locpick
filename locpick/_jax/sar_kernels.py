@@ -37,8 +37,6 @@ from .kernels import (
 from .objective import Objective
 from .transforms import Identity, ParamTransform, Sigmoid, Tanh
 
-
-
 # ---------------------------------------------------------------------------
 # Dense solve path
 # ---------------------------------------------------------------------------
