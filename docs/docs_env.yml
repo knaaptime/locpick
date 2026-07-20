@@ -26,6 +26,12 @@ dependencies:
   - optimistix
   - nlopt
   - optax
+  - scikit-sparse
+  - pip
+  - pip:
+    - klujax
+    - cholgraph
+
 
   # testing
   - codecov

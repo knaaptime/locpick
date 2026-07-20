@@ -18,6 +18,11 @@ dependencies:
   - optimistix
   - nlopt
   - optax
+  - scikit-sparse
+  - pip
+  - pip:
+    - klujax
+    - cholgraph
 
   # optional (spatial)
   - libpysal>=4.0
