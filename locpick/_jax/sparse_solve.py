@@ -290,8 +290,6 @@ class SparseSolveContext:
         self.n = self.W_csr.shape[0]
         self.use_cholmod = use_cholmod
         self._fact: CholmodFactorization | SuperLUFactorization | None = None
-        # Cache W as dense for the rho-gradient computation
-        self._W_dense = self.W_csr.toarray()
 
     def solve(self, rho: float, V_base: np.ndarray) -> np.ndarray:
         """Refactorize with new rho and solve ``(I - ρW) X = V_base``.
@@ -410,7 +408,9 @@ def make_sparse_solve_fn(ctx: SparseSolveContext):
         # dL/dρ = sum(cotangent * dV_filtered/dρ)
         #        = sum(cotangent * (I-ρW)^{-1} W V_filtered)
         # Note: uses (I-ρW)^{-1} (forward solve), NOT (I-ρW)^{-T}
-        W_V_filtered = ctx._W_dense @ V_filt_np.T  # (n_alts, n_obs)
+        # Sparse matvec: W is kept as CSR, so this stays O(nnz) rather than
+        # materialising a dense n_alts x n_alts matrix.
+        W_V_filtered = ctx.W_csr @ V_filt_np.T  # (n_alts, n_obs)
         # Solve (I-ρW) X = W_V_filtered, then X.T is (n_obs, n_alts)
         adj_W_V = ctx._fact.solve(W_V_filtered).T  # (I-ρW)^{-1} W V_filtered, (n_obs, n_alts)
         grad_rho_np = np.sum(cot_np * adj_W_V)
