@@ -15,11 +15,14 @@ of nodes and interpolates via:
 Both evaluation paths are **pure JAX** (differentiable, JIT-compatible) —
 no custom VJP needed for D(ρ).  JAX autodiff computes ∂D/∂ρ automatically.
 
-This replaces the 20-term power series approximation
-(``_diag_inv_power_series``) which:
-- Fails for large ρ (converges only for |ρ| < 1/ω_max)
-- Creates a large JIT graph (20 unrolled iterations)
-- Is approximate, not exact
+For small ``n_alts`` the SAR kernels instead compute the diagonal exactly
+via a dense inverse (``_diag_inv_exact_dense``), which is cheaper than
+fitting an interpolant at that size.
+
+Both interpolants are fitted on a bounded ρ interval (``rho_min`` /
+``rho_max``).  Evaluation clamps ρ into that interval rather than
+extrapolating, since the optimiser parameterises ρ = tanh(α) and can
+propose values outside the fitted range.
 """
 
 from __future__ import annotations
@@ -30,6 +33,10 @@ import numpy as np
 import scipy.sparse as sp
 
 from .sparse_solve import evaluate_diagonal_at_nodes, is_symmetric
+
+# Below this distance rho is treated as coinciding with an AAA support
+# point (or with zero padding), and the barycentric quotient is bypassed.
+_AAA_NODE_TOL = 1e-13
 
 # ---------------------------------------------------------------------------
 # Chebyshev interpolation (symmetric W)
@@ -139,6 +146,9 @@ def chebyshev_diag_eval_jax(pre: ChebyshevDiagPrecompute, rho):
     """
     import jax.numpy as jnp
 
+    # Clamp into the fitted interval: Chebyshev series diverge rapidly
+    # outside [rho_min, rho_max], and rho = tanh(alpha) can exceed it.
+    rho = jnp.clip(rho, pre.rho_min, pre.rho_max)
     x = (2.0 * rho - pre.rho_max - pre.rho_min) / (pre.rho_max - pre.rho_min)
     m = pre.order
     c = jnp.asarray(pre.coeffs, dtype=jnp.float64)  # (order, n_alts)
@@ -373,12 +383,28 @@ def aaa_diag_eval_jax(pre: AAADiagPrecompute, rho):
     sp_f = jnp.asarray(pre.support_values, dtype=jnp.float64)  # (m, n_alts)
     w = jnp.asarray(pre.weights, dtype=jnp.float64)  # (m, n_alts)
 
-    # Barycentric formula, vectorized over alternatives
-    diff = rho - sp_z  # (m, n_alts)
-    n_val = jnp.sum(w * sp_f / diff, axis=0)  # (n_alts,)
-    d_val = jnp.sum(w / diff, axis=0)  # (n_alts,)
+    # Clamp into the fitted interval rather than extrapolating.
+    rho = jnp.clip(rho, pre.rho_min, pre.rho_max)
 
-    return n_val / d_val
+    # Barycentric formula, vectorized over alternatives.
+    #
+    # Two cases make ``diff`` vanish and must be excluded from the sums to
+    # avoid 0/0: rho landing exactly on a support point, and the zero
+    # padding used to rectangularise components with fewer support points
+    # (those rows have z = 0 and w = 0, so they collide at rho == 0 —
+    # which is the default start, since rho = tanh(0)).
+    diff = rho - sp_z  # (m, n_alts)
+    degenerate = jnp.abs(diff) < _AAA_NODE_TOL
+    safe_diff = jnp.where(degenerate, 1.0, diff)
+
+    n_val = jnp.sum(jnp.where(degenerate, 0.0, w * sp_f / safe_diff), axis=0)
+    d_val = jnp.sum(jnp.where(degenerate, 0.0, w / safe_diff), axis=0)
+    interpolated = n_val / d_val
+
+    # At a genuine support point the approximant equals the sampled value.
+    at_node = degenerate & (w != 0.0)
+    node_value = jnp.sum(jnp.where(at_node, sp_f, 0.0), axis=0)
+    return jnp.where(jnp.any(at_node, axis=0), node_value, interpolated)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +416,7 @@ def aaa_diag_eval_jax(pre: AAADiagPrecompute, rho):
 class DiagPrecompute:
     """Precomputed diagonal interpolation (Chebyshev or AAA).
 
-    Auto-selects Chebyshev for symmetric W, AAA for non-symmetric W.
+    Built by :func:`precompute_diagonal`, which defaults to AAA.
     """
 
     method: str  # "chebyshev" or "aaa"
@@ -411,11 +437,22 @@ def precompute_diagonal(
     rho_max: float = 0.95,
     order: int = 20,
     n_coarse: int = 30,
+    method: str = "aaa",
 ) -> DiagPrecompute:
-    """Auto-select and precompute diagonal interpolation.
+    """Precompute diagonal interpolation for ``diag((I - ρW)^{-1})``.
 
-    Uses Chebyshev for symmetric W (contiguity, rook, queen) and AAA
-    for non-symmetric W (KNN, directed graphs).
+    Defaults to AAA regardless of symmetry.  ``D(ρ)`` has poles at the
+    reciprocal eigenvalues of W, the nearest sitting just outside the
+    fitted interval for row-standardised weights.  A rational
+    approximant captures that structure; a polynomial one converges only
+    slowly against it.  On a row-standardised ring lattice, AAA with 30
+    nodes reaches a max error of ~2e-8 against the exact diagonal, while
+    a degree-20 Chebyshev fit — a comparable number of sparse solves —
+    manages only ~3e-3, which is too coarse to differentiate a
+    likelihood through.
+
+    Symmetry still matters for cost: it selects CHOLMOD over SuperLU for
+    the node solves.
 
     Parameters
     ----------
@@ -424,19 +461,33 @@ def precompute_diagonal(
     rho_min : float, default -0.95
     rho_max : float, default 0.95
     order : int, default 20
-        Chebyshev order (for symmetric W).
+        Chebyshev order (``method="chebyshev"`` only).
     n_coarse : int, default 30
-        AAA coarse grid size (for non-symmetric W).
+        AAA coarse grid size.
+    method : {"aaa", "chebyshev"}, default "aaa"
+        Interpolation family.  ``"chebyshev"`` is retained for
+        benchmarking and requires symmetric W.
 
     Returns
     -------
     DiagPrecompute
     """
     n = W_sparse.shape[0]
+    symmetric = is_symmetric(W_sparse)
 
-    if is_symmetric(W_sparse):
+    if method == "chebyshev":
+        if not symmetric:
+            raise ValueError("Chebyshev diagonal precompute requires a symmetric W.")
         pre = chebyshev_diag_precompute(W_sparse, order=order, rho_min=rho_min, rho_max=rho_max)
         return DiagPrecompute(method="chebyshev", cheb_pre=pre, n_alts=n)
+    if method != "aaa":
+        raise ValueError(f"Unknown method {method!r}; expected 'aaa' or 'chebyshev'.")
 
-    pre = aaa_diag_precompute(W_sparse, rho_min=rho_min, rho_max=rho_max, n_coarse=n_coarse)
+    pre = aaa_diag_precompute(
+        W_sparse,
+        rho_min=rho_min,
+        rho_max=rho_max,
+        n_coarse=n_coarse,
+        use_cholmod=symmetric,
+    )
     return DiagPrecompute(method="aaa", aaa_pre=pre, n_alts=n)

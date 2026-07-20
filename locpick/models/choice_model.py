@@ -44,6 +44,16 @@ from .mixed import ParamDistribution, _resolve_draws
 from .nested import NestingTree
 
 
+def _lambda_to_alpha(lambda_vals) -> np.ndarray:
+    """Map display-scale nest lambdas in (0, 1) to unconstrained alphas.
+
+    The nested kernels parameterise ``lambda = sigmoid(alpha)``; this is the
+    inverse used whenever display-scale coefficients are handed back to them.
+    """
+    clipped = np.clip(np.asarray(lambda_vals, dtype=np.float64), 1e-10, 1.0 - 1e-10)
+    return np.log(clipped / (1.0 - clipped))
+
+
 @dataclass
 class ParamLayout:
     """Describes how to extract display-scale parameters from the unconstrained vector.
@@ -58,8 +68,17 @@ class ParamLayout:
         Names of display-scale parameters.
     transforms : list[tuple[int, str, float | None]]
         One per display parameter: (raw_idx, transform_type, value).
-        transform_type is "identity", "sigmoid", "tanh", or "softplus".
+        transform_type is "identity", "sigmoid", "tanh", or "abs".
         value is the natural-scale value (for delta-method SE); None for identity.
+
+    Notes
+    -----
+    The ``"abs"`` transform applies to mixed-logit spread parameters.  The
+    kernels use the spread directly (``beta = mean + spread * z``) and every
+    supported mixing distribution draws ``z`` symmetrically about zero, so the
+    likelihood is even in the spread and its sign is not identified.  Reporting
+    ``|raw|`` is therefore the natural scale, and since ``|d|x|/dx| = 1`` the
+    delta-method factor is exactly one.
     """
 
     display_names: list[str]
@@ -90,7 +109,7 @@ class ParamLayout:
                 display_values[i] = 1.0 / (1.0 + np.exp(-raw_val))
             elif ttype == "tanh":
                 display_values[i] = np.tanh(raw_val)
-            elif ttype == "softplus":
+            elif ttype == "abs":
                 display_values[i] = abs(raw_val)
             else:
                 display_values[i] = raw_val
@@ -480,7 +499,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Each dict has:
         - ``role``: "beta", "beta_fixed", "rho", "rho_per_nest", "lambda", "mean", "sd"
         - ``count``: number of parameters in this role
-        - ``transform``: "identity", "tanh", "sigmoid", "softplus"
+        - ``transform``: "identity", "tanh", "sigmoid", "abs"
         - ``init``: initial value(s) — scalar or array
         - ``solver_names``: list of solver-space names
         - ``display_names``: list of display-space names
@@ -598,7 +617,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 {
                     "role": "sd",
                     "count": k_random,
-                    "transform": "softplus",
+                    "transform": "abs",
                     "init": np.full(k_random, 0.1),
                     "solver_names": [f"sd_{n}" for n in random_names],
                     "display_names": [f"sd_{n}" for n in random_names],
@@ -835,6 +854,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         all_params = solver_result.coefficients
         layout = self._build_param_layout(arrays)
         display_values, display_names, transform_spec = layout.extract(all_params)
+
+        # Retain the unconstrained solution: the objective (and therefore every
+        # Hessian and score evaluation) is a function of this vector, not of
+        # the display-scale coefficients.
+        self._raw_params = np.asarray(all_params, dtype=np.float64)
+        self._transform_spec = transform_spec
+
         std_errors = self._compute_se_generic(all_params, transform_spec)
         return self._make_fit_result(
             solver_result, arrays, display_values, display_names, std_errors
@@ -858,7 +884,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         transform_spec : list of dict
             One entry per **display** parameter.  Each dict has:
             - ``"raw_idx"``: index into the unconstrained parameter vector
-            - ``"type"``: ``"identity"``, ``"sigmoid"``, ``"tanh"``, or ``"softplus"``
+            - ``"type"``: ``"identity"``, ``"sigmoid"``, ``"tanh"``, or ``"abs"``
             - ``"value"``: natural-scale value (for sigmoid/tanh delta method)
 
         Returns
@@ -899,10 +925,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 # natural = tanh(raw), d(natural)/d(raw) = 1 - natural^2
                 val = spec["value"]
                 std_errors[i] = (1.0 - val**2) * se_r
-            elif transform_type == "softplus":
-                # natural = softplus(raw), d(natural)/d(raw) = sigmoid(raw)
-                # For display, we show abs(spread) — the derivative is sigmoid(raw)
-                # which is always positive.  We approximate SE(spread) ≈ SE(raw).
+            elif transform_type == "abs":
+                # natural = |raw|, so |d(natural)/d(raw)| = 1 exactly.
                 std_errors[i] = se_r
             else:
                 std_errors[i] = se_r
@@ -937,7 +961,17 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             solver_result_raw=solver_result.raw,
         )
 
-        return FitResult(spec=self._spec, **stats)
+        # Delta-method covariance on the display scale, so that consumers
+        # (WTP, Wald tests) get correlations rather than a diagonal.
+        cov_display = None
+        hess_inv = self._get_hessian_inverse()
+        if hess_inv is not None:
+            try:
+                cov_display = self._to_display_covariance(hess_inv)
+            except Exception:
+                cov_display = None
+
+        return FitResult(spec=self._spec, covariance_matrix=cov_display, **stats)
 
     # ------------------------------------------------------------------
     # Prediction
@@ -1079,12 +1113,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if beta is None:
                 beta = np.asarray(self._result.coefficients.values[:k], dtype=np.float64)
                 if alpha is None:
-                    lambda_vals = self._result.coefficients.values[k : k + n_nests]
-                    lambda_vals = np.clip(lambda_vals, 1e-10, 1.0 - 1e-10)
-                    alpha = np.log(lambda_vals / (1.0 - lambda_vals))
+                    alpha = _lambda_to_alpha(self._result.coefficients.values[k : k + n_nests])
             elif beta.size > k:
-                # Full parameter vector passed — split into beta and alpha
-                alpha = beta[k : k + n_nests]
+                # Full parameter vector passed.  It is display scale (the
+                # same layout as ``result.coefficients``), so the nest
+                # entries are lambdas and need mapping to the kernel's
+                # unconstrained alpha.
+                alpha = _lambda_to_alpha(beta[k : k + n_nests])
                 beta = beta[:k]
             if alpha is None:
                 alpha = np.zeros(n_nests)
@@ -1150,20 +1185,19 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         k_random = self._k_random
         n_nests = self._nests.n_nests
 
-        if beta is None:
-            beta_fixed = self._result.coefficients.values[:k_fixed]
-        else:
-            beta_fixed = beta[:k_fixed]
+        # Display-scale layout: [fixed betas, lambdas, random means, spreads].
+        # A caller-supplied vector must drive every block, otherwise
+        # perturbing it (as the finite-difference scores do) silently has no
+        # effect on most parameters.
+        params = self._result.coefficients.values if beta is None else np.asarray(beta)
+        if params.size < k_fixed + n_nests + 2 * k_random:
+            params = self._result.coefficients.values
 
+        beta_fixed = params[:k_fixed]
         if alpha is None:
-            lambda_vals = self._result.coefficients.values[k_fixed : k_fixed + n_nests]
-            lambda_vals = np.clip(lambda_vals, 1e-10, 1.0 - 1e-10)
-            alpha = np.log(lambda_vals / (1.0 - lambda_vals))
-
-        beta_random_means = self._result.coefficients.values[
-            k_fixed + n_nests : k_fixed + n_nests + k_random
-        ]
-        beta_random_spreads = self._result.coefficients.values[k_fixed + n_nests + k_random :]
+            alpha = _lambda_to_alpha(params[k_fixed : k_fixed + n_nests])
+        beta_random_means = params[k_fixed + n_nests : k_fixed + n_nests + k_random]
+        beta_random_spreads = params[k_fixed + n_nests + k_random :]
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         n_obs = arrays.n_obs
@@ -1742,10 +1776,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         B = scores.T @ scores
         H_inv = self._get_hessian_inverse()
 
-        if H_inv is None:
-            return _safe_inv(B)
-
-        return _sandwich_inv(H_inv, B)
+        # Scores and Hessian are both raw-space; convert the sandwich to
+        # display scale so it lines up with the reported coefficient names.
+        cov_raw = _safe_inv(B) if H_inv is None else _sandwich_inv(H_inv, B)
+        return self._to_display_covariance(cov_raw)
 
     def covariance_clustered(self, data=None, groups=None) -> np.ndarray:
         """Compute cluster-robust (Rogers) covariance matrix.
@@ -1791,10 +1825,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         H_inv = self._get_hessian_inverse()
 
-        if H_inv is None:
-            return _safe_inv(B_clustered)
-
-        return _sandwich_inv(H_inv, B_clustered)
+        cov_raw = _safe_inv(B_clustered) if H_inv is None else _sandwich_inv(H_inv, B_clustered)
+        return self._to_display_covariance(cov_raw)
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors."""
@@ -1870,7 +1902,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         )
 
     def _finite_diff_observation_scores(self, arrays) -> np.ndarray:
-        """Compute observation scores via finite differences (fallback)."""
+        """Compute observation scores via finite differences (fallback).
+
+        Perturbs display-scale coefficients (that is what
+        :meth:`probabilities` accepts), then maps the resulting scores into
+        raw space with the delta-method Jacobian so every score path shares
+        the same coordinate system.
+        """
         eps = 1e-5
         n_params = len(self._result.coefficients)
         n_obs = arrays.n_obs
@@ -1892,6 +1930,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             ll_minus = np.log(np.maximum(np.sum(probs_minus * chosen, axis=1), 1e-30))
             scores[:, j] = (ll_plus - ll_minus) / (2 * eps)
 
+        jac = self._delta_jacobian()
+        if jac is not None and jac.shape[0] == scores.shape[1]:
+            scores = scores @ jac
+
         return scores
 
     def _jax_observation_scores(self, arrays) -> np.ndarray:
@@ -1907,11 +1949,16 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         if self._objective is None or self._objective.jax_fn is None:
             return self._finite_diff_observation_scores(arrays)
 
-        # Try score_contribs (requires loglike_contribs_jax to be set)
+        # Try score_contribs (requires loglike_contribs_jax to be set).
+        # The contribution kernels take the *unconstrained* vector — they
+        # apply tanh/sigmoid to rho/lambda internally — so differentiate at
+        # the raw solution, giving raw-space scores.
         try:
             contribs_fn = self._objective.score_contribs
-            beta = jnp.asarray(self._result.coefficients.values, dtype=jnp.float64)
-            scores = np.asarray(contribs_fn(beta))
+            raw = self._raw_params
+            if raw is None:
+                raise ValueError("raw parameters unavailable")
+            scores = np.asarray(contribs_fn(jnp.asarray(raw, dtype=jnp.float64)))
             return scores
         except (ValueError, AttributeError, TypeError):
             pass

@@ -40,6 +40,11 @@ class FitResult:
     rho_squared: float = 0.0
     rho_bar_squared: float = 0.0
 
+    # Parameter covariance on the **display** scale (same order as
+    # ``coefficients``).  Set by the estimator, which applies the
+    # delta method to the raw-space inverse Hessian.
+    covariance_matrix: np.ndarray | None = None
+
     # Estimation metadata
     spec: object = None
     model_type: str = "Multinomial Logit"
@@ -165,18 +170,16 @@ class FitResult:
     # ------------------------------------------------------------------
 
     def covariance(self) -> np.ndarray:
-        """Return Hessian-based covariance if available, else diagonal fallback."""
-        if self.solver_result and "scipy_result" in self.solver_result:
-            scipy_result = self.solver_result["scipy_result"]
-            if hasattr(scipy_result, "hess_inv"):
-                try:
-                    return np.asarray(
-                        scipy_result.hess_inv.todense()
-                        if hasattr(scipy_result.hess_inv, "todense")
-                        else scipy_result.hess_inv,
-                    )
-                except Exception:
-                    pass
+        """Return the display-scale parameter covariance matrix.
+
+        Prefers the covariance supplied by the estimator, which is the
+        inverse negative Hessian mapped through the delta method and is
+        therefore in the same coordinates as :attr:`coefficients`.  Falls
+        back to a diagonal built from the reported standard errors, which
+        shares those coordinates but discards correlations.
+        """
+        if self.covariance_matrix is not None:
+            return np.asarray(self.covariance_matrix)
 
         if self.std_errors is not None and not self.std_errors.isna().all():
             variances = self.std_errors.values**2

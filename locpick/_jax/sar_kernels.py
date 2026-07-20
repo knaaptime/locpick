@@ -11,8 +11,12 @@ Two solve paths are available:
   is factorised once and reused for all choosers.
 - **Conjugate gradient** (for ``n_alts > 2000``): iterative solve via
   ``jax.scipy.sparse.linalg.cg``.  Avoids materialising the dense
-  inverse; the diagonal of ``A^{-1}`` is estimated via a power-series
-  approximation.
+  inverse.
+
+The variance-normalisation diagonal ``diag((I - ρW)^{-1})`` comes from a
+precomputed Chebyshev/AAA interpolant (see
+:mod:`locpick._jax.diag_precompute`), falling back to an exact dense
+inverse when no interpolant is supplied.
 """
 
 from __future__ import annotations
@@ -72,7 +76,8 @@ def _sar_mnl_ll_core(
     n_alts : int
     diag_eval_fn : callable or None
         If provided, evaluates ``diag((I - ρW)^{-1})`` via precomputed
-        interpolation (Chebyshev or AAA).  If None, uses power series.
+        interpolation (Chebyshev or AAA).  If None, computes the
+        exact diagonal via a dense inverse.
     sparse_solve_fn : callable or None
         If provided, uses sparse solve with custom VJP instead of dense LU.
         Callable signature: ``(rho, V_base) -> V_filtered``.
@@ -103,7 +108,7 @@ def _sar_mnl_ll_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]  # normalise each alternative by d_jj
 
     # MNL log-probabilities
@@ -147,7 +152,7 @@ def _sar_mnl_ll_contribs_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = mnl_log_probs(V_star, available)
@@ -174,22 +179,16 @@ def _cg_solve(A, B, n_alts):
     return jax.vmap(solve_one, in_axes=1, out_axes=1)(B)
 
 
-def _diag_inv_power_series(rho, W_dense, n_alts, n_terms=20):
-    """Estimate diag((I - rho*W)^{-1}) via power series.
+def _diag_inv_exact_dense(rho, W_dense, n_alts):
+    """Compute ``diag((I - rho*W)^{-1})`` exactly via a dense inverse.
 
-    Since W has zero diagonal, odd powers also have zero diagonal.
-    Only even powers contribute: d_jj = 1 + rho^2 (W^2)_jj +
-    rho^4 (W^4)_jj + ...  Converges for |rho| < 1/omega_max.
+    Used when no precomputed interpolant is supplied (small ``n_alts``,
+    where the O(n^3) inverse is cheaper than fitting an interpolant).
+    For larger problems ``build_sar_*`` passes ``diag_eval_fn`` from
+    :mod:`locpick._jax.diag_precompute` instead.
     """
-    d = jnp.ones(n_alts)  # first term: diag(I) = 1
-    W_power = W_dense @ W_dense  # W^2
-    rho_sq = rho * rho
-    coeff = rho_sq
-    for _ in range(n_terms):
-        d = d + coeff * jnp.diag(W_power)
-        W_power = W_power @ W_power  # W^{2k}
-        coeff = coeff * rho_sq
-    return d
+    A = jnp.eye(n_alts) - rho * W_dense
+    return jnp.diag(jnp.linalg.inv(A))
 
 
 def _sar_mnl_ll_cg_core(
@@ -206,8 +205,8 @@ def _sar_mnl_ll_cg_core(
 ):
     """SAR-MNL PML log-likelihood — conjugate-gradient path.
 
-    Uses CG for the spatial solve and a power-series approximation
-    for the variance normalisation diagonal.
+    Uses CG for the spatial solve; the variance-normalisation diagonal
+    comes from ``diag_eval_fn`` when supplied.
     """
     k = design_matrix.shape[1]
     beta = params[:k]
@@ -231,7 +230,7 @@ def _sar_mnl_ll_cg_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = mnl_log_probs(V_star, available)
@@ -270,7 +269,7 @@ def _sar_mnl_ll_contribs_cg_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = mnl_log_probs(V_star, available)
@@ -440,7 +439,7 @@ def _sar_nested_ll_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
@@ -482,7 +481,7 @@ def _sar_nested_ll_cg_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
@@ -524,7 +523,7 @@ def _sar_nested_ll_contribs_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
@@ -566,7 +565,7 @@ def _sar_nested_ll_contribs_cg_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     V_star = V_filtered / D[None, :]
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
@@ -730,7 +729,7 @@ def _sar_mixed_ll_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     v_fixed_star = v_fixed_filtered / D[None, :]
 
     return mixed_logit_ll(
@@ -788,7 +787,7 @@ def _sar_mixed_ll_contribs_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     v_fixed_star = v_fixed_filtered / D[None, :]
 
     return mixed_logit_ll_contribs(
@@ -975,7 +974,7 @@ def _sar_mixed_nested_ll_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     v_fixed_star = v_fixed_filtered / D[None, :]
 
     return mixed_nested_logit_ll(
@@ -1041,7 +1040,7 @@ def _sar_mixed_nested_ll_contribs_core(
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
-        D = _diag_inv_power_series(rho, W_dense, n_alts)
+        D = _diag_inv_exact_dense(rho, W_dense, n_alts)
     v_fixed_star = v_fixed_filtered / D[None, :]
 
     return mixed_nested_logit_ll_contribs(

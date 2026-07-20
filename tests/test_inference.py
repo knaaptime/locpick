@@ -240,3 +240,112 @@ class TestCovarianceComparison:
         # Robust SEs should be within 5x of default SEs
         ratio = se_robust / se_default
         assert np.all(ratio > 0.2) and np.all(ratio < 5.0)
+
+
+# ---------------------------------------------------------------------------
+# Test: parameterisation of the sandwich for transformed models
+# ---------------------------------------------------------------------------
+
+
+def _numeric_robust_cov(model, theta, chosen):
+    """Sandwich covariance built entirely from display-scale finite differences.
+
+    Independent of the package's score/Hessian machinery, so it pins down the
+    coordinate system the reported robust covariance is supposed to be in.
+    """
+    eps = 1e-5
+    n_params = len(theta)
+
+    def obs_ll(params):
+        probs = model.probabilities(beta=params)
+        return np.log(np.maximum((probs * chosen).sum(axis=1), 1e-300))
+
+    def total_score(params):
+        out = np.zeros(n_params)
+        for i in range(n_params):
+            hi, lo = params.copy(), params.copy()
+            hi[i] += eps
+            lo[i] -= eps
+            out[i] = (obs_ll(hi).sum() - obs_ll(lo).sum()) / (2 * eps)
+        return out
+
+    scores = np.zeros((len(chosen), n_params))
+    for i in range(n_params):
+        hi, lo = theta.copy(), theta.copy()
+        hi[i] += eps
+        lo[i] -= eps
+        scores[:, i] = (obs_ll(hi) - obs_ll(lo)) / (2 * eps)
+
+    hess = np.zeros((n_params, n_params))
+    for i in range(n_params):
+        hi, lo = theta.copy(), theta.copy()
+        hi[i] += eps
+        lo[i] -= eps
+        hess[:, i] = (total_score(hi) - total_score(lo)) / (2 * eps)
+    hess = 0.5 * (hess + hess.T)
+
+    hess_inv = np.linalg.inv(-hess)
+    return hess_inv @ (scores.T @ scores) @ hess_inv
+
+
+class TestTransformedParameterScale:
+    """Robust SEs must be reported on the display scale.
+
+    Nested/mixed/spatial models are estimated in an unconstrained space
+    (lambda = sigmoid(raw), rho = tanh(raw), spread = |raw|).  Scores and
+    Hessians therefore have to be evaluated at the raw solution and mapped
+    back through the delta method; evaluating them at the display-scale
+    coefficients silently mixes coordinate systems.
+    """
+
+    def _fit_nested(self):
+        from locpick.dgp import simulate_nested_logit
+
+        # Interaction terms make attributes vary across choosers; without
+        # them the betas and nest lambdas are not separately identified.
+        dataset = simulate_nested_logit(
+            n_obs=3000,
+            n_alts=4,
+            seed=2026,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
+        ct = dataset.choice_table
+        model = ChoiceModel(
+            ct,
+            formula="cost + time + income_x_cost + income_x_time - 1",
+            nests=dataset.nests,
+        )
+        result = model.fit()
+        return ct, model, result
+
+    def test_nested_robust_se_matches_numeric_sandwich(self):
+        ct, model, result = self._fit_nested()
+
+        arrays = model._arrays
+        chosen = np.asarray(arrays.chosen, dtype=float).reshape(arrays.n_obs, arrays.n_alts)
+        cov_numeric = _numeric_robust_cov(model, result.coefficients.values.copy(), chosen)
+        se_numeric = np.sqrt(np.maximum(np.diag(cov_numeric), 0))
+
+        se_pkg = model.std_errors_robust().values
+
+        npt.assert_allclose(se_pkg, se_numeric, rtol=0.05)
+
+    def test_nested_clustered_se_finite_and_display_scale(self):
+        ct, model, result = self._fit_nested()
+
+        groups = np.arange(ct.n_observations) % 40
+        se_clustered = model.std_errors_clustered(groups=groups)
+
+        assert np.all(np.isfinite(se_clustered.values))
+        assert list(se_clustered.index) == list(result.coefficients.index)
+
+    def test_covariance_is_display_scale_and_consistent_with_std_errors(self):
+        """FitResult.covariance() shares coordinates with the reported SEs."""
+        _, _, result = self._fit_nested()
+
+        cov = result.covariance()
+        npt.assert_allclose(
+            np.sqrt(np.maximum(np.diag(cov), 0)),
+            result.std_errors.values,
+            rtol=1e-6,
+        )
