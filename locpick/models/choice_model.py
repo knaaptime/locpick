@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from .._jax.objective import Objective
+from .._kernels.constants import SAR_DENSE_CUTOFF
 from .._solvers import Solver, SolverResult
 from ..data.arrays import ChoiceArrays
 from ..data.problem import EstimationProblem
@@ -686,6 +687,19 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     # Objective construction
     # ------------------------------------------------------------------
 
+    def _resolve_use_cg(self, arrays: ChoiceArrays) -> bool:
+        """Whether the SAR objective should use the conjugate-gradient solve.
+
+        ``estimator="auto"`` picks CG once the alternative set is too large
+        for a dense factorisation.  Resolved fresh on every fit so the choice
+        tracks the data rather than a previous run.
+        """
+        if self._estimator == "pml_cg":
+            return True
+        if self._estimator == "auto":
+            return arrays.n_alts > SAR_DENSE_CUTOFF
+        return False
+
     def _build_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build optimization objective based on active features."""
         # Pure MNL / SCL / SAR
@@ -693,13 +707,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mnl_objective
 
-                # Auto-select estimator
-                if self._estimator == "auto":
-                    if arrays.n_alts <= 2000:
-                        self._estimator = "pml"
-                    else:
-                        self._estimator = "pml_cg"
-                use_cg = self._estimator == "pml_cg"
+                # Resolve "auto" locally: overwriting self._estimator would
+                # make a second fit() see the previous run's choice rather
+                # than re-deciding from the current data.
+                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mnl_objective(
                     arrays,
                     self._W_sparse,
@@ -722,9 +733,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_nested_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
+                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_nested_objective(
                     arrays,
                     self._W_sparse,
@@ -745,9 +754,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
+                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mixed_objective(
                     arrays,
                     self._W_sparse,
@@ -783,9 +790,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_nested_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
+                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mixed_nested_objective(
                     arrays,
                     self._W_sparse,
@@ -1587,10 +1592,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 me = me_2d.ravel()
 
         elif self._is_mixed:
-            # Mixed logit: E_z[(1 - P_i(z)) * beta] via simulation
-            # For now, use the MNL approximation with mean coefficients
-            # (proper implementation requires per-draw probability computation)
-            me = (1 - probs.ravel()) * beta
+            me = self._marginal_effect_mixed(data, variable, probs)
 
         elif self._is_spatial:
             # SCL: derivation pending
@@ -1604,6 +1606,65 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             me = (1 - probs.ravel()) * beta
 
         return pd.Series(me, index=index, name=f"marginal_effect_{variable}")
+
+    def _marginal_effect_mixed(self, data, variable: str, probs: np.ndarray) -> np.ndarray:
+        """Simulated direct marginal effect for mixed logit.
+
+        Mirrors the MNL convention (``d log P_i / d x_i``), but the
+        expectation runs over the mixing distribution rather than being
+        evaluated at mean coefficients::
+
+            d log P_i / d x_i = E_r[P_i(r) (1 - P_i(r)) b_i(r)] / E_r[P_i(r)]
+
+        where ``b_i(r)`` is the coefficient realised for draw ``r``.  It
+        collapses to ``(1 - P_i) * beta`` when the spread goes to zero.
+        """
+        if self._is_spatial:
+            raise NotImplementedError(
+                "Marginal effects for spatially correlated mixed logit (MSCL) "
+                "are not yet implemented."
+            )
+
+        from .._sampling.correction import get_sampling_correction
+        from .mixed import _mixed_logit_per_draw_log_probs_numpy
+
+        arrays = self._arrays
+        if data is not None:
+            arrays = data.to_arrays(
+                formula=self._spec.formula,
+                spec=self._spec if self._spec.formula is None else None,
+            )
+
+        k_fixed = self._k_fixed
+        k_random = self._k_random
+        values = self._result.coefficients.values
+
+        log_probs_draws, beta_random_draws, _ = _mixed_logit_per_draw_log_probs_numpy(
+            values[:k_fixed],
+            values[k_fixed : k_fixed + k_random],
+            values[k_fixed + k_random :],
+            self._random_distributions,
+            self._draws,
+            np.asarray(arrays.design_matrix, dtype=np.float64),
+            self._random_col_indices,
+            arrays.n_obs,
+            arrays.n_alts,
+            available=arrays.available,
+            inclusion_probs=get_sampling_correction(arrays),
+        )
+        probs_draws = np.exp(log_probs_draws)  # (n_obs, n_draws, n_alts)
+
+        # Coefficient on `variable` for each draw: random parameters vary by
+        # draw and observation, fixed ones are constant.
+        if variable in self._random_param_names:
+            p = self._random_param_names.index(variable)
+            beta_draws = beta_random_draws[:, :, p][:, :, None]  # (n_obs, n_draws, 1)
+        else:
+            beta_draws = float(self._result.coefficients.get(variable, 0.0))
+
+        numerator = np.mean(probs_draws * (1.0 - probs_draws) * beta_draws, axis=1)
+        denominator = np.maximum(np.mean(probs_draws, axis=1), 1e-30)
+        return (numerator / denominator).ravel()
 
     def cross_marginal_effect(self, data=None, variable: Optional[str] = None) -> pd.Series:
         """Compute cross-marginal effects for a variable.
@@ -1853,9 +1914,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         with a JAX objective (spatial/nested/mixed), and finite differences
         as a last-resort fallback.
         """
+        # Key on identity, but retain the arrays object alongside the result:
+        # without a strong reference the id could be recycled by a later
+        # allocation and silently match a different dataset.
         cache_key = id(arrays)
-        if cache_key in self._observation_scores_cache:
-            return self._observation_scores_cache[cache_key]
+        cached = self._observation_scores_cache.get(cache_key)
+        if cached is not None and cached[0] is arrays:
+            return cached[1]
 
         if not self._is_spatial and not self._is_nested and not self._is_mixed:
             scores = self._mnl_observation_scores(arrays)
@@ -1864,7 +1929,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         else:
             scores = self._finite_diff_observation_scores(arrays)
 
-        self._observation_scores_cache[cache_key] = scores
+        self._observation_scores_cache[cache_key] = (arrays, scores)
         return scores
 
     def _mnl_observation_scores(self, arrays) -> np.ndarray:

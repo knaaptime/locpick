@@ -387,7 +387,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
 # ---------------------------------------------------------------------------
 
 
-@functools.partial(jax.jit, static_argnums=(5, 6, 7, 8))
+@functools.partial(jax.jit, static_argnums=(5, 6, 7, 8, 9))
 def _mnscl_ll_kernel(
     params,
     data,

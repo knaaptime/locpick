@@ -832,8 +832,12 @@ class ChoiceTable:
             _hashable(weights),
             _hashable(available),
         )
-        if cache_key in self._to_arrays_cache:
-            return self._to_arrays_cache[cache_key]
+        # The spec is keyed by identity, so hold a reference to it in the
+        # cache entry: otherwise a collected spec's id could be reused by a
+        # different one and return the wrong design matrix.
+        cached = self._to_arrays_cache.get(cache_key)
+        if cached is not None and cached[0] is spec:
+            return cached[1]
 
         n_obs = self.n_observations
         n_alts = self.n_alternatives
@@ -842,7 +846,7 @@ class ChoiceTable:
         if spec is not None and formula is None:
             if hasattr(spec, "prepare_data"):
                 result = spec.build_design_matrix(self)
-                self._to_arrays_cache[cache_key] = result
+                self._to_arrays_cache[cache_key] = (spec, result)
                 return result
             if hasattr(spec, "formula") and spec.formula is not None:
                 formula = spec.formula
@@ -961,7 +965,7 @@ class ChoiceTable:
             obs_ids=obs_ids,
             alt_ids=alt_ids,
         )
-        self._to_arrays_cache[cache_key] = result
+        self._to_arrays_cache[cache_key] = (spec, result)
         return result
 
     # ------------------------------------------------------------------

@@ -37,8 +37,6 @@ from .kernels import (
 from .objective import Objective
 from .transforms import Identity, ParamTransform, Sigmoid, Tanh
 
-# Threshold for switching from dense solve to conjugate gradient.
-_DENSE_CUTOFF = 2000
 
 
 # ---------------------------------------------------------------------------

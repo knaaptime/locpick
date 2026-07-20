@@ -184,7 +184,11 @@ def _compute_fit_statistics(
         coefficients.values / std_errors.values,
         np.nan,
     )
-    p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
+    # Keep NaN t-values as NaN p-values.  Substituting zero would report
+    # p = 1.0 for a parameter whose standard error could not be computed,
+    # dressing up non-identification as a precise null result.
+    with np.errstate(invalid="ignore"):
+        p_values = 2 * (1 - stats.norm.cdf(np.abs(t_values)))
 
     z_crit = stats.norm.ppf(0.975)
     conf_lower = coefficients.values - z_crit * std_errors.values
