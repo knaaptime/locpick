@@ -70,3 +70,26 @@ coverage.xml
 docs/_build/
 docs/build/
 docs/source/generated/
+# Added by code-review-graph
+.code-review-graph/
+
+# macOS
+.DS_Store
+
+# AI assistant configs and scratch (local, per-developer)
+.claude/
+.codebuddy/
+.gemini/
+.kiro/
+.qoder/
+.serena/
+.cursorrules
+.windsurfrules
+.mcp.json
+opencode.jsonc
+AGENTS.md
+CLAUDE.md
+CODEBUDDY.md
+GEMINI.md
+QODER.md
+.github/code-review-graph.instruction.md

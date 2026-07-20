@@ -12,7 +12,7 @@ license = {text = "BSD-3-Clause"}
 authors = [
     {name = "OTURNS"}
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Information Analysis",
@@ -42,10 +42,18 @@ optax = [
 optimagic = [
     "optimagic >= 0.5",
 ]
+optimistix = [
+    "optimistix >= 0.0.6",
+]
 spatial = [
     "libpysal >= 4.0",
     "geopandas >= 0.13",
     "scikit-learn >= 1.2",
+]
+# CHOLMOD-accelerated sparse SAR solves for symmetric weights.  Optional:
+# the sparse path falls back to SciPy SuperLU when scikit-sparse is absent.
+sparse = [
+    "scikit-sparse >= 0.4",
 ]
 test = [
     "coverage",
@@ -66,10 +74,17 @@ docs = [
     "sphinx-immaterial",
     "watermark",
 ]
-dev = [
-    "locpick[test]",
+# Everything a user might want at runtime (solvers + spatial + sparse).
+all = [
     "locpick[optax]",
     "locpick[optimagic]",
+    "locpick[optimistix]",
+    "locpick[spatial]",
+    "locpick[sparse]",
+]
+dev = [
+    "locpick[all]",
+    "locpick[test]",
     "locpick[docs]",
     "ruff",
     "ipykernel",
@@ -94,6 +109,9 @@ locpick = ["*.pyi", "py.typed"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.ruff]
 target-version = "py312"

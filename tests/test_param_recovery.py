@@ -12,6 +12,7 @@ because MLE estimates have sampling variability.
 """
 
 import numpy.testing as npt
+import pytest
 
 from locpick import ChoiceModel
 from locpick.dgp import (
@@ -403,8 +404,13 @@ class TestMSCLRecovery:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestMixedNestedRecovery:
-    """Parameter recovery tests for mixed nested logit."""
+    """Parameter recovery tests for mixed nested logit.
+
+    Marked slow: each fit uses n_obs=10000 with n_draws=500 simulated
+    integration draws over a mixed-nested likelihood.
+    """
 
     def test_mixed_nested_recovers_beta_params(self):
         """Mixed nested logit should recover fixed beta coefficients."""
@@ -472,13 +478,17 @@ class TestMixedNestedRecovery:
         result = model.fit()
 
         for nest_name, true_lambda in dataset.true_lambdas.items():
-            est_lambda = result.coefficients.get(f"lambda_{nest_name}")
-            if est_lambda is not None:
-                # Lambda recovery is noisy with random coefficients
-                assert abs(est_lambda - true_lambda) < 0.35, (
-                    f"Mixed nested failed to recover lambda_{nest_name}: "
-                    f"got {est_lambda:.4f}, true {true_lambda:.4f}"
-                )
+            name = f"lambda_{nest_name}"
+            assert name in result.coefficients.index, (
+                f"Mixed nested did not estimate {name}; "
+                f"available: {list(result.coefficients.index)}"
+            )
+            est_lambda = result.coefficients[name]
+            # Lambda recovery is noisy with random coefficients
+            assert abs(est_lambda - true_lambda) < 0.35, (
+                f"Mixed nested failed to recover {name}: "
+                f"got {est_lambda:.4f}, true {true_lambda:.4f}"
+            )
 
     def test_mixed_nested_recovers_random_means(self):
         """Mixed nested logit should recover random parameter means."""
@@ -509,10 +519,14 @@ class TestMixedNestedRecovery:
         result = model.fit()
 
         for param_name, true_mean in dataset.true_random_means.items():
-            est_mean = result.coefficients.get(f"mean_{param_name}")
-            if est_mean is not None:
-                # Random mean recovery is noisy — check sign and rough magnitude
-                assert abs(est_mean - true_mean) < 0.5, (
-                    f"Mixed nested failed to recover mean_{param_name}: "
-                    f"got {est_mean:.4f}, true {true_mean:.4f}"
-                )
+            name = f"mean_{param_name}"
+            assert name in result.coefficients.index, (
+                f"Mixed nested did not estimate {name}; "
+                f"available: {list(result.coefficients.index)}"
+            )
+            est_mean = result.coefficients[name]
+            # Random mean recovery is noisy — check sign and rough magnitude
+            assert abs(est_mean - true_mean) < 0.5, (
+                f"Mixed nested failed to recover {name}: "
+                f"got {est_mean:.4f}, true {true_mean:.4f}"
+            )
