@@ -384,72 +384,6 @@ def _build_alternatives(n_alts, rng, alt_features):
     return alternatives, alt_ids
 
 
-def _build_interactions(obs_ids, alt_ids, chooser_feature, alt_columns):
-    """Build chooser×alternative interaction terms.
-
-    Returns
-    -------
-    interactions : dict[str, pd.Series]
-        Named (obs_id, alt_id)-indexed Series.
-    interaction_index : pd.MultiIndex
-    """
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    n_obs = len(obs_ids)
-    n_alts = len(alt_ids)
-    interactions = {}
-    for alt_col in alt_columns:
-        alt_vals = alt_columns[alt_col]
-        tiled_feat = np.repeat(chooser_feature, n_alts)
-        tiled_alt = np.tile(alt_vals, n_obs)
-        name = (
-            f"{chooser_feature.name}_x_{alt_col}"
-            if hasattr(chooser_feature, "name")
-            else f"obs_x_{alt_col}"
-        )
-        interactions[name] = pd.Series(tiled_feat * tiled_alt, index=interaction_index, name=name)
-    return interactions, interaction_index
-
-
-def _compute_det_utility(
-    n_obs, n_alts, alternatives, alt_params, interactions, interaction_coefs=None
-):
-    """Compute deterministic utility from alt params and interactions.
-
-    Parameters
-    ----------
-    n_obs, n_alts : int
-    alternatives : pd.DataFrame
-    alt_params : dict[str, float]
-    interactions : dict[str, pd.Series]
-    interaction_coefs : dict[str, float] or None
-        Coefficients for interaction terms. Keys must match interactions.
-    """
-    det_utility = np.zeros((n_obs, n_alts))
-    for col, coef in alt_params.items():
-        alt_vals = alternatives[col].to_numpy()
-        det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    if interaction_coefs:
-        for name, coef in interaction_coefs.items():
-            if name in interactions:
-                det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
-    return det_utility
-
-
-def _build_design_matrix(n_obs, alternatives, interactions, interaction_coefs):
-    """Build a design matrix from alternatives + interaction terms.
-
-    Returns
-    -------
-    design_matrix : np.ndarray, shape (n_obs * n_alts, k)
-    beta : np.ndarray, shape (k,)
-    """
-    design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
-    for name, coef in interaction_coefs.items():
-        if name in interactions:
-            design_matrix = np.column_stack([design_matrix, interactions[name].to_numpy().ravel()])
-    return design_matrix
-
-
 def _simulate_choices_from_probs(probs, rng, n_obs, n_alts):
     """Vectorized choice simulation from probability matrix.
 
@@ -473,6 +407,69 @@ def _build_circular_adjacency(n_alts):
     return adjacency
 
 
+def _generate_alternatives(alt_params, n_alts, rng):
+    """Generate alternatives DataFrame with columns from alt_params keys."""
+    alt_ids = pd.Index(np.arange(n_alts), name="aid")
+    alt_data = {col: rng.uniform(1, 10, n_alts) for col in alt_params}
+    return pd.DataFrame(alt_data, index=alt_ids), alt_ids
+
+
+def _generate_interactions(interaction_params, choosers, alternatives, obs_ids, alt_ids, rng):
+    """Generate interaction Series from interaction_params keys.
+
+    Interaction names follow the convention ``"{chooser_col}_x_{alt_col}"``.
+    The chooser column must exist in ``choosers``, and the alt column must
+    exist in ``alternatives``.
+    """
+    n_obs = len(obs_ids)
+    n_alts = len(alt_ids)
+    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
+    interactions = {}
+    for name in interaction_params:
+        parts = name.split("_x_", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Interaction name '{name}' must follow '{{chooser}}_x_{{alt}}' convention"
+            )
+        chooser_col, alt_col = parts
+        if chooser_col not in choosers.columns:
+            raise KeyError(
+                f"Interaction '{name}' references chooser column '{chooser_col}' "
+                f"not in choosers. Available: {list(choosers.columns)}"
+            )
+        if alt_col not in alternatives.columns:
+            raise KeyError(
+                f"Interaction '{name}' references alt column '{alt_col}' "
+                f"not in alternatives. Available: {list(alternatives.columns)}"
+            )
+        chooser_tiled = np.repeat(choosers[chooser_col].to_numpy(), n_alts)
+        alt_tiled = np.tile(alternatives[alt_col].to_numpy(), n_obs)
+        interactions[name] = pd.Series(
+            chooser_tiled * alt_tiled, index=interaction_index, name=name
+        )
+    return interactions
+
+
+def _ensure_random_param_columns(alt_params, random_params, n_alts, rng):
+    """Ensure ``alt_params`` includes all columns referenced by ``random_params``.
+
+    Random-coefficient columns must exist in the generated ``alternatives``
+    frame (``_generate_alternatives`` builds columns from ``alt_params`` keys),
+    but they must NOT carry a *fixed* coefficient — their effect comes entirely
+    from the random draw.  A missing column is therefore added with a fixed
+    coefficient of ``0.0`` so the deterministic-utility loop contributes nothing
+    for it (a non-zero value would inject a spurious alternative-specific term).
+    """
+    alt_params = dict(alt_params)
+    for col in random_params:
+        if col not in alt_params:
+            alt_params[col] = 0.0
+    return alt_params
+
+
+# ---------------------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------------
 # MNL DGP
 # ---------------------------------------------------------------------------
@@ -491,12 +488,15 @@ def simulate_mnl(
     -----------
     * ``alt_feature`` — linearly spaced from -1 to 1 across ``n_alts``
     * ``obs_feature`` — i.i.d. Normal(0, 1) across ``n_obs``
-    * ``obs_x_alt``  — element-wise product ``obs_feature × alt_feature``
-      broadcast over the full ``(n_obs × n_alts)`` grid
+    * Interaction terms are created only when ``interaction_params`` is given.
+      Each key follows the ``{chooser}_x_{alt}`` convention (e.g.
+      ``"obs_feature_x_alt_feature"``) and is the element-wise product of the
+      named chooser and alternative columns, broadcast over the full
+      ``(n_obs × n_alts)`` grid.
     * Deterministic utility::
 
           U_det = alt_params["alt_feature"] * alt_feature
-                + interaction_params["obs_x_alt"] * obs_x_alt
+                + sum(interaction_params[name] * interaction[name])
 
     * Stochastic utility: ``U_det + Gumbel(0, 1)``
     * Chosen alternative: ``argmax`` of stochastic utility per chooser
@@ -509,8 +509,10 @@ def simulate_mnl(
         Mapping of alternative-level column name → true coefficient.
         Default: ``{"alt_feature": -0.65}``.
     interaction_params : dict, optional
-        Mapping of interaction column name → true coefficient.
-        Default: ``{"obs_x_alt": 0.95}``.
+        Mapping of interaction column name (``{chooser}_x_{alt}``) → true
+        coefficient.  Default: ``{}`` (no interaction terms).  A formula that
+        references an interaction column requires that column to be listed
+        here; interactions are never created implicitly.
     seed : int, default 1234
 
     Returns
@@ -520,7 +522,7 @@ def simulate_mnl(
     if alt_params is None:
         alt_params = {"alt_feature": -0.65}
     if interaction_params is None:
-        interaction_params = {"obs_x_alt": 0.95}
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
 
@@ -529,28 +531,42 @@ def simulate_mnl(
     obs_feature = rng.standard_normal(n_obs)
     choosers = pd.DataFrame({"obs_feature": obs_feature}, index=obs_ids)
 
-    # --- Alternatives ---------------------------------------------------
+    # --- Alternatives (columns from alt_params keys) -------------------
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alt_feature = np.linspace(-1.0, 1.0, n_alts)
-    alternatives = pd.DataFrame({"alt_feature": alt_feature}, index=alt_ids)
+    alt_data = {}
+    for col in alt_params:
+        alt_data[col] = (
+            np.linspace(-1.0, 1.0, n_alts) if col == "alt_feature" else rng.uniform(1, 10, n_alts)
+        )
+    alternatives = pd.DataFrame(alt_data, index=alt_ids)
 
-    # --- Interactions (broadcast) ----------------------------------------
+    # --- Interactions (from interaction_params keys) ------------------
     interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    obs_feat_tiled = np.repeat(obs_feature, n_alts)  # (n_obs*n_alts,)
-    alt_feat_tiled = np.tile(alt_feature, n_obs)  # (n_obs*n_alts,)
-    obs_x_alt_values = obs_feat_tiled * alt_feat_tiled
-
-    interactions: dict[str, pd.Series] = {
-        "obs_x_alt": pd.Series(obs_x_alt_values, index=interaction_index, name="obs_x_alt")
-    }
+    obs_feat_tiled = np.repeat(obs_feature, n_alts)
+    interactions: dict[str, pd.Series] = {}
+    for name in interaction_params:
+        parts = name.split("_x_", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Interaction name '{name}' must follow '{{chooser}}_x_{{alt}}' convention"
+            )
+        chooser_col, alt_col = parts
+        if alt_col not in alternatives.columns:
+            raise KeyError(
+                f"Interaction '{name}' references alt column '{alt_col}' not in alternatives. Available: {list(alternatives.columns)}"
+            )
+        alt_tiled = np.tile(alternatives[alt_col].to_numpy(), n_obs)
+        interactions[name] = pd.Series(
+            obs_feat_tiled * alt_tiled, index=interaction_index, name=name
+        )
 
     # --- Deterministic utility ------------------------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    if "obs_x_alt" in interaction_params:
-        det_utility += interaction_params["obs_x_alt"] * obs_x_alt_values.reshape(n_obs, n_alts)
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Simulate choices -----------------------------------------------
     gumbel_noise = rng.gumbel(size=(n_obs, n_alts))
@@ -591,6 +607,7 @@ def simulate_nested_logit(
     n_alts: int = 4,
     alt_params: dict[str, float] | None = None,
     nest_lambdas: dict[str, float] | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> NestedMNLDataset:
     """Generate synthetic nested logit choice data with known parameters.
@@ -629,6 +646,8 @@ def simulate_nested_logit(
         alt_params = {"cost": -0.5, "time": -0.1}
     if nest_lambdas is None:
         nest_lambdas = {"transit": 0.7, "auto": 0.8}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
 
@@ -654,36 +673,36 @@ def simulate_nested_logit(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alt_data = {col: rng.uniform(1, 10, n_alts) for col in alt_params}
+    alternatives = pd.DataFrame(alt_data, index=alt_ids)
 
-    # --- Interactions (chooser × alternative) --------------------------
+    # --- Interactions (from interaction_params keys) ------------------
     interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
     income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    time_tiled = np.tile(alternatives["time"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-        "income_x_time": pd.Series(
-            income_tiled * time_tiled, index=interaction_index, name="income_x_time"
-        ),
-    }
+    interactions = {}
+    for name in interaction_params:
+        parts = name.split("_x_", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"Interaction name '{name}' must follow '{{chooser}}_x_{{alt}}' convention"
+            )
+        chooser_col, alt_col = parts
+        if alt_col not in alternatives.columns:
+            raise KeyError(
+                f"Interaction '{name}' references alt column '{alt_col}' not in alternatives. Available: {list(alternatives.columns)}"
+            )
+        alt_tiled = np.tile(alternatives[alt_col].to_numpy(), n_obs)
+        interactions[name] = pd.Series(
+            income_tiled * alt_tiled, index=interaction_index, name=name
+        )
 
     # --- Deterministic utility ------------------------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    # Add interaction terms
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
-    det_utility += interactions["income_x_time"].to_numpy().reshape(n_obs, n_alts) * (-0.02)
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Build nest matrix and simulate choices -------------------------
     alt_id_list = list(range(n_alts))
@@ -700,16 +719,10 @@ def simulate_nested_logit(
     beta = np.array([alt_params[col] for col in alternatives.columns])
     design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
     # Append interaction columns
-    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
-    income_x_time_vals = interactions["income_x_time"].to_numpy().reshape(n_obs, n_alts)
-    design_matrix = np.column_stack(
-        [
-            design_matrix,
-            income_x_cost_vals.ravel(),
-            income_x_time_vals.ravel(),
-        ]
-    )
-    beta = np.append(beta, [0.05, -0.02])  # true coefficients for interactions
+    for name in interactions:
+        interaction_vals = interactions[name].to_numpy().reshape(n_obs, n_alts)
+        design_matrix = np.column_stack([design_matrix, interaction_vals.ravel()])
+    beta = np.append(beta, [interaction_params[name] for name in interactions])
 
     probs = _nested_logit_probs_numpy(
         beta,
@@ -732,8 +745,7 @@ def simulate_nested_logit(
 
     # Include interaction params in true_params
     true_params = dict(alt_params)
-    true_params["income_x_cost"] = 0.05
-    true_params["income_x_time"] = -0.02
+    true_params.update(interaction_params)
 
     return NestedMNLDataset(
         choosers=choosers,
@@ -759,6 +771,7 @@ def simulate_scl(
     alt_params: dict[str, float] | None = None,
     rho: float = 0.7,
     adjacency: np.ndarray | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> SCLDataset:
     """Generate synthetic SCL choice data with known parameters.
@@ -793,6 +806,8 @@ def simulate_scl(
 
     if alt_params is None:
         alt_params = {"cost": -0.5, "time": -0.1}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
 
@@ -811,41 +826,27 @@ def simulate_scl(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility ------------------------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    # Add interaction term
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Compute SCL probabilities and simulate choices ------------------
-    # Build design matrix including interaction terms so all utility
-    # components are captured in the probability calculation.
     beta = np.array([alt_params[col] for col in alternatives.columns])
     design_matrix = np.tile(alternatives.to_numpy(), (n_obs, 1))
-    # Append interaction column
-    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
-    design_matrix = np.column_stack([design_matrix, income_x_cost_vals.ravel()])
-    beta = np.append(beta, 0.05)  # true coefficient for income_x_cost
+    for name in interactions:
+        design_matrix = np.column_stack([design_matrix, interactions[name].to_numpy().ravel()])
+    beta = np.append(beta, [interaction_params[name] for name in interactions])
 
     log_probs = _scl_log_probs_numpy(
         beta, rho, design_matrix, allocation, edge_list, n_obs, n_alts
@@ -862,9 +863,8 @@ def simulate_scl(
         choosers, alternatives, choosers["choice"], matrix_data=interactions
     )
 
-    # Include interaction param in true_params
     true_params = dict(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
 
     return SCLDataset(
         choosers=choosers,
@@ -889,6 +889,7 @@ def simulate_mixed_logit(
     n_alts: int = 4,
     alt_params: dict[str, float] | None = None,
     random_params: dict[str, tuple[str, float, float]] | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> MixedMNLDataset:
     """Generate synthetic mixed logit choice data with known parameters.
@@ -920,8 +921,13 @@ def simulate_mixed_logit(
         alt_params = {"cost": -0.5}
     if random_params is None:
         random_params = {"time": ("normal", -0.3, 0.5)}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
+
+    # Ensure alt_params includes all columns referenced by random_params
+    alt_params = _ensure_random_param_columns(alt_params, random_params, n_alts, rng)
 
     # --- Choosers and alternatives --------------------------------------
     obs_ids = pd.Index(np.arange(n_obs), name="oid")
@@ -929,31 +935,20 @@ def simulate_mixed_logit(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility (fixed part) ----------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    # Add interaction term
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Random utility component ----------------------------------------
     for col, (dist, mean, sd) in random_params.items():
@@ -979,7 +974,7 @@ def simulate_mixed_logit(
     # --- Build true_params dict ------------------------------------------
     true_params: dict[str, float] = {}
     true_params.update(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
     for col, (dist, mean, sd) in random_params.items():
         true_params[f"mean_{col}"] = mean
         true_params[f"sd_{col}"] = sd
@@ -1016,6 +1011,7 @@ def simulate_mscl(
     rho: float = 0.7,
     random_params: dict[str, tuple[str, float, float]] | None = None,
     adjacency: np.ndarray | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> MSCLDataset:
     """Generate synthetic MSCL choice data with known parameters.
@@ -1053,8 +1049,13 @@ def simulate_mscl(
         alt_params = {"cost": -0.5}
     if random_params is None:
         random_params = {"time": ("normal", -0.3, 0.5)}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
+
+    # Ensure alt_params includes all columns referenced by random_params
+    alt_params = _ensure_random_param_columns(alt_params, random_params, n_alts, rng)
 
     # --- Build adjacency matrix -----------------------------------------
     if adjacency is None:
@@ -1069,31 +1070,20 @@ def simulate_mscl(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility (fixed part) ----------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    # Add interaction term
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Random utility component ----------------------------------------
     for col, (dist, mean, sd) in random_params.items():
@@ -1118,7 +1108,7 @@ def simulate_mscl(
     # --- Build true_params dict ------------------------------------------
     true_params: dict[str, float] = {}
     true_params.update(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
     for col, (dist, mean, sd) in random_params.items():
         true_params[f"mean_{col}"] = mean
         true_params[f"sd_{col}"] = sd
@@ -1157,6 +1147,7 @@ def simulate_nested_scl(
     nest_rhos: dict[str, float] | None = None,
     nest_lambdas: dict[str, float] | None = None,
     adjacency: np.ndarray | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> NestedSCLDataset:
     """Generate synthetic Nested SCL choice data with known parameters.
@@ -1203,6 +1194,8 @@ def simulate_nested_scl(
         nest_rhos = {"inner": 0.6, "outer": 0.8}
     if nest_lambdas is None:
         nest_lambdas = {"inner": 0.7, "outer": 0.9}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
 
@@ -1237,30 +1230,20 @@ def simulate_nested_scl(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility ------------------------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Compute Nested SCL probabilities and simulate choices --------
     nest_matrix = nests.build_nest_matrix(list(range(n_alts)))
@@ -1327,7 +1310,7 @@ def simulate_nested_scl(
 
     # --- Build true_params dict ------------------------------------------
     true_params = dict(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
 
     # --- Build ChoiceTable -----------------------------------------------
     choice_table = _build_choice_table(
@@ -1450,6 +1433,7 @@ def simulate_mnscl(
     nest_lambdas: dict[str, float] | None = None,
     random_params: dict[str, tuple[str, float, float]] | None = None,
     adjacency: np.ndarray | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> MNSCLDataset:
     """Generate synthetic MNSCL choice data with known parameters.
@@ -1501,8 +1485,13 @@ def simulate_mnscl(
         nest_lambdas = {"inner": 0.7, "outer": 0.9}
     if random_params is None:
         random_params = {"time": ("normal", -0.1, 0.05)}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
+
+    # Ensure alt_params includes all columns referenced by random_params
+    alt_params = _ensure_random_param_columns(alt_params, random_params, n_alts, rng)
 
     # --- Build adjacency matrix -----------------------------------------
     if adjacency is None:
@@ -1535,30 +1524,20 @@ def simulate_mnscl(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) -------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility -----------------------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Add random coefficient variation ------------------------------
     # For each random parameter, add random variation multiplied by attribute
@@ -1645,7 +1624,7 @@ def simulate_mnscl(
 
     # --- Build true_params dict -----------------------------------------
     true_params = dict(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
 
     true_random_means = {}
     true_random_spreads = {}
@@ -1689,6 +1668,7 @@ def simulate_mixed_nested_logit(
     alt_params: dict[str, float] | None = None,
     nest_lambdas: dict[str, float] | None = None,
     random_params: dict[str, tuple[str, float, float]] | None = None,
+    interaction_params: dict[str, float] | None = None,
     seed: int = 1234,
 ) -> MixedNestedMNLDataset:
     """Generate synthetic mixed nested logit choice data with known parameters.
@@ -1733,8 +1713,13 @@ def simulate_mixed_nested_logit(
         nest_lambdas = {"transit": 0.7, "auto": 0.8}
     if random_params is None:
         random_params = {"time": ("normal", -0.3, 0.5)}
+    if interaction_params is None:
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
+
+    # Ensure alt_params includes all columns referenced by random_params
+    alt_params = _ensure_random_param_columns(alt_params, random_params, n_alts, rng)
 
     # --- Build nesting structure ----------------------------------------
     nest_names = list(nest_lambdas.keys())
@@ -1758,30 +1743,20 @@ def simulate_mixed_nested_logit(
     choosers = pd.DataFrame({"income": income}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alternatives = pd.DataFrame(
-        {
-            "cost": rng.uniform(1, 10, n_alts),
-            "time": rng.uniform(5, 30, n_alts),
-        },
-        index=alt_ids,
-    )
+    alternatives, alt_ids = _generate_alternatives(alt_params, n_alts, rng)
 
-    # --- Interactions (chooser × alternative) --------------------------
-    interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
-    income_tiled = np.repeat(income, n_alts)
-    cost_tiled = np.tile(alternatives["cost"].to_numpy(), n_obs)
-    interactions = {
-        "income_x_cost": pd.Series(
-            income_tiled * cost_tiled, index=interaction_index, name="income_x_cost"
-        ),
-    }
+    # --- Interactions (from interaction_params keys) ------------------
+    interactions = _generate_interactions(
+        interaction_params, choosers, alternatives, obs_ids, alt_ids, rng
+    )
 
     # --- Deterministic utility (fixed part) ----------------------------
     det_utility = np.zeros((n_obs, n_alts))
     for col, coef in alt_params.items():
         alt_vals = alternatives[col].to_numpy()
         det_utility += coef * np.tile(alt_vals, n_obs).reshape(n_obs, n_alts)
-    det_utility += interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts) * 0.05
+    for name, coef in interaction_params.items():
+        det_utility += coef * interactions[name].to_numpy().reshape(n_obs, n_alts)
 
     # --- Add random coefficient variation ------------------------------
     for param_name, (dist, mean, spread) in random_params.items():
@@ -1820,14 +1795,9 @@ def simulate_mixed_nested_logit(
     fixed_cols = [col for col in alternatives.columns if col in alt_params]
     beta = np.array([alt_params[col] for col in fixed_cols])
     design_matrix = np.tile(alternatives[fixed_cols].to_numpy(), (n_obs, 1))
-    income_x_cost_vals = interactions["income_x_cost"].to_numpy().reshape(n_obs, n_alts)
-    design_matrix = np.column_stack(
-        [
-            design_matrix,
-            income_x_cost_vals.ravel(),
-        ]
-    )
-    beta = np.append(beta, [0.05])  # true coefficient for interaction
+    for name in interactions:
+        design_matrix = np.column_stack([design_matrix, interactions[name].to_numpy().ravel()])
+    beta = np.append(beta, [interaction_params[name] for name in interactions])
 
     # Compute nested logit probabilities
     probs = _nested_logit_probs_numpy(
@@ -1846,7 +1816,7 @@ def simulate_mixed_nested_logit(
 
     # --- Build true_params dict ------------------------------------------
     true_params = dict(alt_params)
-    true_params["income_x_cost"] = 0.05
+    true_params.update(interaction_params)
 
     true_random_means = {}
     true_random_spreads = {}
@@ -1985,7 +1955,7 @@ def simulate_sar_mnl(
     if alt_params is None:
         alt_params = {"alt_attr": -0.5}
     if interaction_params is None:
-        interaction_params = {"obs_x_alt": 0.8}
+        interaction_params = {}
 
     rng = np.random.default_rng(seed)
 
@@ -2006,17 +1976,28 @@ def simulate_sar_mnl(
     choosers = pd.DataFrame({"obs_feature": obs_feature}, index=obs_ids)
 
     alt_ids = pd.Index(np.arange(n_alts), name="aid")
-    alt_attr = rng.standard_normal(n_alts)
-    alternatives = pd.DataFrame({"alt_attr": alt_attr}, index=alt_ids)
+    # Generate alternative columns dynamically from alt_params keys
+    alt_data = {}
+    for col in alt_params:
+        alt_data[col] = rng.standard_normal(n_alts)
+    alternatives = pd.DataFrame(alt_data, index=alt_ids)
 
     # --- Interactions (chooser × alternative) --------------------------
     interaction_index = pd.MultiIndex.from_product([obs_ids, alt_ids], names=["oid", "aid"])
     obs_feat_tiled = np.repeat(obs_feature, n_alts)
-    alt_attr_tiled = np.tile(alt_attr, n_obs)
-    obs_x_alt_values = obs_feat_tiled * alt_attr_tiled
-    interactions = {
-        "obs_x_alt": pd.Series(obs_x_alt_values, index=interaction_index, name="obs_x_alt")
-    }
+    interactions = {}
+    for interaction_name in interaction_params:
+        # interaction_name like "obs_x_cost" → interact obs_feature with "cost" column
+        alt_col = interaction_name.replace("obs_x_", "", 1)
+        if alt_col not in alternatives.columns:
+            raise KeyError(
+                f"Interaction '{interaction_name}' references alt column '{alt_col}' "
+                f"not in alternatives. Available: {list(alternatives.columns)}"
+            )
+        alt_tiled = np.tile(alternatives[alt_col].to_numpy(), n_obs)
+        interactions[interaction_name] = pd.Series(
+            obs_feat_tiled * alt_tiled, index=interaction_index, name=interaction_name
+        )
 
     # --- Base utilities: V_base = Zβ + Xγ  (n_obs × n_alts) -------------
     V_base = np.zeros((n_obs, n_alts))

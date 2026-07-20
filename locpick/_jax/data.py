@@ -198,6 +198,16 @@ class ChoiceDataJAX:
     dist_codes: Optional["jnp.ndarray"] = None
     dm_fixed: Optional["jnp.ndarray"] = None
     dm_random: Optional["jnp.ndarray"] = None
+    design_matrix_sparse: Optional[object] = None  # BCOO when sparsity > threshold
+
+    @property
+    def effective_design_matrix(self):
+        """Return the sparse design matrix when available, else the dense one."""
+        return (
+            self.design_matrix_sparse
+            if self.design_matrix_sparse is not None
+            else self.design_matrix
+        )
 
     @classmethod
     def from_arrays(
@@ -230,8 +240,16 @@ class ChoiceDataJAX:
         n_obs = arrays.n_obs
         n_alts = arrays.n_alts
 
-        # Core arrays
-        design_matrix = jnp.array(arrays.design_matrix, dtype=jnp.float64)
+        # Core arrays — convert to BCOO when design matrix is sparse enough
+        dm_np = arrays.design_matrix
+        design_matrix = jnp.array(dm_np, dtype=jnp.float64)
+        design_matrix_sparse = None
+        if dm_np.shape[0] > 10_000:
+            nnz_frac = float((dm_np != 0).mean())
+            if nnz_frac < 0.1:
+                from jax.experimental.sparse import BCOO
+
+                design_matrix_sparse = BCOO.fromdense(design_matrix)
         chosen = jnp.array(arrays.chosen, dtype=jnp.float64)
 
         # Availability
@@ -299,6 +317,7 @@ class ChoiceDataJAX:
             dist_codes=dist_codes_jax,
             dm_fixed=dm_fixed,
             dm_random=dm_random,
+            design_matrix_sparse=design_matrix_sparse,
         )
 
     # --- JAX pytree methods ---
@@ -315,6 +334,7 @@ class ChoiceDataJAX:
             self.dist_codes,
             self.dm_fixed,
             self.dm_random,
+            self.design_matrix_sparse,
         )
         aux_data = (self.n_obs, self.n_alts, self.random_col_indices, self.fixed_col_indices)
         return children, aux_data
@@ -337,4 +357,5 @@ class ChoiceDataJAX:
             dist_codes=children[7],
             dm_fixed=children[8],
             dm_random=children[9],
+            design_matrix_sparse=children[10],
         )

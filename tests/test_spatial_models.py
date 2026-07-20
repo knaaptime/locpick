@@ -685,6 +685,7 @@ def simple_nest_data():
         alt_params={"cost": -0.5, "time": -0.1},
         nest_rhos={"inner": 0.6, "outer": 0.8},
         nest_lambdas={"inner": 0.7, "outer": 0.9},
+        interaction_params={"income_x_cost": 0.8},
         seed=42,
     )
 
@@ -942,6 +943,7 @@ def test_nested_scl_parameter_recovery():
         alt_params={"cost": -0.5, "time": -0.1},
         nest_rhos={"inner": 0.6, "outer": 0.8},
         nest_lambdas={"inner": 0.7, "outer": 0.9},
+        interaction_params={"income_x_cost": 0.8},
         seed=123,
     )
 
@@ -1000,6 +1002,7 @@ def test_nested_scl_single_nest():
         alt_params={"cost": -0.5, "time": -0.1},
         nest_rhos={"all": 0.6},
         nest_lambdas={"all": 1.0},  # lambda=1 means no nest correlation
+        interaction_params={"income_x_cost": 0.8},
         seed=42,
     )
 
@@ -1027,6 +1030,7 @@ def test_nested_scl_mnl_equivalence():
         alt_params={"cost": -0.5, "time": -0.1},
         nest_rhos={"inner": 1.0, "outer": 1.0},
         nest_lambdas={"inner": 1.0, "outer": 1.0},
+        interaction_params={"income_x_cost": 0.8},
         seed=42,
     )
 
@@ -1099,6 +1103,7 @@ def simple_mnscl_data():
         nest_rhos={"inner": 0.6, "outer": 0.8},
         nest_lambdas={"inner": 0.7, "outer": 0.9},
         random_params={"time": ("normal", -0.1, 0.05)},
+        interaction_params={"income_x_cost": 0.8},
         seed=42,
     )
 
@@ -1411,6 +1416,7 @@ def test_mnscl_parameter_recovery():
         nest_rhos={"inner": 0.6, "outer": 0.8},
         nest_lambdas={"inner": 0.7, "outer": 0.9},
         random_params={"time": ("normal", -0.1, 0.05)},
+        interaction_params={"income_x_cost": 0.8},
         seed=123,
     )
 
@@ -1474,6 +1480,7 @@ def test_mnscl_single_nest():
         nest_rhos={"all": 0.6},
         nest_lambdas={"all": 1.0},
         random_params={"time": ("normal", -0.1, 0.05)},
+        interaction_params={"income_x_cost": 0.8},
         seed=42,
     )
 

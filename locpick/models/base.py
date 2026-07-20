@@ -1,9 +1,10 @@
 """Base class and protocol for choice model classes.
 
-This module defines the :class:`ChoiceModel` protocol and the
-:class:`BaseChoiceModel` abstract base class that all concrete
-model classes implement.  It also provides :class:`SpatialMixin`,
-a mixin for models that require a spatial adjacency graph.
+This module defines the :class:`ChoiceModelProtocol` protocol and the
+:class:`BaseChoiceModel` abstract base class behind
+:class:`~locpick.models.choice_model.ChoiceModel`.  It also provides
+:class:`SpatialMixin`, which resolves the spatial adjacency graph for
+models configured with ``graph=``.
 """
 
 from abc import ABC, abstractmethod
@@ -184,7 +185,11 @@ def _compute_fit_statistics(
         coefficients.values / std_errors.values,
         np.nan,
     )
-    p_values = 2 * (1 - stats.norm.cdf(np.abs(np.nan_to_num(t_values))))
+    # Keep NaN t-values as NaN p-values.  Substituting zero would report
+    # p = 1.0 for a parameter whose standard error could not be computed,
+    # dressing up non-identification as a precise null result.
+    with np.errstate(invalid="ignore"):
+        p_values = 2 * (1 - stats.norm.cdf(np.abs(t_values)))
 
     z_crit = stats.norm.ppf(0.975)
     conf_lower = coefficients.values - z_crit * std_errors.values
@@ -306,6 +311,14 @@ class BaseChoiceModel(ABC):
         self._result: Optional[FitResult] = None
         self._objective: Optional[Objective] = None
 
+        # Fitted parameters in the solver's unconstrained space, plus the
+        # transform spec mapping them to display scale.  The JAX objective is
+        # a function of the *unconstrained* vector, so Hessians and scores
+        # must be evaluated here rather than at ``result.coefficients``.
+        self._raw_params: Optional[np.ndarray] = None
+        self._transform_spec: Optional[list[dict]] = None
+        self._solver_result: Optional[SolverResult] = None
+
         # Caches (cleared on re-estimation)
         self._hessian_inverse: Optional[np.ndarray] = None
         self._observation_scores_cache: dict = {}
@@ -395,8 +408,13 @@ class BaseChoiceModel(ABC):
             fixed_mask=fixed_mask,
         )
 
-        self._result = self._build_fit_result(solver_result, arrays)
+        self._solver_result = solver_result
+
+        # Drop caches from any previous fit *before* building the result:
+        # _build_fit_result derives standard errors and covariance from the
+        # Hessian cache, which would otherwise still hold the prior solution.
         self._clear_caches()
+        self._result = self._build_fit_result(solver_result, arrays)
         return self._result
 
     def _pre_fit(self, arrays: ChoiceArrays) -> None:
@@ -582,8 +600,57 @@ class BaseChoiceModel(ABC):
                 hess[j, i] = hess[i, j]
         return hess
 
+    def _delta_jacobian(self) -> Optional[np.ndarray]:
+        """Jacobian ``J[i, r] = d(display_i) / d(raw_r)`` of the reparameterisation.
+
+        The objective is a function of the unconstrained solver vector, so
+        covariances derived from it live in raw space.  This Jacobian maps them
+        to display scale via ``J @ cov_raw @ J.T`` (the delta method).  Each
+        display parameter depends on exactly one raw parameter, so ``J`` has a
+        single nonzero per row.
+
+        Returns
+        -------
+        np.ndarray or None
+            Shape ``(n_display, n_raw)``, or None if the model is unfitted.
+        """
+        if self._transform_spec is None or self._raw_params is None:
+            return None
+
+        raw = np.asarray(self._raw_params, dtype=np.float64)
+        jac = np.zeros((len(self._transform_spec), len(raw)), dtype=np.float64)
+        for i, spec in enumerate(self._transform_spec):
+            r = spec["raw_idx"]
+            ttype = spec["type"]
+            if ttype == "sigmoid":
+                val = spec["value"]
+                jac[i, r] = val * (1.0 - val)
+            elif ttype == "tanh":
+                val = spec["value"]
+                jac[i, r] = 1.0 - val**2
+            elif ttype == "abs":
+                # natural = |raw|; derivative is sign(raw), magnitude exactly 1
+                jac[i, r] = np.sign(raw[r]) or 1.0
+            else:
+                jac[i, r] = 1.0
+        return jac
+
+    def _to_display_covariance(self, cov_raw: np.ndarray) -> np.ndarray:
+        """Map a raw-space covariance matrix to display scale via the delta method."""
+        jac = self._delta_jacobian()
+        if jac is None:
+            return cov_raw
+        return jac @ cov_raw @ jac.T
+
     def _get_hessian_inverse(self) -> Optional[np.ndarray]:
-        """Get the inverse of the negative Hessian (covariance matrix).
+        """Get the inverse negative Hessian in **raw (unconstrained) space**.
+
+        The JAX objective is a function of the solver's unconstrained vector,
+        so the Hessian is evaluated at ``self._raw_params`` — not at the
+        display-scale coefficients, which live in a different coordinate
+        system whenever a model has transformed (rho/lambda/spread)
+        parameters.  Use :meth:`_to_display_covariance` to convert the result
+        for reporting.
 
         Uses the following priority:
         1. Cached inverse Hessian (if already computed)
@@ -600,9 +667,9 @@ class BaseChoiceModel(ABC):
             return self._hessian_inverse
 
         # Try HVP-based Hessian first (exact, via JAX autodiff)
-        if self._objective is not None and self._result is not None:
+        if self._objective is not None and self._raw_params is not None:
             try:
-                hess = self._compute_hessian(self._result.coefficients.values)
+                hess = self._compute_hessian(self._raw_params)
                 # hess is the Hessian of the log-likelihood (negative definite).
                 # The covariance matrix is inv(-hess).
                 neg_hess = -hess
@@ -618,13 +685,17 @@ class BaseChoiceModel(ABC):
             except Exception:
                 pass
 
-        # Fallback: solver's approximate inverse Hessian (e.g. L-BFGS-B)
-        if (
-            self._result is not None
-            and self._result.solver_result
-            and "scipy_result" in self._result.solver_result
-        ):
-            scipy_result = self._result.solver_result["scipy_result"]
+        # Fallback: solver's approximate inverse Hessian (e.g. L-BFGS-B).
+        # Read from the live solver result so this is usable while the
+        # FitResult is still being constructed.
+        raw_solver = None
+        if self._solver_result is not None:
+            raw_solver = self._solver_result.raw
+        elif self._result is not None and self._result.solver_result:
+            raw_solver = self._result.solver_result
+
+        if raw_solver and "scipy_result" in raw_solver:
+            scipy_result = raw_solver["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
                     self._hessian_inverse = np.asarray(
@@ -636,13 +707,23 @@ class BaseChoiceModel(ABC):
                 except Exception:
                     pass
 
-        # Last resort: diagonal approximation from standard errors
+        # Last resort: diagonal approximation from the reported standard
+        # errors.  Those are display-scale, so undo the delta method to keep
+        # this method's raw-space contract.
         if (
             self._result is not None
             and self._result.std_errors is not None
             and not self._result.std_errors.isna().all()
         ):
             variances = self._result.std_errors.values**2
+            jac = self._delta_jacobian()
+            if jac is not None:
+                raw_variances = np.full(jac.shape[1], np.nan)
+                for i, spec in enumerate(self._transform_spec):
+                    factor = jac[i, spec["raw_idx"]]
+                    if factor != 0.0:
+                        raw_variances[spec["raw_idx"]] = variances[i] / factor**2
+                variances = np.nan_to_num(raw_variances, nan=0.0)
             self._hessian_inverse = np.diag(variances)
             return self._hessian_inverse
 
@@ -721,10 +802,6 @@ class SpatialMixin:
     that handle graph resolution, allocation computation, and
     ``EdgeStructure`` construction.  Subclasses that use this mixin
     must set ``self._graph_input`` before calling ``fit()``.
-
-    This mixin eliminates the duplicated graph-resolution boilerplate
-    that was previously copy-pasted across SCL, MSCL, NestedSCL, and
-    MNSCL.
     """
 
     _graph_input: Any

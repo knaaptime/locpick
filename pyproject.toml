@@ -12,7 +12,7 @@ license = {text = "BSD-3-Clause"}
 authors = [
     {name = "OTURNS"}
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Information Analysis",
@@ -42,10 +42,23 @@ optax = [
 optimagic = [
     "optimagic >= 0.5",
 ]
+optimistix = [
+    "optimistix >= 0.0.6",
+]
 spatial = [
     "libpysal >= 4.0",
     "geopandas >= 0.13",
     "scikit-learn >= 1.2",
+]
+# Sparse SAR spatial-filter solves.  cholgraph (CHOLMOD) and klujax (KLU)
+# give JIT-native, differentiable solves for the estimation kernels; scikit-
+# sparse provides the CHOLMOD/KLU factorisations used off the JAX path
+# (prediction/scoring).  All optional: the estimator falls back to a dense
+# solve and the numpy paths to SciPy SuperLU when these are absent.
+sparse = [
+    "cholgraph >= 0.6",
+    "klujax >= 0.5",
+    "scikit-sparse >= 0.4",
 ]
 test = [
     "coverage",
@@ -66,11 +79,17 @@ docs = [
     "sphinx-immaterial",
     "watermark",
 ]
-dev = [
-    "locpick[test]",
-    "locpick[jax]",
+# Everything a user might want at runtime (solvers + spatial + sparse).
+all = [
     "locpick[optax]",
     "locpick[optimagic]",
+    "locpick[optimistix]",
+    "locpick[spatial]",
+    "locpick[sparse]",
+]
+dev = [
+    "locpick[all]",
+    "locpick[test]",
     "locpick[docs]",
     "ruff",
     "ipykernel",
@@ -95,6 +114,9 @@ locpick = ["*.pyi", "py.typed"]
 addopts = "-ra"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.ruff]
 target-version = "py312"

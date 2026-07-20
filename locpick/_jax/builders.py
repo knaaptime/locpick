@@ -25,6 +25,7 @@ from jax.scipy.special import logsumexp as jax_logsumexp
 from .data import ChoiceDataJAX
 from .kernels import (
     _NEG_INF,
+    _normal_cdf,
     compute_ll,
     compute_ll_contribs,
     compute_utilities,
@@ -88,7 +89,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _ll_jax(beta):
         return _mnl_ll_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -100,7 +101,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _ll_contribs_jax(beta):
         return _mnl_ll_contribs_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -112,7 +113,7 @@ def build_mnl_objective(arrays) -> Objective:
     def _grad_jax(beta):
         return _mnl_grad_kernel(
             beta,
-            data.design_matrix,
+            data.effective_design_matrix,
             data.available,
             data.chosen,
             data.weights,
@@ -268,17 +269,7 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         # Uniform on [μ - σ, μ + σ]
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         # Symmetric triangular on [μ - σ, μ + σ]
@@ -316,7 +307,7 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -361,17 +352,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         spreads = beta_random_spreads[None, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -396,7 +377,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         log_L_n = (log_probs * data.chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * data.weights
 
@@ -406,7 +387,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
 # ---------------------------------------------------------------------------
 
 
-@functools.partial(jax.jit, static_argnums=(5, 6, 7, 8))
+@functools.partial(jax.jit, static_argnums=(5, 6, 7, 8, 9))
 def _mnscl_ll_kernel(
     params,
     data,
@@ -476,17 +457,7 @@ def _mnscl_ll_kernel(
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -534,29 +505,29 @@ def _mnscl_ll_kernel(
             )
 
             nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-
-            for idx, alt_global in enumerate(nest_alts):
-                log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+            # Vectorized scatter (replaces per-alt .at[].set() loop)
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
         # Top-level NL: compute nest probabilities
         nest_exponents = lambdas[None, :] * nest_log_G  # (n_obs, n_nests)
         log_denom_top = jax_logsumexp(nest_exponents, axis=1)  # (n_obs,)
         log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
 
-        # Combine: P_i = P_SCL(i|m) * P_NL(m)
+        # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
         for m in range(n_nests):
             nest_alts = nest_alt_indices[m]
-            for alt_global in nest_alts:
-                old_log_prob = log_probs_full[:, alt_global]
-                new_log_prob = old_log_prob + log_P_nest[:, m]
-                log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+            if len(nest_alts) == 0:
+                continue
+            old = log_probs_full[:, list(nest_alts)]
+            new = old + log_P_nest[:, m][:, None]
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
         # Chosen log-probability
         log_L_n = (log_probs_full * data.chosen).sum(axis=1)
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -626,17 +597,7 @@ def _mnscl_ll_contribs_kernel(
         spreads = beta_random_spreads[None, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -675,24 +636,26 @@ def _mnscl_ll_contribs_kernel(
                 V_m, rhos[m], edge_data_list[m], avail_m
             )
             nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-            for idx, alt_global in enumerate(nest_alts):
-                log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+            # Vectorized scatter (replaces per-alt .at[].set() loop)
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
         nest_exponents = lambdas[None, :] * nest_log_G
         log_denom_top = jax_logsumexp(nest_exponents, axis=1)
         log_P_nest = nest_exponents - log_denom_top[:, None]
 
+        # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
         for m in range(n_nests):
             nest_alts = nest_alt_indices[m]
-            for alt_global in nest_alts:
-                old_log_prob = log_probs_full[:, alt_global]
-                new_log_prob = old_log_prob + log_P_nest[:, m]
-                log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+            if len(nest_alts) == 0:
+                continue
+            old = log_probs_full[:, list(nest_alts)]
+            new = old + log_P_nest[:, m][:, None]
+            log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
         log_L_n = (log_probs_full * data.chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * data.weights
 
@@ -1079,22 +1042,22 @@ def _nested_scl_ll_kernel(params, data, nest_matrix, edge_data_list, k, nest_alt
         # Store inclusive value
         nest_log_G = nest_log_G.at[:, m].set(log_G_m)
 
-        # Scatter probabilities back to full array
-        for idx, alt_global in enumerate(nest_alts):
-            log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+        # Scatter probabilities back to full array (vectorized)
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
     # Top-level NL: compute nest probabilities
     nest_exponents = lambdas[None, :] * nest_log_G  # (n_obs, n_nests)
     log_denom_top = jax_logsumexp(nest_exponents, axis=1)  # (n_obs,)
     log_P_nest = nest_exponents - log_denom_top[:, None]  # (n_obs, n_nests)
 
-    # Combine: P_i = P_SCL(i|m) * P_NL(m)
+    # Combine: P_i = P_SCL(i|m) * P_NL(m) — vectorized per nest
     for m in range(n_nests):
         nest_alts = nest_alt_indices[m]
-        for alt_global in nest_alts:
-            old_log_prob = log_probs_full[:, alt_global]
-            new_log_prob = old_log_prob + log_P_nest[:, m]
-            log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+        if len(nest_alts) == 0:
+            continue
+        old = log_probs_full[:, list(nest_alts)]
+        new = old + log_P_nest[:, m][:, None]
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
     return compute_ll(log_probs_full, data.chosen, data.weights)
 
@@ -1146,8 +1109,7 @@ def _nested_scl_ll_contribs_kernel(params, data, nest_matrix, edge_data_list, k,
             V_m, rhos[m], edge_data_list[m], avail_m
         )
         nest_log_G = nest_log_G.at[:, m].set(log_G_m)
-        for idx, alt_global in enumerate(nest_alts):
-            log_probs_full = log_probs_full.at[:, alt_global].set(log_probs_m[:, idx])
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(log_probs_m)
 
     nest_exponents = lambdas[None, :] * nest_log_G
     log_denom_top = jax_logsumexp(nest_exponents, axis=1)
@@ -1155,10 +1117,11 @@ def _nested_scl_ll_contribs_kernel(params, data, nest_matrix, edge_data_list, k,
 
     for m in range(n_nests):
         nest_alts = nest_alt_indices[m]
-        for alt_global in nest_alts:
-            old_log_prob = log_probs_full[:, alt_global]
-            new_log_prob = old_log_prob + log_P_nest[:, m]
-            log_probs_full = log_probs_full.at[:, alt_global].set(new_log_prob)
+        if len(nest_alts) == 0:
+            continue
+        old = log_probs_full[:, list(nest_alts)]
+        new = old + log_P_nest[:, m][:, None]
+        log_probs_full = log_probs_full.at[:, list(nest_alts)].set(new)
 
     return compute_ll_contribs(log_probs_full, data.chosen, data.weights)
 

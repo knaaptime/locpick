@@ -10,13 +10,16 @@ locpick supports Python >= 3.12. We recommend using [miniforge] or [pixi].
 pip install locpick
 ```
 
-For optional dependencies:
+JAX is a core dependency and is always installed. Optional extras add
+alternative solvers, spatial utilities, and faster sparse solves:
 
 ```bash
-pip install locpick[jax]        # JAX backend for autodiff
-pip install locpick[optax]      # Optax solver backend
-pip install locpick[spatial]    # Spatial distance utilities
-pip install locpick[all]        # All optional dependencies
+pip install locpick[optax]       # Optax solver backend
+pip install locpick[optimagic]   # optimagic solver backend
+pip install locpick[optimistix]  # Optimistix (pure-JAX) solver backend
+pip install locpick[spatial]     # Spatial graph / distance utilities
+pip install locpick[sparse]      # CHOLMOD-accelerated sparse SAR solves
+pip install locpick[all]         # All of the above
 ```
 
 ## Installing from source

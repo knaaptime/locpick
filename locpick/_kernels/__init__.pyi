@@ -7,9 +7,6 @@ from .constants import (
     NEG_INF_NP as NEG_INF_NP,
 )
 from .mnl_numpy import (
-    mnl_gradient_numpy as mnl_gradient_numpy,
-)
-from .mnl_numpy import (
     mnl_log_likelihood_numpy as mnl_log_likelihood_numpy,
 )
 from .mnl_numpy import (

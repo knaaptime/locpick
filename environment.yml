@@ -11,6 +11,7 @@ dependencies:
   - formulaic>=0.5
   - numba>=0.59
   - xarray>=2022.06
+  - scikit-sparse
   # optional (jax)
   - jax>=0.4
   - jaxlib>=0.4

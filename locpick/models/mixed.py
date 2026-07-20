@@ -349,6 +349,99 @@ def _apply_distribution(
         raise ValueError(f"Unknown distribution: {distribution}")
 
 
+def realize_random_coefficients(
+    draws: np.ndarray,
+    beta_random_means: np.ndarray,
+    beta_random_spreads: np.ndarray,
+    random_distributions: list[str],
+) -> np.ndarray:
+    """Realise random coefficients for every draw.
+
+    Parameters
+    ----------
+    draws : np.ndarray, shape (n_obs, n_draws, k_random)
+        Standard normal draws.
+    beta_random_means, beta_random_spreads : np.ndarray, shape (k_random,)
+    random_distributions : list of str
+        One distribution name per random parameter.
+
+    Returns
+    -------
+    np.ndarray, shape (n_obs, n_draws, k_random)
+        Realised coefficient values.
+    """
+    n_obs, n_draws, k_random = draws.shape
+    out = np.zeros((n_obs, n_draws, k_random), dtype=np.float64)
+    for p in range(k_random):
+        mean_p = np.full(n_obs, beta_random_means[p], dtype=np.float64)
+        spread_p = np.full(n_obs, beta_random_spreads[p], dtype=np.float64)
+        out[:, :, p] = _apply_distribution(
+            draws[:, :, p], mean_p, spread_p, random_distributions[p]
+        )
+    return out
+
+
+def _mixed_logit_per_draw_log_probs_numpy(
+    beta_fixed: np.ndarray,
+    beta_random_means: np.ndarray,
+    beta_random_spreads: np.ndarray,
+    random_distributions: list[str],
+    draws: np.ndarray,
+    design_matrix: np.ndarray,
+    random_col_indices: list[int],
+    n_obs: int,
+    n_alts: int,
+    available: Optional[np.ndarray] = None,
+    inclusion_probs: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Conditional log-probabilities for each simulation draw.
+
+    Returns
+    -------
+    log_probs_draws : np.ndarray, shape (n_obs, n_draws, n_alts)
+        Conditional MNL log-probabilities given each draw's coefficients.
+    beta_random_draws : np.ndarray, shape (n_obs, n_draws, k_random)
+        The realised random coefficients behind those probabilities.
+    avail : np.ndarray, shape (n_obs, n_alts)
+        Resolved availability mask.
+    """
+    from scipy.special import logsumexp
+
+    k_random = len(random_col_indices)
+    all_col_indices = list(range(design_matrix.shape[1]))
+    fixed_col_indices = [i for i in all_col_indices if i not in random_col_indices]
+
+    dm_fixed = design_matrix[:, fixed_col_indices] if fixed_col_indices else None
+    dm_random = design_matrix[:, random_col_indices].reshape(n_obs, n_alts, k_random)
+
+    if dm_fixed is not None and len(beta_fixed) > 0:
+        v_fixed = (dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
+    else:
+        v_fixed = np.zeros((n_obs, n_alts))
+
+    if available is not None:
+        avail = np.asarray(available, dtype=np.float64).reshape(n_obs, n_alts)
+    else:
+        avail = np.ones((n_obs, n_alts), dtype=np.float64)
+
+    if inclusion_probs is not None:
+        sr = np.asarray(inclusion_probs, dtype=np.float64).reshape(n_obs, n_alts)
+        v_fixed = v_fixed + np.log(np.maximum(sr, 1e-30))
+
+    beta_random_draws = realize_random_coefficients(
+        draws, beta_random_means, beta_random_spreads, random_distributions
+    )
+
+    # V_random[n, r, j] = sum_p X_random[n, j, p] * beta_random[n, r, p]
+    v_random = np.einsum("njp,nrp->nrj", dm_random, beta_random_draws)
+
+    utilities = v_fixed[:, None, :] + v_random
+    utilities = np.where(avail[:, None, :] > 0, utilities, NEG_INF)
+    log_probs_draws = utilities - logsumexp(utilities, axis=2)[:, :, None]
+
+    return log_probs_draws, beta_random_draws, avail
+
+
 def _mixed_logit_probs_numpy(
     beta_fixed: np.ndarray,
     beta_random_means: np.ndarray,
@@ -397,87 +490,20 @@ def _mixed_logit_probs_numpy(
     from scipy.special import logsumexp
 
     n_draws = draws.shape[1]
-    k_random = len(random_col_indices)
 
-    # Build the full design matrix columns
-    # Split into fixed and random columns
-    all_col_indices = list(range(design_matrix.shape[1]))
-    fixed_col_indices = [i for i in all_col_indices if i not in random_col_indices]
-
-    dm_fixed = design_matrix[:, fixed_col_indices] if fixed_col_indices else None
-    dm_random = design_matrix[:, random_col_indices]
-
-    # Fixed utility component: V_fixed = X_fixed @ beta_fixed
-    if dm_fixed is not None and len(beta_fixed) > 0:
-        v_fixed = (dm_fixed @ beta_fixed).reshape(n_obs, n_alts)
-    else:
-        v_fixed = np.zeros((n_obs, n_alts))
-
-    # Availability mask
-    if available is not None:
-        avail = np.asarray(available, dtype=np.float64).reshape(n_obs, n_alts)
-    else:
-        avail = np.ones((n_obs, n_alts), dtype=np.float64)
-
-    # Sampling correction
-    if inclusion_probs is not None:
-        sr = np.asarray(inclusion_probs, dtype=np.float64).reshape(n_obs, n_alts)
-        v_fixed = v_fixed + np.log(np.maximum(sr, 1e-30))
-
-    # For each draw, compute conditional MNL probabilities
-    # Then average across draws (simulated integration)
-    log_probs_draws = np.zeros((n_obs, n_draws, n_alts), dtype=np.float64)
-
-    for r in range(n_draws):
-        # Realise per-observation random coefficients for this draw
-        beta_random_r = np.zeros((n_obs, k_random))
-        for p in range(k_random):
-            z_p = draws[:, r, p]  # (n_obs,)
-            mean_p = beta_random_means[p]
-            spread_p = beta_random_spreads[p]
-
-            if random_distributions[p] == "normal":
-                beta_random_r[:, p] = mean_p + spread_p * z_p
-            elif random_distributions[p] == "lognormal":
-                # Clip exponent to avoid overflow
-                exponent = mean_p + spread_p * z_p
-                beta_random_r[:, p] = np.exp(np.clip(exponent, -50, 50))
-            elif random_distributions[p] == "triangular":
-                from scipy.stats import norm as norm_dist
-
-                u = norm_dist.cdf(z_p)
-                mask = u <= 0.5
-                beta_random_r[:, p] = np.where(
-                    mask,
-                    mean_p + spread_p * (np.sqrt(2 * u) - 1),
-                    mean_p + spread_p * (1 - np.sqrt(2 * (1 - u))),
-                )
-
-            elif random_distributions[p] == "uniform":
-                from scipy.stats import norm as norm_dist
-
-                u = norm_dist.cdf(z_p)
-                beta_random_r[:, p] = mean_p + spread_p * (2 * u - 1)
-
-        # Random utility component: V_random[n, j] = X_random[n,j,:] @ beta_random[n,:]
-        # dm_random: (n_obs * n_alts, k_random)
-        # beta_random_r: (n_obs, k_random)
-        v_random = np.sum(
-            dm_random.reshape(n_obs, n_alts, k_random) * beta_random_r[:, None, :],
-            axis=2,
-        )
-
-        # Total utility
-        utilities = v_fixed + v_random  # (n_obs, n_alts)
-
-        # Mask unavailable
-        utilities = np.where(avail > 0, utilities, NEG_INF)
-
-        # Log-probabilities via stable logsumexp
-        log_sum_exp = logsumexp(utilities, axis=1)  # (n_obs,)
-        log_probs = utilities - log_sum_exp[:, None]  # (n_obs, n_alts)
-
-        log_probs_draws[:, r, :] = log_probs
+    log_probs_draws, _, avail = _mixed_logit_per_draw_log_probs_numpy(
+        beta_fixed,
+        beta_random_means,
+        beta_random_spreads,
+        random_distributions,
+        draws,
+        design_matrix,
+        random_col_indices,
+        n_obs,
+        n_alts,
+        available=available,
+        inclusion_probs=inclusion_probs,
+    )
 
     # Simulated mixed logit probability:
     # P(j) = (1/R) * sum_r L(j | beta^r)
@@ -556,25 +582,14 @@ def _mixed_logit_ll_numpy(
 
     log_L_draws = np.zeros((n_obs, n_draws), dtype=np.float64)
 
+    # Shared realisation: this function previously inlined the distribution
+    # branches and applied the uniform inverse-CDF to triangular draws.
+    beta_random_draws = realize_random_coefficients(
+        draws, beta_random_means, beta_random_spreads, random_distributions
+    )
+
     for r in range(n_draws):
-        # Realise random coefficients for this draw
-        beta_random_r = np.zeros((n_obs, k_random))
-        for p in range(k_random):
-            z_p = draws[:, r, p]  # (n_obs,)
-            mean_p = beta_random_means[p]
-            spread_p = beta_random_spreads[p]
-
-            if random_distributions[p] == "normal":
-                beta_random_r[:, p] = mean_p + spread_p * z_p
-            elif random_distributions[p] == "lognormal":
-                # Clip exponent to avoid overflow
-                exponent = mean_p + spread_p * z_p
-                beta_random_r[:, p] = np.exp(np.clip(exponent, -50, 50))
-            elif random_distributions[p] in ("triangular", "uniform"):
-                from scipy.stats import norm as norm_dist
-
-                u = norm_dist.cdf(z_p)
-                beta_random_r[:, p] = mean_p + spread_p * (2 * u - 1)
+        beta_random_r = beta_random_draws[:, r, :]
 
         # Random utility component
         v_random = np.sum(

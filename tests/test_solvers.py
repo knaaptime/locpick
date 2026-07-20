@@ -155,7 +155,7 @@ def test_trust_ncg_matches_lbfgs_on_scl():
     from locpick import ChoiceModel
     from locpick.dgp import simulate_scl
 
-    ds = simulate_scl(n_obs=600, n_alts=12, seed=11)
+    ds = simulate_scl(n_obs=600, n_alts=12, seed=11, interaction_params={"income_x_cost": 0.8})
 
     base = ChoiceModel(
         data=ds.choice_table,

@@ -124,7 +124,7 @@ def test_mscl_qmc_fits_and_recovers():
     from locpick.dgp import simulate_mscl
     from locpick.models.mixed import ParamDistribution as PD
 
-    ds = simulate_mscl(n_obs=400, n_alts=10, seed=3)
+    ds = simulate_mscl(n_obs=400, n_alts=10, seed=3, interaction_params={"income_x_cost": 0.8})
     rp = {"time": PD(param="time", distribution="normal")}
 
     m_qmc = ChoiceModel(

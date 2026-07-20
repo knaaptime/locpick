@@ -73,7 +73,7 @@ def test_mnl_prediction(obs, alts):
     assert np.allclose(prob_sums, 1.0, atol=1e-8)
 
 
-FORMULA = "alt_feature + obs_x_alt - 1"
+FORMULA = "alt_feature + obs_feature_x_alt_feature - 1"
 
 
 def _fit_v2(dataset, backend, monkeypatch):
@@ -91,7 +91,7 @@ def test_mnl_parameter_recovery_with_pairwise_variable():
         n_obs=4000,
         n_alts=5,
         alt_params={"alt_feature": -0.7},
-        interaction_params={"obs_x_alt": 1.1},
+        interaction_params={"obs_feature_x_alt_feature": 1.1},
         seed=1234,
     )
     model = ChoiceModel(dataset.choice_table, FORMULA)
@@ -99,7 +99,11 @@ def test_mnl_parameter_recovery_with_pairwise_variable():
 
     # With 4 000 observations MLE is consistent; allow 10 % relative tolerance.
     npt.assert_allclose(estimated["alt_feature"], dataset.true_params["alt_feature"], rtol=0.10)
-    npt.assert_allclose(estimated["obs_x_alt"], dataset.true_params["obs_x_alt"], rtol=0.10)
+    npt.assert_allclose(
+        estimated["obs_feature_x_alt_feature"],
+        dataset.true_params["obs_feature_x_alt_feature"],
+        rtol=0.10,
+    )
 
 
 @pytest.mark.parametrize("backend", ["numpy", "jax"])
@@ -107,23 +111,27 @@ def test_mnl_parameter_recovery_across_backends(backend, monkeypatch):
     if backend == "jax" and importlib.util.find_spec("jax") is None:
         pytest.skip("JAX backend recovery test skipped because jax is not installed")
 
-    dataset = dgp.simulate_mnl(seed=2026)
+    dataset = dgp.simulate_mnl(seed=2026, interaction_params={"obs_feature_x_alt_feature": 0.95})
     estimated = _fit_v2(dataset, backend, monkeypatch)
 
     npt.assert_allclose(estimated["alt_feature"], dataset.true_params["alt_feature"], rtol=0.10)
-    npt.assert_allclose(estimated["obs_x_alt"], dataset.true_params["obs_x_alt"], rtol=0.10)
+    npt.assert_allclose(
+        estimated["obs_feature_x_alt_feature"],
+        dataset.true_params["obs_feature_x_alt_feature"],
+        rtol=0.10,
+    )
 
 
 def test_mnl_backend_coefficient_consistency(monkeypatch):
-    dataset = dgp.simulate_mnl(seed=909)
+    dataset = dgp.simulate_mnl(seed=909, interaction_params={"obs_feature_x_alt_feature": 0.95})
 
     est_numpy = _fit_v2(dataset, "numpy", monkeypatch)
 
     if importlib.util.find_spec("jax") is not None:
         est_jax = _fit_v2(dataset, "jax", monkeypatch)
         npt.assert_allclose(
-            est_jax[["alt_feature", "obs_x_alt"]].to_numpy(),
-            est_numpy[["alt_feature", "obs_x_alt"]].to_numpy(),
+            est_jax[["alt_feature", "obs_feature_x_alt_feature"]].to_numpy(),
+            est_numpy[["alt_feature", "obs_feature_x_alt_feature"]].to_numpy(),
             rtol=1e-4,
             atol=1e-6,
         )
@@ -1510,10 +1518,12 @@ class TestDGPRecovery:
             n_obs=3000,
             n_alts=6,
             alt_params={"alt_feature": -0.65},
-            interaction_params={"obs_x_alt": 0.95},
+            interaction_params={"obs_feature_x_alt_feature": 0.95},
             seed=8002,
         )
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result = model.fit()
 
         npt.assert_allclose(
@@ -1522,8 +1532,8 @@ class TestDGPRecovery:
             rtol=0.15,
         )
         npt.assert_allclose(
-            result.coefficients["obs_x_alt"],
-            dataset.true_params["obs_x_alt"],
+            result.coefficients["obs_feature_x_alt_feature"],
+            dataset.true_params["obs_feature_x_alt_feature"],
             rtol=0.15,
         )
 
@@ -1535,10 +1545,12 @@ class TestDGPRecovery:
             n_obs=5000,
             n_alts=8,
             alt_params={"alt_feature": -0.5},
-            interaction_params={"obs_x_alt": 1.0},
+            interaction_params={"obs_feature_x_alt_feature": 1.0},
             seed=8003,
         )
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result = model.fit()
 
         # With 5000 obs, should recover within 10%
@@ -1548,8 +1560,8 @@ class TestDGPRecovery:
             rtol=0.10,
         )
         npt.assert_allclose(
-            result.coefficients["obs_x_alt"],
-            dataset.true_params["obs_x_alt"],
+            result.coefficients["obs_feature_x_alt_feature"],
+            dataset.true_params["obs_feature_x_alt_feature"],
             rtol=0.10,
         )
 
@@ -1561,11 +1573,13 @@ class TestDGPRecovery:
             n_obs=3000,
             n_alts=15,
             alt_params={"alt_feature": -0.5},
-            interaction_params={"obs_x_alt": 0.8},
+            interaction_params={"obs_feature_x_alt_feature": 0.8},
             seed=8004,
         )
 
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result = model.fit()
 
         # With 3000 obs and 15 alternatives, should recover within 20%
@@ -1575,8 +1589,8 @@ class TestDGPRecovery:
             rtol=0.20,
         )
         npt.assert_allclose(
-            result.coefficients["obs_x_alt"],
-            dataset.true_params["obs_x_alt"],
+            result.coefficients["obs_feature_x_alt_feature"],
+            dataset.true_params["obs_feature_x_alt_feature"],
             rtol=0.20,
         )
 
@@ -1588,13 +1602,17 @@ class TestDGPRecovery:
 
         from locpick.dgp import simulate_mnl
 
-        dataset = simulate_mnl(n_obs=3000, n_alts=6, seed=8005)
+        dataset = simulate_mnl(
+            n_obs=3000, n_alts=6, seed=8005, interaction_params={"obs_feature_x_alt_feature": 0.95}
+        )
 
         monkeypatch.delenv("LOCPICK_MNL_BACKEND", raising=False)
         if backend != "jax":
             monkeypatch.setenv("LOCPICK_MNL_BACKEND", backend)
 
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result = model.fit()
 
         npt.assert_allclose(
@@ -1616,17 +1634,21 @@ class TestEstimationProblemIntegration:
         """EstimationProblem should produce same results as formula path."""
         from locpick.dgp import simulate_mnl
 
-        dataset = simulate_mnl(n_obs=2000, n_alts=5, seed=901)
+        dataset = simulate_mnl(
+            n_obs=2000, n_alts=5, seed=901, interaction_params={"obs_feature_x_alt_feature": 0.95}
+        )
 
         # Formula path
-        model_formula = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt - 1")
+        model_formula = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
+        )
         result_formula = model_formula.fit()
 
         # Problem path
         problem = EstimationProblem.from_choice_table(
-            dataset.choice_table, formula="alt_feature + obs_x_alt - 1"
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
         )
-        model_problem = ChoiceModel(data=dataset.choice_table, problem=problem)
+        model_problem = ChoiceModel(data=problem)
         result_problem = model_problem.fit()
 
         # Results should match
@@ -1645,10 +1667,12 @@ class TestEstimationProblemIntegration:
         """EstimationProblem with a fixed parameter should constrain estimation."""
         from locpick.dgp import simulate_mnl
 
-        dataset = simulate_mnl(n_obs=2000, n_alts=5, seed=902)
+        dataset = simulate_mnl(
+            n_obs=2000, n_alts=5, seed=902, interaction_params={"obs_feature_x_alt_feature": 0.95}
+        )
 
         problem = EstimationProblem.from_choice_table(
-            dataset.choice_table, formula="alt_feature + obs_x_alt - 1"
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
         )
 
         # Fix the alt_feature coefficient at -0.5
@@ -1659,7 +1683,7 @@ class TestEstimationProblemIntegration:
             param_fixed=[True, False],
         )
 
-        model = ChoiceModel(data=dataset.choice_table, problem=problem_fixed)
+        model = ChoiceModel(data=problem_fixed)
         result = model.fit()
 
         # The fixed parameter should remain at -0.5
@@ -1672,10 +1696,12 @@ class TestEstimationProblemIntegration:
         """EstimationProblem with bounds should constrain parameter range."""
         from locpick.dgp import simulate_mnl
 
-        dataset = simulate_mnl(n_obs=2000, n_alts=5, seed=903)
+        dataset = simulate_mnl(
+            n_obs=2000, n_alts=5, seed=903, interaction_params={"obs_feature_x_alt_feature": 0.95}
+        )
 
         problem = EstimationProblem.from_choice_table(
-            dataset.choice_table, formula="alt_feature + obs_x_alt - 1"
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature - 1"
         )
 
         # Bound alt_feature to [-1, 0]
@@ -1685,7 +1711,7 @@ class TestEstimationProblemIntegration:
             param_bounds=[(-1.0, 0.0), (None, None)],
         )
 
-        model = ChoiceModel(data=dataset.choice_table, problem=problem_bounded)
+        model = ChoiceModel(data=problem_bounded)
         result = model.fit()
 
         # alt_feature should be within bounds

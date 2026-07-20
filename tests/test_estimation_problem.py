@@ -182,7 +182,7 @@ class TestMultinomialLogitWithEstimationProblem:
         """MultinomialLogit.fit() works with EstimationProblem."""
         ct = make_choice_table()
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
-        model = ChoiceModel(data=ct, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
         assert isinstance(result, FitResult)
         assert result.coefficients.shape[0] == 2
@@ -198,7 +198,7 @@ class TestMultinomialLogitWithEstimationProblem:
 
         # Problem path
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
-        model_problem = ChoiceModel(data=ct, problem=problem)
+        model_problem = ChoiceModel(data=problem)
         result_problem = model_problem.fit()
 
         # Coefficients should be very close (same data, same solver)
@@ -223,7 +223,7 @@ class TestMultinomialLogitWithEstimationProblem:
             param_names=problem.param_names,
             param_initial=[0.1, -0.1],
         )
-        model = ChoiceModel(data=ct, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
         assert isinstance(result, FitResult)
         assert np.isfinite(result.log_likelihood)
@@ -234,7 +234,7 @@ class TestMultinomialLogitWithEstimationProblem:
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
 
         # Pass problem + formula — formula should be ignored
-        model = ChoiceModel(data=ct, problem=problem, formula="ignored ~ x")
+        model = ChoiceModel(data=problem, formula="ignored ~ x")
         result = model.fit()
         # Should still have 2 params (from problem), not whatever "ignored ~ x" would give
         assert result.coefficients.shape[0] == 2
@@ -244,7 +244,7 @@ class TestMultinomialLogitWithEstimationProblem:
         ct = make_choice_table()
         problem = EstimationProblem.from_choice_table(ct, formula="cost + time")
         # data is still required (it's positional)
-        model = ChoiceModel(data=ct, problem=problem)
+        model = ChoiceModel(data=problem)
         assert model._problem is problem
 
 
@@ -267,7 +267,7 @@ class TestSolverBoundsAndFixed:
             param_initial=[0.5, 0.0],
             param_fixed=[True, False],
         )
-        model = ChoiceModel(data=ct, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
         # The first parameter (cost) should be close to 0.5 (fixed)
         assert abs(result.coefficients.iloc[0] - 0.5) < 1e-6
@@ -282,7 +282,7 @@ class TestSolverBoundsAndFixed:
             param_names=problem.param_names,
             param_bounds=[(-5.0, 5.0), (-10.0, 10.0)],
         )
-        model = ChoiceModel(data=ct, problem=problem)
+        model = ChoiceModel(data=problem)
         result = model.fit()
         # Should converge within bounds
         assert -5.0 <= result.coefficients.iloc[0] <= 5.0
@@ -301,7 +301,7 @@ class TestSolverBoundsAndFixed:
             param_fixed=[True, False],
         )
 
-        model = ChoiceModel(data=ct, problem=problem, solver="optimistix")
+        model = ChoiceModel(data=problem, solver="optimistix")
         result = model.fit()
 
         assert abs(result.coefficients.iloc[0] - 0.5) < 1e-6

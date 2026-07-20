@@ -17,6 +17,7 @@ MixedNestedMNL.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import numpy as np
@@ -25,12 +26,10 @@ import pandas as pd
 from .._jax.objective import Objective
 from .._solvers import Solver, SolverResult
 from ..data.arrays import ChoiceArrays
-from ..data.problem import EstimationProblem
 from ..results.fit_result import FitResult
 from ._spatial import (
     EdgeStructure,
     _resolve_spatial_graph,
-    naturalize_rho,
 )
 from .base import (
     BaseChoiceModel,
@@ -41,7 +40,86 @@ from .base import (
     _sandwich_inv,
 )
 from .mixed import ParamDistribution, _resolve_draws
-from .nested import NestingTree, naturalize_nest_params
+from .nested import NestingTree
+
+
+def _lambda_to_alpha(lambda_vals) -> np.ndarray:
+    """Map display-scale nest lambdas in (0, 1) to unconstrained alphas.
+
+    The nested kernels parameterise ``lambda = sigmoid(alpha)``; this is the
+    inverse used whenever display-scale coefficients are handed back to them.
+    """
+    clipped = np.clip(np.asarray(lambda_vals, dtype=np.float64), 1e-10, 1.0 - 1e-10)
+    return np.log(clipped / (1.0 - clipped))
+
+
+@dataclass
+class ParamLayout:
+    """Describes how to extract display-scale parameters from the unconstrained vector.
+
+    Encapsulates the parameter layout for a specific model variant,
+    replacing the 8+ branches in ``_build_fit_result`` with a single
+    data-driven extraction.
+
+    Attributes
+    ----------
+    display_names : list[str]
+        Names of display-scale parameters.
+    transforms : list[tuple[int, str, float | None]]
+        One per display parameter: (raw_idx, transform_type, value).
+        transform_type is "identity", "sigmoid", "tanh", or "abs".
+        value is the natural-scale value (for delta-method SE); None for identity.
+
+    Notes
+    -----
+    The ``"abs"`` transform applies to mixed-logit spread parameters.  The
+    kernels use the spread directly (``beta = mean + spread * z``) and every
+    supported mixing distribution draws ``z`` symmetrically about zero, so the
+    likelihood is even in the spread and its sign is not identified.  Reporting
+    ``|raw|`` is therefore the natural scale, and since ``|d|x|/dx| = 1`` the
+    delta-method factor is exactly one.
+    """
+
+    display_names: list[str]
+    transforms: list[tuple[int, str, float | None]]
+
+    def extract(self, all_params: np.ndarray) -> tuple[np.ndarray, list[str], list[dict]]:
+        """Extract display-scale values, names, and transform_spec from unconstrained params.
+
+        Parameters
+        ----------
+        all_params : np.ndarray
+            Full parameter vector in unconstrained (optimizer) space.
+
+        Returns
+        -------
+        display_values : np.ndarray
+        display_names : list[str]
+        transform_spec : list[dict]
+            For ``_compute_se_generic``.
+        """
+        display_values = np.empty(len(self.transforms), dtype=np.float64)
+        transform_spec = []
+        for i, (raw_idx, ttype, _) in enumerate(self.transforms):
+            raw_val = float(all_params[raw_idx])
+            if ttype == "identity":
+                display_values[i] = raw_val
+            elif ttype == "sigmoid":
+                display_values[i] = 1.0 / (1.0 + np.exp(-raw_val))
+            elif ttype == "tanh":
+                display_values[i] = np.tanh(raw_val)
+            elif ttype == "abs":
+                display_values[i] = abs(raw_val)
+            else:
+                display_values[i] = raw_val
+            transform_spec.append(
+                {
+                    "raw_idx": raw_idx,
+                    "type": ttype,
+                    "value": float(display_values[i]) if ttype != "identity" else None,
+                }
+            )
+        return display_values, self.display_names, transform_spec
 
 
 class ChoiceModel(BaseChoiceModel, SpatialMixin):
@@ -81,7 +159,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Number of draws for simulated maximum likelihood (mixed logit).
         Default 100.
     draw_type : str, optional
-        Type of draws: ``"qmc"`` (default), ``"halton"``, or ``"random"``.
+        Type of draws: ``"sobol"`` (default, also spelled ``"qmc"``),
+        ``"halton"``, ``"scrambled_halton"``, or ``"random"``.
     seed : int
         Random seed for draw generation. Default 42.
     weights : str or array-like, optional
@@ -96,10 +175,11 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Computation backend hint.
     estimator : str, optional
         SAR estimation method (only relevant when ``lag=True``).
-        ``"auto"`` (default) selects ``"pml"`` (dense solve) for
-        n_alts ≤ 2000 and ``"pml_cg"`` (conjugate gradient) for larger
-        alternative sets.  ``"linearized_gmm"`` uses the two-step GMM
-        estimator (Carrión-Flores et al. 2018) for very large J.
+        ``"auto"`` (default) and ``"pml"`` use Smirnov (2010) pseudo
+        maximum likelihood; the spatial filter uses a sparse solve
+        (cholgraph/klujax) when available and ``n_alts`` is large, else a
+        dense solve.  ``"linearized_gmm"`` uses the two-step GMM estimator
+        (Carrión-Flores et al. 2018) for very large J.
 
     Examples
     --------
@@ -115,7 +195,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         data,
         formula: Optional[str] = None,
         spec=None,
-        problem: Optional[EstimationProblem] = None,
         nests: Optional[NestingTree] = None,
         random_params: Optional[dict[str, ParamDistribution]] = None,
         graph=None,
@@ -131,10 +210,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         estimator: str = "auto",
         warmstart: bool = True,
     ):
-        # Handle the legacy `problem` parameter by wrapping it as EstimationProblem
-        if problem is not None:
-            data = problem
-
         super().__init__(
             data=data,
             formula=formula,
@@ -151,7 +226,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         self._random_params = random_params
         self._graph_input = graph
         self._lag = lag  # True = SAR spatial lag, False = SCL (default)
-        self._estimator = estimator  # SAR estimator: auto, pml, pml_cg, linearized_gmm
+        self._estimator = estimator  # SAR estimator: auto, pml, linearized_gmm
         self._warmstart = warmstart  # Use GMM estimates as PML starting values
 
         # Mixed logit settings
@@ -174,6 +249,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         # SAR spatial state (None when lag=True is not used)
         self._W_sparse = None  # CSR sparse for SAR kernels
+        self._diag_precompute = None  # Precomputed diagonal for variance norm
+        self._sparse_solve_ctx = None  # Sparse solve context (large n_alts)
+        self._sparse_solve_fn = None  # Custom VJP sparse solve function
         # Random parameter state (built in _pre_fit)
         self._random_col_indices: Optional[list[int]] = None
         self._random_distributions: Optional[list[str]] = None
@@ -306,12 +384,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         # Resolve spatial graph if graph is provided
         if self._is_spatial:
             if self._is_spatial_lag:
-                # SAR: resolve W via _spatial_weights resolver
-                from ._spatial_weights import resolve_spatial_weights
-
-                self._W_sparse = resolve_spatial_weights(
-                    self._graph_input, arrays.n_alts, row_standardize=True
-                )[1]  # get the CSR sparse
+                self._setup_sar_filter(arrays)
             else:
                 # SCL: resolve via edge structure (existing behavior)
                 self._resolve_spatial_graph()
@@ -320,6 +393,73 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 # Build per-nest edge structures for nested spatial models
                 if self._is_nested:
                     self._build_per_nest_edges(arrays)
+
+    def _setup_sar_filter(self, arrays: ChoiceArrays) -> None:
+        """Resolve W and set up the SAR spatial-filter solve + variance diagonal.
+
+        The filter ``(I - ρW)^{-1} V_base`` and the normalisation diagonal
+        ``diag((I - ρW)^{-1})`` are the per-iteration spatial cost.  When a
+        pure-JAX sparse backend is available (cholgraph for symmetrizable W,
+        klujax otherwise) the solve becomes a sparse, differentiable, JIT
+        kernel; the diagonal is interpolated from exact nodes (cholgraph's
+        selected inverse when symmetrizable).  Otherwise both fall back to
+        the dense path.
+        """
+        from ._spatial_weights import resolve_spatial_weights
+
+        self._W_sparse = resolve_spatial_weights(
+            self._graph_input, arrays.n_alts, row_standardize=True
+        )[1]
+
+        # Prefer a pure-JAX sparse solve (cholgraph for symmetrizable W, klujax
+        # otherwise): differentiable and JIT-native.  When neither is installed,
+        # fall back to the scipy sparse custom-VJP path (CHOLMOD / KLU) — still
+        # sparse, never dense.  The dense solve is used only below the threshold.
+        self._sparse_solve_ctx = None
+        self._sparse_solve_fn = None
+        self._sparse_backend = None
+        diag_at_nodes = None
+        if arrays.n_alts > 500:
+            from .._jax.sparse_backends import cholgraph_node_diagonals, make_sparse_solve_fn
+
+            solve_fn, backend = make_sparse_solve_fn(self._W_sparse)
+            # solve_fn is None only when neither cholgraph nor klujax is
+            # installed; the estimation kernel is JIT-compiled, so the
+            # host-side scipy factorisation cannot run inside it and the dense
+            # solve is used instead.  (The numpy prediction path still uses the
+            # scipy sparse factorisation — see ``_sar_sparse_filter``.)
+            self._sparse_solve_fn = solve_fn
+            self._sparse_backend = backend
+            if backend == "cholgraph":
+                diag_at_nodes = lambda nodes: cholgraph_node_diagonals(  # noqa: E731
+                    self._W_sparse, nodes
+                )
+
+        # Precompute the differentiable, JIT-compatible variance diagonal
+        # interpolant; D(ρ) depends only on ρ.
+        if arrays.n_alts > 50:
+            from .._jax.diag_precompute import precompute_diagonal
+
+            self._diag_precompute = precompute_diagonal(
+                self._W_sparse, diag_at_nodes=diag_at_nodes
+            )
+        else:
+            self._diag_precompute = None
+
+    def _sar_sparse_filter(self, rho: float, V_base: np.ndarray):
+        """Apply the SAR filter in numpy via a sparse factorisation.
+
+        Returns ``(V_filtered, D)`` where ``V_filtered = (I - ρW)^{-1} V_base``
+        and ``D = diag((I - ρW)^{-1})``.  Uses CHOLMOD (symmetrizable W) or KLU
+        via :func:`create_factorization` rather than densifying ``W`` — this is
+        the numpy prediction/scoring counterpart to the JIT sparse solve.
+        """
+        from .._jax.sparse_solve import create_factorization
+
+        fact = create_factorization(self._W_sparse, float(rho))
+        V_filtered = fact.solve(V_base.T).T
+        D = fact.diagonal_inverse()
+        return V_filtered, D
 
     def _prepare_random_params(self, arrays: ChoiceArrays) -> None:
         """Identify random parameter columns and generate draws."""
@@ -386,6 +526,139 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     # Solver inputs
     # ------------------------------------------------------------------
 
+    def _get_param_roles(self, arrays: ChoiceArrays) -> list[dict]:
+        """Describe the parameter layout as a list of role dicts.
+
+        Each dict has:
+        - ``role``: "beta", "beta_fixed", "rho", "rho_per_nest", "lambda", "mean", "sd"
+        - ``count``: number of parameters in this role
+        - ``transform``: "identity", "tanh", "sigmoid", "abs"
+        - ``init``: initial value(s) — scalar or array
+        - ``solver_names``: list of solver-space names
+        - ``display_names``: list of display-space names
+
+        This is the single source of truth for the parameter layout.
+        ``_get_solver_inputs`` and ``_build_param_layout`` both consume it,
+        eliminating the duplicated 4×3 branching.
+        """
+        k = arrays.design_matrix.shape[1]
+        param_names_all = list(arrays.param_names)
+        n_nests = self._nests.n_nests if self._is_nested else 0
+        nest_names = self._nests.nest_names if self._is_nested else []
+        k_fixed = self._k_fixed if self._is_mixed else k
+        k_random = self._k_random if self._is_mixed else 0
+        random_names = self._random_param_names if self._is_mixed else []
+        fixed_names = self._fixed_names if self._is_mixed else param_names_all
+
+        roles: list[dict] = []
+
+        # --- Beta block ---
+        if self._is_mixed:
+            roles.append(
+                {
+                    "role": "beta_fixed",
+                    "count": k_fixed,
+                    "transform": "identity",
+                    "init": np.zeros(k_fixed),
+                    "solver_names": list(fixed_names),
+                    "display_names": list(fixed_names),
+                }
+            )
+        else:
+            roles.append(
+                {
+                    "role": "beta",
+                    "count": k,
+                    "transform": "identity",
+                    "init": "problem_or_zeros",  # handled by _get_solver_inputs
+                    "solver_names": param_names_all,
+                    "display_names": param_names_all,
+                }
+            )
+
+        # --- Rho block ---
+        if self._is_spatial_lag:
+            roles.append(
+                {
+                    "role": "rho",
+                    "count": 1,
+                    "transform": "tanh",
+                    "init": "warmstart_or_zero",  # handled by _get_solver_inputs
+                    "solver_names": ["alpha_rho"],
+                    "display_names": ["rho"],
+                }
+            )
+        elif self._is_spatial_scl:
+            if self._is_nested:
+                # Per-nest rho
+                roles.append(
+                    {
+                        "role": "rho_per_nest",
+                        "count": n_nests,
+                        "transform": "sigmoid",
+                        "init": np.zeros(n_nests),
+                        "solver_names": [f"alpha_rho_{n}" for n in nest_names],
+                        "display_names": [f"rho_{n}" for n in nest_names],
+                    }
+                )
+            else:
+                roles.append(
+                    {
+                        "role": "rho",
+                        "count": 1,
+                        "transform": "sigmoid",
+                        "init": np.zeros(1),
+                        "solver_names": ["alpha_rho"],
+                        "display_names": ["rho"],
+                    }
+                )
+
+        # --- Lambda block (nested) ---
+        if self._is_nested:
+            roles.append(
+                {
+                    "role": "lambda",
+                    "count": n_nests,
+                    "transform": "sigmoid",
+                    "init": "nest_alphas",  # handled by _get_solver_inputs
+                    "solver_names": (
+                        [f"alpha_lambda_{n}" for n in nest_names]
+                        if self._is_spatial_lag
+                        else [
+                            f"alpha_rho_{n}" for n in nest_names
+                        ]  # SCL uses alpha_rho for lambdas too
+                        if self._is_spatial_scl
+                        else [f"nest_{n}" for n in nest_names]
+                    ),
+                    "display_names": [f"lambda_{n}" for n in nest_names],
+                }
+            )
+
+        # --- Mean/SD blocks (mixed) ---
+        if self._is_mixed:
+            roles.append(
+                {
+                    "role": "mean",
+                    "count": k_random,
+                    "transform": "identity",
+                    "init": np.zeros(k_random),
+                    "solver_names": [f"mean_{n}" for n in random_names],
+                    "display_names": [f"mean_{n}" for n in random_names],
+                }
+            )
+            roles.append(
+                {
+                    "role": "sd",
+                    "count": k_random,
+                    "transform": "abs",
+                    "init": np.full(k_random, 0.1),
+                    "solver_names": [f"sd_{n}" for n in random_names],
+                    "display_names": [f"sd_{n}" for n in random_names],
+                }
+            )
+
+        return roles
+
     def _get_solver_inputs(self, arrays: ChoiceArrays):
         """Get initial values, param names, bounds, and fixed mask.
 
@@ -400,171 +673,47 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         - Mixed Nested: ``[beta_fixed, alpha_nest, mean_*, sd_*]``
         - Mixed Nested SCL: ``[beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]``
         """
-        k = arrays.design_matrix.shape[1]
-        param_names_all = list(arrays.param_names)
+        roles = self._get_param_roles(arrays)
 
-        # --- Pure MNL ---
-        if not self._is_nested and not self._is_mixed:
-            # Use problem's initial values / fixed_mask when available
-            if self._problem is not None:
-                x0_base = self._problem.initial_values
-                bounds = self._problem.bounds
-                fixed_mask = self._problem.fixed_mask
-            else:
-                x0_base = np.zeros(k)
-                bounds = None
-                fixed_mask = None
-            names_base = param_names_all
-            if self._is_spatial:
-                # SCL or SAR: [beta, alpha_rho]
+        # Build x0, solver_names from roles
+        x0_parts = []
+        solver_names = []
+        bounds = None
+        fixed_mask = None
+
+        for role in roles:
+            init = role["init"]
+            if isinstance(init, str) and init == "problem_or_zeros":
+                # Pure MNL/SCL/SAR beta: use problem initial values when available
+                if self._problem is not None:
+                    x0_base = self._problem.initial_values
+                    bounds = self._problem.bounds
+                    fixed_mask = self._problem.fixed_mask
+                else:
+                    x0_base = np.zeros(role["count"])
+                x0_parts.append(x0_base)
+            elif isinstance(init, str) and init == "warmstart_or_zero":
+                # SAR rho: GMM warm-start when available
                 if self._is_spatial_lag and self._warmstart and self._W_sparse is not None:
-                    # GMM warm-start: use linearized GMM estimates as starting values
                     try:
                         from .._kernels.sar_mnl_numpy import fit_linearized_gmm
 
                         gmm = fit_linearized_gmm(arrays, self._W_sparse)
-                        beta_gmm = gmm["beta"]
                         rho_gmm = float(np.clip(gmm["rho"], -0.99, 0.99))
-                        alpha_rho_gmm = float(np.arctanh(rho_gmm))
-                        x0 = np.concatenate([beta_gmm, [alpha_rho_gmm]])
+                        x0_parts.append(np.array([np.arctanh(rho_gmm)]))
                     except Exception:
-                        # Fallback to zeros if GMM fails
-                        x0 = np.concatenate([x0_base, np.zeros(1)])
+                        x0_parts.append(np.zeros(1))
                 else:
-                    x0 = np.concatenate([x0_base, np.zeros(1)])
-                names = list(names_base) + ["alpha_rho"]
+                    x0_parts.append(np.zeros(1))
+            elif isinstance(init, str) and init == "nest_alphas":
+                x0_parts.append(self._nests.initial_alphas())
             else:
-                x0 = x0_base
-                names = names_base
-            return x0, names, bounds, fixed_mask
+                x0_parts.append(np.asarray(init))
 
-        # --- Nested (no random) ---
-        if self._is_nested and not self._is_mixed:
-            n_nests = self._nests.n_nests
-            if self._is_spatial_lag:
-                # SAR + Nested: [beta, alpha_rho, alpha_lambda_1..M]
-                x0 = np.concatenate([np.zeros(k), np.zeros(1), self._nests.initial_alphas()])
-                names = (
-                    param_names_all
-                    + ["alpha_rho"]
-                    + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
-                )
-            elif self._is_spatial_scl:
-                # Nested SCL: [beta, alpha_rho_1..M, alpha_lambda_1..M]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k),
-                        np.zeros(n_nests),
-                        self._nests.initial_alphas(),
-                    ]
-                )
-                names = (
-                    param_names_all
-                    + [f"alpha_rho_{name}" for name in self._nests.nest_names]
-                    + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
-                )
-            else:
-                # Nested: [beta, alpha_nest]
-                x0 = np.concatenate([np.zeros(k), self._nests.initial_alphas()])
-                names = param_names_all + [f"nest_{name}" for name in self._nests.nest_names]
-            return x0, names, None, None
+            solver_names.extend(role["solver_names"])
 
-        # --- Mixed (no nests) ---
-        if self._is_mixed and not self._is_nested:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            if self._is_spatial:
-                # SAR + Mixed or MSCL: [beta_fixed, alpha_rho, mean_*, sd_*]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k_fixed),
-                        np.zeros(1),
-                        np.zeros(k_random),
-                        np.full(k_random, 0.1),
-                    ]
-                )
-                names = (
-                    list(self._fixed_names)
-                    + ["rho"]
-                    + [f"mean_{n}" for n in self._random_param_names]
-                    + [f"sd_{n}" for n in self._random_param_names]
-                )
-            else:
-                # Mixed: [beta_fixed, mean_*, sd_*]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k_fixed),
-                        np.zeros(k_random),
-                        np.full(k_random, 0.1),
-                    ]
-                )
-                names = list(self._full_param_names)
-            return x0, names, None, None
-
-        # --- Mixed Nested ---
-        if self._is_nested and self._is_mixed:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            n_nests = self._nests.n_nests
-            fixed_param_names = [
-                name for name in param_names_all if name not in self._random_params
-            ]
-            if self._is_spatial_lag:
-                # SAR + Mixed + Nested: [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k_fixed),
-                        np.zeros(1),
-                        self._nests.initial_alphas(),
-                        np.zeros(k_random),
-                        np.full(k_random, 0.1),
-                    ]
-                )
-                names = (
-                    fixed_param_names
-                    + ["alpha_rho"]
-                    + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-            elif self._is_spatial_scl:
-                # Mixed Nested SCL: [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k_fixed),
-                        np.zeros(n_nests),
-                        self._nests.initial_alphas(),
-                        np.zeros(k_random),
-                        np.full(k_random, 0.1),
-                    ]
-                )
-                names = (
-                    fixed_param_names
-                    + [f"alpha_rho_{name}" for name in self._nests.nest_names]
-                    + [f"alpha_lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-            else:
-                # Mixed Nested: [beta_fixed, alpha_nest, mean_*, sd_*]
-                x0 = np.concatenate(
-                    [
-                        np.zeros(k_fixed),
-                        self._nests.initial_alphas(),
-                        np.zeros(k_random),
-                        np.full(k_random, 0.1),
-                    ]
-                )
-                names = (
-                    fixed_param_names
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-            return x0, names, None, None
-
-        # Fallback (should not reach here)
-        return np.zeros(k), param_names_all, None, None
+        x0 = np.concatenate(x0_parts) if x0_parts else np.zeros(0)
+        return x0, solver_names, bounds, fixed_mask
 
     # ------------------------------------------------------------------
     # Objective construction
@@ -577,14 +726,15 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mnl_objective
 
-                # Auto-select estimator
-                if self._estimator == "auto":
-                    if arrays.n_alts <= 2000:
-                        self._estimator = "pml"
-                    else:
-                        self._estimator = "pml_cg"
-                use_cg = self._estimator == "pml_cg"
-                return build_sar_mnl_objective(arrays, self._W_sparse, use_cg=use_cg)
+                # Resolve "auto" locally: overwriting self._estimator would
+                # make a second fit() see the previous run's choice rather
+                # than re-deciding from the current data.
+                return build_sar_mnl_objective(
+                    arrays,
+                    self._W_sparse,
+                    diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
+                )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_scl_objective
 
@@ -600,11 +750,12 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_nested_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
                 return build_sar_nested_objective(
-                    arrays, self._W_sparse, self._nest_matrix, use_cg=use_cg
+                    arrays,
+                    self._W_sparse,
+                    self._nest_matrix,
+                    diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_nested_scl_objective
@@ -619,16 +770,14 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
                 return build_sar_mixed_objective(
                     arrays,
                     self._W_sparse,
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
-                    use_cg=use_cg,
+                    diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mscl_objective
@@ -656,9 +805,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_nested_objective
 
-                use_cg = self._estimator == "pml_cg" or (
-                    self._estimator == "auto" and arrays.n_alts > 2000
-                )
                 return build_sar_mixed_nested_objective(
                     arrays,
                     self._W_sparse,
@@ -666,7 +812,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
-                    use_cg=use_cg,
+                    diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mnscl_objective
@@ -695,6 +842,28 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     # Fit result construction
     # ------------------------------------------------------------------
 
+    def _build_param_layout(self, arrays: ChoiceArrays) -> ParamLayout:
+        """Build the parameter layout for the current model variant.
+
+        Consumes ``_get_param_roles`` — the single source of truth for the
+        parameter layout — and converts it to a ``ParamLayout``.
+        """
+        roles = self._get_param_roles(arrays)
+
+        display_names: list[str] = []
+        transforms: list[tuple[int, str, float | None]] = []
+        raw_idx = 0
+
+        for role in roles:
+            count = role["count"]
+            ttype = role["transform"]
+            for j in range(count):
+                display_names.append(role["display_names"][j])
+                transforms.append((raw_idx + j, ttype, None))
+            raw_idx += count
+
+        return ParamLayout(display_names=display_names, transforms=transforms)
+
     def _build_fit_result(
         self,
         solver_result: SolverResult,
@@ -702,449 +871,85 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     ) -> FitResult:
         """Build a FitResult from solver output."""
         all_params = solver_result.coefficients
-        k = arrays.design_matrix.shape[1]
-        param_names_all = list(arrays.param_names)
+        layout = self._build_param_layout(arrays)
+        display_values, display_names, transform_spec = layout.extract(all_params)
 
-        # --- Pure MNL / SCL / SAR ---
-        if not self._is_nested and not self._is_mixed:
-            if self._is_spatial_lag:
-                # SAR: Layout [beta_1..k, alpha_rho], rho = tanh(alpha_rho)
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                rho = np.tanh(alpha_rho)
-                display_values = np.concatenate([beta, [rho]])
-                display_names = param_names_all + ["rho"]
-            elif self._is_spatial_scl:
-                # SCL: Layout [beta_1..k, alpha_rho], rho = sigmoid(alpha_rho)
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                rho = naturalize_rho(alpha_rho)
-                display_values = np.concatenate([beta, [rho]])
-                display_names = param_names_all + ["rho"]
-            else:
-                display_values = all_params
-                display_names = param_names_all
+        # Retain the unconstrained solution: the objective (and therefore every
+        # Hessian and score evaluation) is a function of this vector, not of
+        # the display-scale coefficients.
+        self._raw_params = np.asarray(all_params, dtype=np.float64)
+        self._transform_spec = transform_spec
 
-            std_errors = self._compute_se(all_params, arrays, display_values, display_names)
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Nested (no random) ---
-        if self._is_nested and not self._is_mixed:
-            n_nests = self._nests.n_nests
-            if self._is_spatial_lag:
-                # SAR + Nested: Layout [beta, alpha_rho, alpha_lambda_1..M]
-                beta = all_params[:k]
-                alpha_rho = all_params[k]
-                alpha_lambda = all_params[k + 1 : k + 1 + n_nests]
-                rho = np.tanh(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate([beta, [rho], lambdas])
-                display_names = (
-                    param_names_all
-                    + ["rho"]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                )
-                std_errors = self._compute_se_sar_nested(
-                    all_params, arrays, k, n_nests, rho, lambdas
-                )
-            elif self._is_spatial_scl:
-                # SCL + Nested: Layout [beta, alpha_rho_1..M, alpha_lambda_1..M]
-                beta = all_params[:k]
-                alpha_rho = all_params[k : k + n_nests]
-                alpha_lambda = all_params[k + n_nests : k + 2 * n_nests]
-                rhos = naturalize_rho(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate([beta, rhos, lambdas])
-                display_names = (
-                    param_names_all
-                    + [f"rho_{name}" for name in self._nests.nest_names]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                )
-                std_errors = self._compute_se_nested_scl(
-                    all_params, arrays, k, n_nests, rhos, lambdas
-                )
-            else:
-                # Layout: [beta, alpha_nest]
-                beta = all_params[:k]
-                alpha = all_params[k:]
-                lambdas = naturalize_nest_params(alpha)
-                display_values = np.concatenate([beta, lambdas])
-                display_names = param_names_all + [
-                    f"lambda_{name}" for name in self._nests.nest_names
-                ]
-                std_errors = self._compute_se_nested(all_params, arrays, k, lambdas)
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Mixed (no nests) ---
-        if self._is_mixed and not self._is_nested:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            if self._is_spatial_lag:
-                # SAR + Mixed: Layout [beta_fixed, alpha_rho, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                rho = np.tanh(alpha_rho)
-                beta_random_means = all_params[k_fixed + 1 : k_fixed + 1 + k_random]
-                beta_random_spreads = all_params[k_fixed + 1 + k_random :]
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], beta_random_means, beta_random_spreads]
-                )
-                display_names = (
-                    list(self._fixed_names)
-                    + ["rho"]
-                    + [f"mean_{n}" for n in self._random_param_names]
-                    + [f"sd_{n}" for n in self._random_param_names]
-                )
-                std_errors = self._compute_se_sar_mixed(all_params, arrays, k_fixed, rho)
-            elif self._is_spatial_scl:
-                # SCL + Mixed (MSCL): Layout [beta_fixed, alpha_rho, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                rho = naturalize_rho(alpha_rho)
-                beta_random_means = all_params[k_fixed + 1 : k_fixed + 1 + k_random]
-                beta_random_spreads = all_params[k_fixed + 1 + k_random :]
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], beta_random_means, beta_random_spreads]
-                )
-                display_names = (
-                    list(self._fixed_names)
-                    + ["rho"]
-                    + [f"mean_{n}" for n in self._random_param_names]
-                    + [f"sd_{n}" for n in self._random_param_names]
-                )
-                std_errors = self._compute_se_mscl(all_params, arrays, k_fixed, rho)
-            else:
-                # Layout: [beta_fixed, mean_*, sd_*]
-                display_values = all_params
-                display_names = list(self._full_param_names)
-                std_errors = self._compute_se_simple(all_params, arrays)
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        # --- Mixed Nested ---
-        if self._is_nested and self._is_mixed:
-            k_fixed = self._k_fixed
-            k_random = self._k_random
-            n_nests = self._nests.n_nests
-            fixed_param_names = [
-                name for name in param_names_all if name not in self._random_params
-            ]
-
-            if self._is_spatial_lag:
-                # SAR + Mixed + Nested: Layout [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed]
-                alpha_lambda = all_params[k_fixed + 1 : k_fixed + 1 + n_nests]
-                beta_random_means = all_params[
-                    k_fixed + 1 + n_nests : k_fixed + 1 + n_nests + k_random
-                ]
-                beta_random_spreads = all_params[k_fixed + 1 + n_nests + k_random :]
-                rho = np.tanh(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate(
-                    [beta_fixed, [rho], lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + ["rho"]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                std_errors = self._compute_se_sar_mixed_nested(
-                    all_params, arrays, k_fixed, n_nests, rho, lambdas
-                )
-            elif self._is_spatial_scl:
-                # SCL + Mixed + Nested: Layout [beta_fixed, alpha_rho_1..M, alpha_lambda_1..M, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_rho = all_params[k_fixed : k_fixed + n_nests]
-                alpha_lambda = all_params[k_fixed + n_nests : k_fixed + 2 * n_nests]
-                beta_random_means = all_params[
-                    k_fixed + 2 * n_nests : k_fixed + 2 * n_nests + k_random
-                ]
-                beta_random_spreads = all_params[k_fixed + 2 * n_nests + k_random :]
-                rhos = naturalize_rho(alpha_rho)
-                lambdas = naturalize_nest_params(alpha_lambda)
-                display_values = np.concatenate(
-                    [beta_fixed, rhos, lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + [f"rho_{name}" for name in self._nests.nest_names]
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                std_errors = self._compute_se_mixed_nested_scl(
-                    all_params, arrays, k_fixed, n_nests, rhos, lambdas
-                )
-            else:
-                # Layout: [beta_fixed, alpha_nest, mean_*, sd_*]
-                beta_fixed = all_params[:k_fixed]
-                alpha_nest = all_params[k_fixed : k_fixed + n_nests]
-                beta_random_means = all_params[k_fixed + n_nests : k_fixed + n_nests + k_random]
-                beta_random_spreads = all_params[k_fixed + n_nests + k_random :]
-                lambdas = naturalize_nest_params(alpha_nest)
-                display_values = np.concatenate(
-                    [beta_fixed, lambdas, beta_random_means, np.abs(beta_random_spreads)]
-                )
-                display_names = (
-                    fixed_param_names
-                    + [f"lambda_{name}" for name in self._nests.nest_names]
-                    + [f"mean_{name}" for name in self._random_param_names]
-                    + [f"sd_{name}" for name in self._random_param_names]
-                )
-                std_errors = self._compute_se_mixed_nested(
-                    all_params, arrays, k_fixed, n_nests, lambdas
-                )
-
-            return self._make_fit_result(
-                solver_result, arrays, display_values, display_names, std_errors
-            )
-
-        raise RuntimeError("Unknown model configuration")
+        std_errors = self._compute_se_generic(all_params, transform_spec)
+        return self._make_fit_result(
+            solver_result, arrays, display_values, display_names, std_errors
+        )
 
     # ------------------------------------------------------------------
     # Standard error computation helpers
     # ------------------------------------------------------------------
 
-    def _compute_se_simple(self, all_params, arrays):
-        """Compute SEs for models without parameter transforms."""
-        std_errors = np.full(len(all_params), np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            std_errors = self._compute_std_errors_from_hessian(hess)
-        except Exception:
-            if self._result is not None and self._result.solver_result:
-                hess_inv = self._get_hessian_inverse()
-                if hess_inv is not None:
-                    std_errors = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                    std_errors[std_errors == 0] = np.nan
-        return std_errors
+    def _compute_se_generic(self, all_params, transform_spec):
+        """Compute standard errors with delta-method transforms, data-driven.
 
-    def _compute_se(self, all_params, arrays, display_values, display_names):
-        """Compute SEs for MNL/SCL models."""
-        k = arrays.design_matrix.shape[1]
-        n_params = len(display_values)
-        std_errors = np.full(n_params, np.nan)
+        Replaces the 10+ ``_compute_se_*`` methods with a single approach.
+        Each parameter's SE is transformed from unconstrained to natural
+        scale via the delta method: ``SE_natural = SE_raw * |d(natural)/d(raw)|``.
+
+        Parameters
+        ----------
+        all_params : np.ndarray
+            Full parameter vector in unconstrained (optimizer) space.
+        transform_spec : list of dict
+            One entry per **display** parameter.  Each dict has:
+            - ``"raw_idx"``: index into the unconstrained parameter vector
+            - ``"type"``: ``"identity"``, ``"sigmoid"``, ``"tanh"``, or ``"abs"``
+            - ``"value"``: natural-scale value (for sigmoid/tanh delta method)
+
+        Returns
+        -------
+        np.ndarray
+            Standard errors in natural (display) scale.
+        """
+        n_display = len(transform_spec)
+        std_errors = np.full(n_display, np.nan)
+
+        # Get raw SEs (unconstrained scale)
+        se_raw = None
         try:
             hess = self._compute_hessian(all_params)
-            se_unconstrained = self._compute_std_errors_from_hessian(hess)
-            if self._is_spatial_lag:
-                # SAR delta method: SE(rho) = (1 - rho^2) * SE(alpha_rho)
-                rho = display_values[k]
-                se_rho = (1.0 - rho**2) * se_unconstrained[k]
-                std_errors = np.concatenate([se_unconstrained[:k], [se_rho]])
-            elif self._is_spatial_scl:
-                # SCL delta method: SE(rho) = rho*(1-rho)*SE(alpha_rho)
-                rho = display_values[k]
-                se_rho = rho * (1.0 - rho) * se_unconstrained[k]
-                std_errors = np.concatenate([se_unconstrained[:k], [se_rho]])
+            se_raw = self._compute_std_errors_from_hessian(hess)
+        except Exception:
+            hess_inv = self._get_hessian_inverse()
+            if hess_inv is not None:
+                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
+                se_raw[se_raw == 0] = np.nan
+
+        if se_raw is None:
+            return std_errors
+
+        # Apply delta method per parameter
+        for i, spec in enumerate(transform_spec):
+            raw_idx = spec["raw_idx"]
+            transform_type = spec["type"]
+            se_r = se_raw[raw_idx]
+
+            if transform_type == "identity":
+                std_errors[i] = se_r
+            elif transform_type == "sigmoid":
+                # natural = sigmoid(raw), d(natural)/d(raw) = natural * (1 - natural)
+                val = spec["value"]
+                std_errors[i] = val * (1.0 - val) * se_r
+            elif transform_type == "tanh":
+                # natural = tanh(raw), d(natural)/d(raw) = 1 - natural^2
+                val = spec["value"]
+                std_errors[i] = (1.0 - val**2) * se_r
+            elif transform_type == "abs":
+                # natural = |raw|, so |d(natural)/d(raw)| = 1 exactly.
+                std_errors[i] = se_r
             else:
-                std_errors = se_unconstrained
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se[se == 0] = np.nan
-                if self._is_spatial_lag:
-                    rho = display_values[k]
-                    se_rho = (1.0 - rho**2) * se[k]
-                    std_errors = np.concatenate([se[:k], [se_rho]])
-                elif self._is_spatial_scl:
-                    rho = display_values[k]
-                    se_rho = rho * (1.0 - rho) * se[k]
-                    std_errors = np.concatenate([se[:k], [se_rho]])
-                else:
-                    std_errors = se
-        return std_errors
+                std_errors[i] = se_r
 
-    def _compute_se_nested(self, all_params, arrays, k, lambdas):
-        """Compute SEs for nested logit (non-spatial)."""
-        n_nests = len(lambdas)
-        std_errors = np.full(k + n_nests, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_alpha = self._compute_std_errors_from_hessian(hess)
-            se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
-            std_errors = np.concatenate([se_alpha[:k], se_lambda])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_alpha = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_alpha[se_alpha == 0] = np.nan
-                se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k:]
-                std_errors = np.concatenate([se_alpha[:k], se_lambda])
-        return std_errors
-
-    def _compute_se_nested_scl(self, all_params, arrays, k, n_nests, rhos, lambdas):
-        """Compute SEs for nested SCL."""
-        std_errors = np.full(k + 2 * n_nests, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_alpha = self._compute_std_errors_from_hessian(hess)
-            se_rho = rhos * (1.0 - rhos) * se_alpha[k : k + n_nests]
-            se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k + n_nests : k + 2 * n_nests]
-            std_errors = np.concatenate([se_alpha[:k], se_rho, se_lambda])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_alpha = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_alpha[se_alpha == 0] = np.nan
-                se_rho = rhos * (1.0 - rhos) * se_alpha[k : k + n_nests]
-                se_lambda = lambdas * (1.0 - lambdas) * se_alpha[k + n_nests : k + 2 * n_nests]
-                std_errors = np.concatenate([se_alpha[:k], se_rho, se_lambda])
-        return std_errors
-
-    def _compute_se_mscl(self, all_params, arrays, k_fixed, rho):
-        """Compute SEs for MSCL."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_alpha = self._compute_std_errors_from_hessian(hess)
-            se_rho = float(rho * (1.0 - rho) * se_alpha[k_fixed])
-            std_errors = np.concatenate([se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1 :]])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_alpha = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_alpha[se_alpha == 0] = np.nan
-                se_rho = float(rho * (1.0 - rho) * se_alpha[k_fixed])
-                std_errors = np.concatenate(
-                    [se_alpha[:k_fixed], [se_rho], se_alpha[k_fixed + 1 :]]
-                )
-        return std_errors
-
-    def _compute_se_mixed_nested(self, all_params, arrays, k_fixed, n_nests, lambdas):
-        """Compute SEs for mixed nested logit (non-spatial)."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-            std_errors = np.concatenate([se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests :]])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_raw[se_raw == 0] = np.nan
-                se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed : k_fixed + n_nests]
-                std_errors = np.concatenate(
-                    [se_raw[:k_fixed], se_lambda, se_raw[k_fixed + n_nests :]]
-                )
-        return std_errors
-
-    def _compute_se_mixed_nested_scl(self, all_params, arrays, k_fixed, n_nests, rhos, lambdas):
-        """Compute SEs for mixed nested SCL."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
-            se_lambda = (
-                lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
-            )
-            std_errors = np.concatenate(
-                [
-                    se_raw[:k_fixed],
-                    se_rho,
-                    se_lambda,
-                    se_raw[k_fixed + 2 * n_nests :],
-                ]
-            )
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_raw[se_raw == 0] = np.nan
-                se_rho = rhos * (1.0 - rhos) * se_raw[k_fixed : k_fixed + n_nests]
-                se_lambda = (
-                    lambdas * (1.0 - lambdas) * se_raw[k_fixed + n_nests : k_fixed + 2 * n_nests]
-                )
-                std_errors = np.concatenate(
-                    [
-                        se_raw[:k_fixed],
-                        se_rho,
-                        se_lambda,
-                        se_raw[k_fixed + 2 * n_nests :],
-                    ]
-                )
-        return std_errors
-
-    def _compute_se_sar_nested(self, all_params, arrays, k, n_nests, rho, lambdas):
-        """Compute SEs for SAR + Nested. Layout: [beta, alpha_rho, alpha_lambda_1..M]."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            # SAR: rho = tanh(alpha_rho), SE(rho) = (1 - rho^2) * SE(alpha_rho)
-            se_rho = (1.0 - rho**2) * se_raw[k]
-            # Lambda: sigmoid, SE(lambda) = lambda*(1-lambda)*SE(alpha_lambda)
-            se_lambda = lambdas * (1.0 - lambdas) * se_raw[k + 1 : k + 1 + n_nests]
-            std_errors = np.concatenate([se_raw[:k], [se_rho], se_lambda])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_raw[se_raw == 0] = np.nan
-                se_rho = (1.0 - rho**2) * se_raw[k]
-                se_lambda = lambdas * (1.0 - lambdas) * se_raw[k + 1 : k + 1 + n_nests]
-                std_errors = np.concatenate([se_raw[:k], [se_rho], se_lambda])
-        return std_errors
-
-    def _compute_se_sar_mixed(self, all_params, arrays, k_fixed, rho):
-        """Compute SEs for SAR + Mixed. Layout: [beta_fixed, alpha_rho, mean_*, sd_*]."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            # SAR: rho = tanh(alpha_rho), SE(rho) = (1 - rho^2) * SE(alpha_rho)
-            se_rho = (1.0 - rho**2) * se_raw[k_fixed]
-            std_errors = np.concatenate([se_raw[:k_fixed], [se_rho], se_raw[k_fixed + 1 :]])
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_raw[se_raw == 0] = np.nan
-                se_rho = (1.0 - rho**2) * se_raw[k_fixed]
-                std_errors = np.concatenate([se_raw[:k_fixed], [se_rho], se_raw[k_fixed + 1 :]])
-        return std_errors
-
-    def _compute_se_sar_mixed_nested(self, all_params, arrays, k_fixed, n_nests, rho, lambdas):
-        """Compute SEs for SAR + Mixed + Nested.
-        Layout: [beta_fixed, alpha_rho, alpha_lambda_1..M, mean_*, sd_*]."""
-        n_params = len(all_params)
-        std_errors = np.full(n_params, np.nan)
-        try:
-            hess = self._compute_hessian(all_params)
-            se_raw = self._compute_std_errors_from_hessian(hess)
-            se_rho = (1.0 - rho**2) * se_raw[k_fixed]
-            se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed + 1 : k_fixed + 1 + n_nests]
-            std_errors = np.concatenate(
-                [se_raw[:k_fixed], [se_rho], se_lambda, se_raw[k_fixed + 1 + n_nests :]]
-            )
-        except Exception:
-            hess_inv = self._get_hessian_inverse()
-            if hess_inv is not None:
-                se_raw = np.sqrt(np.maximum(np.diag(hess_inv), 0))
-                se_raw[se_raw == 0] = np.nan
-                se_rho = (1.0 - rho**2) * se_raw[k_fixed]
-                se_lambda = lambdas * (1.0 - lambdas) * se_raw[k_fixed + 1 : k_fixed + 1 + n_nests]
-                std_errors = np.concatenate(
-                    [se_raw[:k_fixed], [se_rho], se_lambda, se_raw[k_fixed + 1 + n_nests :]]
-                )
         return std_errors
 
     def _make_fit_result(
@@ -1175,7 +980,17 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             solver_result_raw=solver_result.raw,
         )
 
-        return FitResult(spec=self._spec, **stats)
+        # Delta-method covariance on the display scale, so that consumers
+        # (WTP, Wald tests) get correlations rather than a diagonal.
+        cov_display = None
+        hess_inv = self._get_hessian_inverse()
+        if hess_inv is not None:
+            try:
+                cov_display = self._to_display_covariance(hess_inv)
+            except Exception:
+                cov_display = None
+
+        return FitResult(spec=self._spec, covariance_matrix=cov_display, **stats)
 
     # ------------------------------------------------------------------
     # Prediction
@@ -1238,16 +1053,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             dm = np.asarray(arrays.design_matrix, dtype=np.float64)
             n_obs = arrays.n_obs
             n_alts = arrays.n_alts
-            W_dense = np.asarray(self._W_sparse.toarray(), dtype=np.float64)
 
             V_base = (dm @ beta_use).reshape(n_obs, n_alts)
             from .._sampling.correction import apply_sampling_correction
 
             V_base = apply_sampling_correction(V_base, arrays)
 
-            A = np.eye(n_alts) - rho * W_dense
-            V_filtered = np.linalg.solve(A, V_base.T).T
-            D = np.diag(np.linalg.inv(A))
+            V_filtered, D = self._sar_sparse_filter(rho, V_base)
             V_star = V_filtered / D[None, :]
 
             if arrays.available is not None:
@@ -1317,12 +1129,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if beta is None:
                 beta = np.asarray(self._result.coefficients.values[:k], dtype=np.float64)
                 if alpha is None:
-                    lambda_vals = self._result.coefficients.values[k : k + n_nests]
-                    lambda_vals = np.clip(lambda_vals, 1e-10, 1.0 - 1e-10)
-                    alpha = np.log(lambda_vals / (1.0 - lambda_vals))
+                    alpha = _lambda_to_alpha(self._result.coefficients.values[k : k + n_nests])
             elif beta.size > k:
-                # Full parameter vector passed — split into beta and alpha
-                alpha = beta[k : k + n_nests]
+                # Full parameter vector passed.  It is display scale (the
+                # same layout as ``result.coefficients``), so the nest
+                # entries are lambdas and need mapping to the kernel's
+                # unconstrained alpha.
+                alpha = _lambda_to_alpha(beta[k : k + n_nests])
                 beta = beta[:k]
             if alpha is None:
                 alpha = np.zeros(n_nests)
@@ -1388,20 +1201,19 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         k_random = self._k_random
         n_nests = self._nests.n_nests
 
-        if beta is None:
-            beta_fixed = self._result.coefficients.values[:k_fixed]
-        else:
-            beta_fixed = beta[:k_fixed]
+        # Display-scale layout: [fixed betas, lambdas, random means, spreads].
+        # A caller-supplied vector must drive every block, otherwise
+        # perturbing it (as the finite-difference scores do) silently has no
+        # effect on most parameters.
+        params = self._result.coefficients.values if beta is None else np.asarray(beta)
+        if params.size < k_fixed + n_nests + 2 * k_random:
+            params = self._result.coefficients.values
 
+        beta_fixed = params[:k_fixed]
         if alpha is None:
-            lambda_vals = self._result.coefficients.values[k_fixed : k_fixed + n_nests]
-            lambda_vals = np.clip(lambda_vals, 1e-10, 1.0 - 1e-10)
-            alpha = np.log(lambda_vals / (1.0 - lambda_vals))
-
-        beta_random_means = self._result.coefficients.values[
-            k_fixed + n_nests : k_fixed + n_nests + k_random
-        ]
-        beta_random_spreads = self._result.coefficients.values[k_fixed + n_nests + k_random :]
+            alpha = _lambda_to_alpha(params[k_fixed : k_fixed + n_nests])
+        beta_random_means = params[k_fixed + n_nests : k_fixed + n_nests + k_random]
+        beta_random_spreads = params[k_fixed + n_nests + k_random :]
 
         dm = np.asarray(arrays.design_matrix, dtype=np.float64)
         n_obs = arrays.n_obs
@@ -1791,10 +1603,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 me = me_2d.ravel()
 
         elif self._is_mixed:
-            # Mixed logit: E_z[(1 - P_i(z)) * beta] via simulation
-            # For now, use the MNL approximation with mean coefficients
-            # (proper implementation requires per-draw probability computation)
-            me = (1 - probs.ravel()) * beta
+            me = self._marginal_effect_mixed(data, variable, probs)
 
         elif self._is_spatial:
             # SCL: derivation pending
@@ -1808,6 +1617,65 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             me = (1 - probs.ravel()) * beta
 
         return pd.Series(me, index=index, name=f"marginal_effect_{variable}")
+
+    def _marginal_effect_mixed(self, data, variable: str, probs: np.ndarray) -> np.ndarray:
+        """Simulated direct marginal effect for mixed logit.
+
+        Mirrors the MNL convention (``d log P_i / d x_i``), but the
+        expectation runs over the mixing distribution rather than being
+        evaluated at mean coefficients::
+
+            d log P_i / d x_i = E_r[P_i(r) (1 - P_i(r)) b_i(r)] / E_r[P_i(r)]
+
+        where ``b_i(r)`` is the coefficient realised for draw ``r``.  It
+        collapses to ``(1 - P_i) * beta`` when the spread goes to zero.
+        """
+        if self._is_spatial:
+            raise NotImplementedError(
+                "Marginal effects for spatially correlated mixed logit (MSCL) "
+                "are not yet implemented."
+            )
+
+        from .._sampling.correction import get_sampling_correction
+        from .mixed import _mixed_logit_per_draw_log_probs_numpy
+
+        arrays = self._arrays
+        if data is not None:
+            arrays = data.to_arrays(
+                formula=self._spec.formula,
+                spec=self._spec if self._spec.formula is None else None,
+            )
+
+        k_fixed = self._k_fixed
+        k_random = self._k_random
+        values = self._result.coefficients.values
+
+        log_probs_draws, beta_random_draws, _ = _mixed_logit_per_draw_log_probs_numpy(
+            values[:k_fixed],
+            values[k_fixed : k_fixed + k_random],
+            values[k_fixed + k_random :],
+            self._random_distributions,
+            self._draws,
+            np.asarray(arrays.design_matrix, dtype=np.float64),
+            self._random_col_indices,
+            arrays.n_obs,
+            arrays.n_alts,
+            available=arrays.available,
+            inclusion_probs=get_sampling_correction(arrays),
+        )
+        probs_draws = np.exp(log_probs_draws)  # (n_obs, n_draws, n_alts)
+
+        # Coefficient on `variable` for each draw: random parameters vary by
+        # draw and observation, fixed ones are constant.
+        if variable in self._random_param_names:
+            p = self._random_param_names.index(variable)
+            beta_draws = beta_random_draws[:, :, p][:, :, None]  # (n_obs, n_draws, 1)
+        else:
+            beta_draws = float(self._result.coefficients.get(variable, 0.0))
+
+        numerator = np.mean(probs_draws * (1.0 - probs_draws) * beta_draws, axis=1)
+        denominator = np.maximum(np.mean(probs_draws, axis=1), 1e-30)
+        return (numerator / denominator).ravel()
 
     def cross_marginal_effect(self, data=None, variable: Optional[str] = None) -> pd.Series:
         """Compute cross-marginal effects for a variable.
@@ -1980,10 +1848,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         B = scores.T @ scores
         H_inv = self._get_hessian_inverse()
 
-        if H_inv is None:
-            return _safe_inv(B)
-
-        return _sandwich_inv(H_inv, B)
+        # Scores and Hessian are both raw-space; convert the sandwich to
+        # display scale so it lines up with the reported coefficient names.
+        cov_raw = _safe_inv(B) if H_inv is None else _sandwich_inv(H_inv, B)
+        return self._to_display_covariance(cov_raw)
 
     def covariance_clustered(self, data=None, groups=None) -> np.ndarray:
         """Compute cluster-robust (Rogers) covariance matrix.
@@ -2029,10 +1897,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         H_inv = self._get_hessian_inverse()
 
-        if H_inv is None:
-            return _safe_inv(B_clustered)
-
-        return _sandwich_inv(H_inv, B_clustered)
+        cov_raw = _safe_inv(B_clustered) if H_inv is None else _sandwich_inv(H_inv, B_clustered)
+        return self._to_display_covariance(cov_raw)
 
     def std_errors_robust(self, data=None) -> pd.Series:
         """Compute sandwich (Huber-White) robust standard errors."""
@@ -2059,9 +1925,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         with a JAX objective (spatial/nested/mixed), and finite differences
         as a last-resort fallback.
         """
+        # Key on identity, but retain the arrays object alongside the result:
+        # without a strong reference the id could be recycled by a later
+        # allocation and silently match a different dataset.
         cache_key = id(arrays)
-        if cache_key in self._observation_scores_cache:
-            return self._observation_scores_cache[cache_key]
+        cached = self._observation_scores_cache.get(cache_key)
+        if cached is not None and cached[0] is arrays:
+            return cached[1]
 
         if not self._is_spatial and not self._is_nested and not self._is_mixed:
             scores = self._mnl_observation_scores(arrays)
@@ -2070,7 +1940,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         else:
             scores = self._finite_diff_observation_scores(arrays)
 
-        self._observation_scores_cache[cache_key] = scores
+        self._observation_scores_cache[cache_key] = (arrays, scores)
         return scores
 
     def _mnl_observation_scores(self, arrays) -> np.ndarray:
@@ -2108,7 +1978,13 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         )
 
     def _finite_diff_observation_scores(self, arrays) -> np.ndarray:
-        """Compute observation scores via finite differences (fallback)."""
+        """Compute observation scores via finite differences (fallback).
+
+        Perturbs display-scale coefficients (that is what
+        :meth:`probabilities` accepts), then maps the resulting scores into
+        raw space with the delta-method Jacobian so every score path shares
+        the same coordinate system.
+        """
         eps = 1e-5
         n_params = len(self._result.coefficients)
         n_obs = arrays.n_obs
@@ -2130,6 +2006,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             ll_minus = np.log(np.maximum(np.sum(probs_minus * chosen, axis=1), 1e-30))
             scores[:, j] = (ll_plus - ll_minus) / (2 * eps)
 
+        jac = self._delta_jacobian()
+        if jac is not None and jac.shape[0] == scores.shape[1]:
+            scores = scores @ jac
+
         return scores
 
     def _jax_observation_scores(self, arrays) -> np.ndarray:
@@ -2145,11 +2025,16 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         if self._objective is None or self._objective.jax_fn is None:
             return self._finite_diff_observation_scores(arrays)
 
-        # Try score_contribs (requires loglike_contribs_jax to be set)
+        # Try score_contribs (requires loglike_contribs_jax to be set).
+        # The contribution kernels take the *unconstrained* vector — they
+        # apply tanh/sigmoid to rho/lambda internally — so differentiate at
+        # the raw solution, giving raw-space scores.
         try:
             contribs_fn = self._objective.score_contribs
-            beta = jnp.asarray(self._result.coefficients.values, dtype=jnp.float64)
-            scores = np.asarray(contribs_fn(beta))
+            raw = self._raw_params
+            if raw is None:
+                raise ValueError("raw parameters unavailable")
+            scores = np.asarray(contribs_fn(jnp.asarray(raw, dtype=jnp.float64)))
             return scores
         except (ValueError, AttributeError, TypeError):
             pass

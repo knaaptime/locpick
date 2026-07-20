@@ -224,7 +224,6 @@ def _format_side_by_side_text(results: list, labels: list[str]) -> str:
             if p not in all_params:
                 all_params.append(p)
 
-    len(results)
     col_width = 12
     header = f"{'Parameter':<20}" + "".join(f" {label:>{col_width}}" for label in labels)
     lines = [header, "-" * len(header)]
@@ -286,7 +285,6 @@ def _format_side_by_side_latex(results: list, labels: list[str]) -> str:
             if p not in all_params:
                 all_params.append(p)
 
-    1 + len(results)
     col_spec = "l" + "r" * len(results)
     header = "Parameter & " + " & ".join(labels) + " \\\\"
     lines = [f"\\begin{{tabular}}{{{col_spec}}}", "\\hline", header, "\\hline"]

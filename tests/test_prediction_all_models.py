@@ -30,10 +30,12 @@ from locpick.models.mixed import ParamDistribution
 class TestMNL:
     @pytest.fixture(autouse=True)
     def setup(self):
-        dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=4, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
         self.model = ChoiceModel(
             dataset.choice_table,
-            formula="alt_feature + obs_x_alt",
+            formula="alt_feature + obs_feature_x_alt_feature",
         )
         self.result = self.model.fit()
 
@@ -45,7 +47,9 @@ class TestMNL:
         assert np.all(np.isfinite(V))
 
     def test_utilities_with_data(self):
-        dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=4, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
         V = self.model.utilities(data=dataset.choice_table)
         n_obs = self.model._arrays.n_obs
         n_alts = self.model._arrays.n_alts
@@ -113,7 +117,12 @@ class TestMNL:
 class TestNestedLogit:
     @pytest.fixture(autouse=True)
     def setup(self):
-        dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_nested_logit(
+            n_obs=500,
+            n_alts=4,
+            seed=42,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
         self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",
@@ -185,7 +194,9 @@ class TestNestedLogit:
 class TestSCL:
     @pytest.fixture(autouse=True)
     def setup(self):
-        dataset = simulate_scl(n_obs=500, n_alts=6, seed=42)
+        dataset = simulate_scl(
+            n_obs=500, n_alts=6, seed=42, interaction_params={"income_x_cost": 0.8}
+        )
         self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
@@ -251,7 +262,9 @@ class TestSCL:
 class TestMixedLogit:
     @pytest.fixture(autouse=True)
     def setup(self):
-        dataset = simulate_mixed_logit(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_mixed_logit(
+            n_obs=500, n_alts=4, seed=42, interaction_params={"income_x_cost": 0.8}
+        )
         self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
@@ -319,7 +332,9 @@ class TestMixedLogit:
 class TestMSCL:
     @pytest.fixture(autouse=True)
     def setup(self):
-        dataset = simulate_mscl(n_obs=500, n_alts=6, seed=42)
+        dataset = simulate_mscl(
+            n_obs=500, n_alts=6, seed=42, interaction_params={"income_x_cost": 0.8}
+        )
         self.model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost",
@@ -359,8 +374,12 @@ class TestCacheInvalidation:
     """Test that caches are properly cleared on re-estimation."""
 
     def test_mnl_cache_cleared_on_reestimate(self):
-        dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt")
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=4, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature"
+        )
         model.fit()
 
         # Populate caches
@@ -378,7 +397,12 @@ class TestCacheInvalidation:
         npt.assert_array_almost_equal(V1, V2)
 
     def test_nested_cache_cleared_on_reestimate(self):
-        dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_nested_logit(
+            n_obs=500,
+            n_alts=4,
+            seed=42,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",
@@ -412,15 +436,24 @@ class TestProtocolConformance:
         from locpick.models.base import ChoiceModelProtocol
         from locpick.models.choice_model import ChoiceModel
 
-        dataset = simulate_mnl(n_obs=500, n_alts=4, seed=42)
-        model = ChoiceModel(dataset.choice_table, formula="alt_feature + obs_x_alt")
+        dataset = simulate_mnl(
+            n_obs=500, n_alts=4, seed=42, interaction_params={"obs_feature_x_alt_feature": 0.8}
+        )
+        model = ChoiceModel(
+            dataset.choice_table, formula="alt_feature + obs_feature_x_alt_feature"
+        )
         assert isinstance(model, ChoiceModelProtocol)
 
     def test_nested_is_choice_model(self):
         from locpick.models.base import ChoiceModelProtocol
         from locpick.models.choice_model import ChoiceModel
 
-        dataset = simulate_nested_logit(n_obs=500, n_alts=4, seed=42)
+        dataset = simulate_nested_logit(
+            n_obs=500,
+            n_alts=4,
+            seed=42,
+            interaction_params={"income_x_cost": 0.8, "income_x_time": 0.8},
+        )
         model = ChoiceModel(
             dataset.choice_table,
             formula="cost + time + income_x_cost + income_x_time",

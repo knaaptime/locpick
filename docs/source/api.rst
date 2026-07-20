@@ -130,14 +130,20 @@ DGP Utilities
 
    simulate_mnl :no-index:
    simulate_nested_logit :no-index:
+   simulate_mixed_logit :no-index:
+   simulate_mixed_nested_logit :no-index:
    simulate_scl :no-index:
    simulate_mscl :no-index:
    simulate_nested_scl :no-index:
    simulate_mnscl :no-index:
+   simulate_sar_mnl :no-index:
    MNLDataset :no-index:
    NestedMNLDataset :no-index:
+   MixedMNLDataset :no-index:
+   MixedNestedMNLDataset :no-index:
    SCLDataset :no-index:
    MSCLDataset :no-index:
    NestedSCLDataset :no-index:
    MNSCLDataset :no-index:
+   SARMNLDataset :no-index:
 

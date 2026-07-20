@@ -252,3 +252,121 @@ class TestWTP:
         expected = -beta_time / beta_rent
 
         npt.assert_allclose(wtp["wtp"], expected, rtol=1e-10)
+
+
+class TestMixedLogitMarginalEffects:
+    """Mixed logit marginal effects integrate over the mixing distribution.
+
+    The effect is an expectation over draws, not the MNL formula evaluated at
+    the mean coefficient -- those differ by roughly a factor of two once the
+    spread is appreciable.
+    """
+
+    def _fit_mixed(self, n_draws=200):
+        from locpick.dgp import simulate_mixed_logit
+        from locpick.models.mixed import ParamDistribution
+
+        dataset = simulate_mixed_logit(n_obs=1200, seed=5)
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="cost + time - 1",
+            random_params={"time": ParamDistribution("normal", "time")},
+            n_draws=n_draws,
+            seed=3,
+        )
+        result = model.fit()
+        return model, result
+
+    def _numeric_dlogp_dx(self, model, result, variable):
+        """d log P_i / d x_i by perturbing the design column directly."""
+        from scipy.special import logsumexp
+
+        from locpick._sampling.correction import get_sampling_correction
+        from locpick.models.mixed import _mixed_logit_per_draw_log_probs_numpy
+
+        arrays = model._arrays
+        design = np.asarray(arrays.design_matrix, dtype=float)
+        col = list(arrays.param_names).index(variable)
+        values = result.coefficients.values
+        k_fixed, k_random = model._k_fixed, model._k_random
+
+        def mixed_log_probs(matrix):
+            per_draw, _, _ = _mixed_logit_per_draw_log_probs_numpy(
+                values[:k_fixed],
+                values[k_fixed : k_fixed + k_random],
+                values[k_fixed + k_random :],
+                model._random_distributions,
+                model._draws,
+                matrix,
+                model._random_col_indices,
+                arrays.n_obs,
+                arrays.n_alts,
+                available=arrays.available,
+                inclusion_probs=get_sampling_correction(arrays),
+            )
+            return logsumexp(per_draw, axis=1) - np.log(per_draw.shape[1])
+
+        eps = 1e-6
+        base = mixed_log_probs(design)
+        out = np.zeros_like(base)
+        for alt in range(arrays.n_alts):
+            bumped = design.copy()
+            rows = np.arange(arrays.n_obs) * arrays.n_alts + alt
+            bumped[rows, col] += eps
+            out[:, alt] = (mixed_log_probs(bumped)[:, alt] - base[:, alt]) / eps
+        return out.ravel()
+
+    def test_matches_numeric_derivative(self):
+        model, result = self._fit_mixed()
+        effect = model.marginal_effect(variable="time")
+        numeric = self._numeric_dlogp_dx(model, result, "time")
+        npt.assert_allclose(effect.values, numeric, atol=1e-5)
+
+    def test_differs_from_mean_coefficient_approximation(self):
+        """Guards the regression: the old code used the MNL formula at the mean."""
+        model, result = self._fit_mixed()
+        effect = model.marginal_effect(variable="time")
+
+        probs = model.probabilities()
+        approximation = (1 - probs.ravel()) * result.coefficients["mean_time"]
+
+        assert np.abs(effect.values - approximation).max() > 1e-2
+
+    def test_collapses_to_mnl_formula_without_heterogeneity(self):
+        """With the spread pinned near zero the effect returns to (1 - P) * beta."""
+        model, result = self._fit_mixed()
+
+        coefficients = result.coefficients.copy()
+        coefficients["sd_time"] = 1e-8
+        model._result = result.__class__(
+            **{
+                **{
+                    field: getattr(result, field)
+                    for field in result.__dataclass_fields__
+                    if field != "coefficients"
+                },
+                "coefficients": coefficients,
+            }
+        )
+
+        effect = model.marginal_effect(variable="time")
+        probs = model.probabilities()
+        expected = (1 - probs.ravel()) * coefficients["mean_time"]
+        npt.assert_allclose(effect.values, expected, rtol=1e-5, atol=1e-8)
+
+    def test_spatial_mixed_raises_rather_than_approximating(self):
+        from locpick.dgp import simulate_mscl
+        from locpick.models.mixed import ParamDistribution
+
+        dataset = simulate_mscl(n_obs=400, n_alts=8, seed=4)
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="cost + time - 1",
+            random_params={"time": ParamDistribution("normal", "time")},
+            graph=dataset.adjacency,
+            n_draws=25,
+            seed=1,
+        )
+        model.fit()
+        with pytest.raises(NotImplementedError, match="MSCL"):
+            model.marginal_effect(variable="time")

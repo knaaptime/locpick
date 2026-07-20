@@ -11,9 +11,6 @@ dependencies:
   - numba>=0.59
   - xarray
   - lazy_loader
-  # optional (jax)
-  - jax>=0.4
-  - jaxlib>=0.4
   # optional (spatial)
   - libpysal>=4.0
   - geopandas>=0.13
@@ -26,6 +23,13 @@ dependencies:
   - optimistix
   - nlopt
   - optax
+  - scikit-sparse
+  - pip
+  - pip:
+    - klujax
+    - cholgraph
+    - jax>=0.4
+
 
   # testing
   - codecov

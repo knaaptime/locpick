@@ -36,6 +36,17 @@ from jax.scipy.special import logsumexp as jax_logsumexp  # noqa: E402
 _NEG_INF = jnp.array(_NEG_INF_FLOAT, dtype=jnp.float64)
 
 
+def _normal_cdf(z):
+    """Standard normal CDF Φ(z), JAX-native and differentiable.
+
+    Replaces the hand-coded Abramowitz-Stegun 26.2.17 polynomial
+    approximation that was copy-pasted across 6+ locations.
+    """
+    from jax.scipy.stats import norm
+
+    return norm.cdf(z)
+
+
 # ---------------------------------------------------------------------------
 # MNL kernel
 # ---------------------------------------------------------------------------
@@ -373,35 +384,33 @@ def nested_log_probs(
     jnp.ndarray, shape (n_obs, n_alts)
         Log-probabilities for each (obs, alt) pair.
     """
-    n_obs = V.shape[0]
-    n_alts = V.shape[1]
-    n_nests = lambdas.shape[0]
-
     # Mask unavailable
     V = jnp.where(available > 0, V, _NEG_INF)
 
-    # Determine each alternative's nest lambda
+    # Determine each alternative's nest lambda via vectorized broadcast.
+    # nest_matrix: (n_alts, n_nests), lambdas: (n_nests,)
     # long_lambda[j] = lambda_m if alt j is in nest m, else 1.0
     in_nest = nest_matrix.sum(axis=1) > 0  # (n_alts,) bool
-    long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0
-        long_lambda = jnp.where(mask_m, lambdas[m], long_lambda)
+    # An alt is in at most one nest.  Use +inf for non-member entries so min
+    # picks the correct lambda (lambdas are in (0,1], always < inf).
+    lambda_per_nest = jnp.where(nest_matrix > 0, lambdas[None, :], jnp.inf)
+    long_lambda = jnp.where(in_nest, lambda_per_nest.min(axis=1), 1.0)  # (n_alts,)
 
     # Scaled utilities: V_ij / lambda_m(j)
     scaled_V = V / long_lambda[None, :]  # (n_obs, n_alts)
 
     # Inclusive values for each nest: IV_m = logsumexp(V_ij / lambda_m for j in C_m)
-    # Build nest-specific masks and compute inclusive values
-    nest_ivs = []
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0  # (n_alts,)
-        # Mask out alternatives not in this nest
-        nest_V = jnp.where(mask_m[None, :], scaled_V, _NEG_INF)
-        nest_V = jnp.where(available > 0, nest_V, _NEG_INF)
-        iv_m = jax_logsumexp(nest_V, axis=1)  # (n_obs,)
-        nest_ivs.append(iv_m)
-    nest_iv = jnp.stack(nest_ivs, axis=1)  # (n_obs, n_nests)
+    # Vectorized: broadcast nest masks, compute logsumexp per nest in one pass.
+    # nest_matrix: (n_alts, n_nests) → masks (n_alts, n_nests)
+    nest_masks = nest_matrix > 0  # (n_alts, n_nests)
+    # scaled_V: (n_obs, n_alts) → (n_obs, n_alts, 1) * (1, n_alts, n_nests)
+    nest_V = jnp.where(
+        nest_masks[None, :, :],  # (1, n_alts, n_nests)
+        scaled_V[:, :, None],  # (n_obs, n_alts, 1)
+        _NEG_INF,
+    )  # (n_obs, n_alts, n_nests)
+    nest_V = jnp.where(available[:, :, None] > 0, nest_V, _NEG_INF)
+    nest_iv = jax_logsumexp(nest_V, axis=1)  # (n_obs, n_nests)
 
     # Nest exponents: lambda_m * IV_m
     nest_exponent = lambdas[None, :] * nest_iv  # (n_obs, n_nests)
@@ -416,21 +425,21 @@ def nested_log_probs(
     all_exponents = jnp.column_stack([nest_exponent, root_iv[:, None]])  # (n_obs, n_nests + 1)
     log_denom = jax_logsumexp(all_exponents, axis=1)  # (n_obs,)
 
-    # Compute log-probabilities for each alternative
-    log_probs = jnp.full((n_obs, n_alts), _NEG_INF, dtype=jnp.float64)
-
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0  # (n_alts,)
-        iv_m = nest_iv[:, m]  # (n_obs,)
-        lambda_m = lambdas[m]
-
-        # log P(j) = V_ij / lambda_m + (lambda_m - 1) * IV_m - log_denom
-        log_probs_m = scaled_V + (lambda_m - 1.0) * iv_m[:, None] - log_denom[:, None]
-        log_probs = jnp.where(mask_m[None, :], log_probs_m, log_probs)
+    # Compute log-probabilities for each alternative — vectorized over nests.
+    # log P(j) = V_ij / lambda_m(j) + (lambda_m(j) - 1) * IV_m(j) - log_denom
+    # For each alt j, IV_m(j) is the IV of the nest it belongs to.
+    # long_iv[j] = IV_m where j is in nest m.
+    # nest_iv: (n_obs, n_nests), nest_masks: (n_alts, n_nests) bool
+    # Use where (not multiplication) so non-member entries are -inf, not 0.
+    long_iv = jnp.where(
+        nest_masks[None, :, :],  # (1, n_alts, n_nests)
+        nest_iv[:, None, :],  # (n_obs, 1, n_nests)
+        _NEG_INF,
+    ).max(axis=2)  # (n_obs, n_alts)
+    log_probs_nested = scaled_V + (long_lambda - 1.0)[None, :] * long_iv - log_denom[:, None]
 
     # Root nest alternatives: log P(j) = V_ij - log_denom
-    log_probs_root = V - log_denom[:, None]
-    log_probs = jnp.where(root_mask[None, :], log_probs_root, log_probs)
+    log_probs = jnp.where(in_nest[None, :], log_probs_nested, V - log_denom[:, None])
 
     # Mask unavailable
     log_probs = jnp.where(available > 0, log_probs, _NEG_INF)
@@ -503,17 +512,7 @@ def mixed_logit_ll(
         # Lognormal: β = exp(μ + σ * z)
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
         # Transform standard normal draws to uniform via CDF
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         # Uniform on [μ - σ, μ + σ]
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         # Symmetric triangular on [μ - σ, μ + σ]
@@ -555,7 +554,7 @@ def mixed_logit_ll(
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -595,17 +594,7 @@ def mixed_logit_ll_contribs(
         z_r = draws[:, r, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -632,7 +621,7 @@ def mixed_logit_ll_contribs(
         log_L_n = (log_probs * chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * weights
 
@@ -702,7 +691,6 @@ def mixed_nested_logit_ll(
     spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     # Pre-compute nest membership for nested logit
-    nest_matrix.sum(axis=1) > 0  # (n_alts,) bool
     long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
     for m in range(n_nests):
         mask_m = nest_matrix[:, m] > 0
@@ -715,17 +703,7 @@ def mixed_nested_logit_ll(
         # Generate random coefficients (same as mixed_logit_ll)
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -762,7 +740,7 @@ def mixed_nested_logit_ll(
         return log_L_n
 
     # vmap over draws
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
     # Simulated log-likelihood
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
@@ -803,17 +781,7 @@ def mixed_nested_logit_ll_contribs(
         z_r = draws[:, r, :]
         beta_normal = means + spreads * z_r
         beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        t = 1.0 / (1.0 + 0.2316419 * jnp.abs(z_r))
-        d = 0.3989422804014327
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
-        )
-        phi_z = jnp.where(
-            z_r >= 0,
-            1.0 - d * jnp.exp(-0.5 * z_r * z_r) * poly,
-            d * jnp.exp(-0.5 * z_r * z_r) * poly,
-        )
+        phi_z = _normal_cdf(z_r)
         beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
         mask = phi_z <= 0.5
         beta_triangular = jnp.where(
@@ -840,7 +808,7 @@ def mixed_nested_logit_ll_contribs(
         log_L_n = (log_probs * chosen).sum(axis=1)
         return log_L_n
 
-    log_L_all = jax.vmap(_ll_single_draw, in_axes=0)(jnp.arange(n_draws))
+    log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
     log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
     return log_L_sim * weights
 

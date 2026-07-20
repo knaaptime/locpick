@@ -26,9 +26,6 @@ from .nested import (
     NestSpec as NestSpec,
 )
 from .nested import (
-    constrain_nest_params as constrain_nest_params,
-)
-from .nested import (
     naturalize_nest_params as naturalize_nest_params,
 )
 from .scl import (

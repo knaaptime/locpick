@@ -2,7 +2,7 @@
 
 This module provides the ``ChoiceArrays`` dataclass, which holds JAX/NumPy
 arrays ready for estimation. It is produced by ``ChoiceTable.to_arrays()``
-and consumed by ``MultinomialLogit.fit()``.
+and consumed by ``ChoiceModel.fit()``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class ChoiceArrays:
 
     This is the estimation-ready representation of choice data. It is
     produced by ``ChoiceTable.to_arrays()`` and consumed by the solver
-    in ``MultinomialLogit.fit()``.
+    in ``ChoiceModel.fit()``.
 
     Parameters
     ----------
