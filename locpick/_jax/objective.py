@@ -85,6 +85,17 @@ class Objective:
         """Negative log-likelihood in JAX (for Optimistix minimization)."""
         return -self.jax_fn(params)
 
+    def _hvp_grad_fn(self) -> Callable:
+        """Gradient function used inside HVPs, built once and reused.
+
+        ``hvp`` / ``hessian_hvp`` are called many times per trust-region
+        iteration; rebuilding ``jax.grad(self.jax_fn)`` each time re-traces
+        on every call.  Prefer the pre-jitted ``jax_grad`` when present.
+        """
+        if not hasattr(self, "_hvp_grad_cache"):
+            self._hvp_grad_cache = self.jax_grad or jax.grad(self.jax_fn)
+        return self._hvp_grad_cache
+
     @property
     def score_contribs(self) -> Callable:
         """Per-observation score matrix function (JAX).
@@ -126,7 +137,7 @@ class Objective:
             raise RuntimeError("hvp requires a JAX-native log-likelihood (jax_fn).")
         x_jax = jnp.array(x, dtype=jnp.float64)
         v_jax = jnp.array(v, dtype=jnp.float64)
-        grad_fn = jax.grad(self.jax_fn)
+        grad_fn = self._hvp_grad_fn()
         _, hvp = jax.jvp(grad_fn, (x_jax,), (v_jax,))
         return np.asarray(hvp)
 
@@ -165,17 +176,27 @@ class Objective:
         if self.jax_fn is None:
             raise RuntimeError("hessian_hvp requires a JAX-native log-likelihood (jax_fn).")
 
+        grad_fn = self._hvp_grad_fn()
+
+        # Build (and JIT) the full-Hessian function once per objective, so
+        # repeated calls reuse the compiled vmap-over-jvp rather than
+        # re-tracing it each time.
+        if not hasattr(self, "_hessian_fn_cache"):
+
+            def _dense_hessian(x_jax):
+                eye = jnp.eye(x_jax.shape[0], dtype=jnp.float64)
+
+                def hvp_col(e):
+                    _, hvp = jax.jvp(grad_fn, (x_jax,), (e,))
+                    return hvp
+
+                hess_cols = jax.vmap(hvp_col)(eye)
+                return 0.5 * (hess_cols + hess_cols.T)  # symmetrize
+
+            self._hessian_fn_cache = jax.jit(_dense_hessian)
+
         x_jax = jnp.array(x, dtype=jnp.float64)
-        grad_fn = jax.grad(self.jax_fn)
-        eye = jnp.eye(len(x), dtype=jnp.float64)
-
-        def hvp_col(e):
-            _, hvp = jax.jvp(grad_fn, (x_jax,), (e,))
-            return hvp
-
-        hess_cols = jax.vmap(hvp_col)(eye)
-        hess = 0.5 * (hess_cols + hess_cols.T)  # symmetrize
-        return np.asarray(hess)
+        return np.asarray(self._hessian_fn_cache(x_jax))
 
     # ------------------------------------------------------------------
     # Factory methods
