@@ -77,9 +77,7 @@ def test_symmetrize_recovers_symmetry_from_row_standardized_W():
     rho = 0.6
     b = np.random.default_rng(0).standard_normal((n, 3))
     ref = np.linalg.solve(np.eye(n) - rho * W.toarray(), b)
-    got = (1.0 / s)[:, None] * np.linalg.solve(
-        np.eye(n) - rho * W_sym.toarray(), s[:, None] * b
-    )
+    got = (1.0 / s)[:, None] * np.linalg.solve(np.eye(n) - rho * W_sym.toarray(), s[:, None] * b)
     npt.assert_allclose(got, ref, atol=1e-10)
 
 

@@ -527,6 +527,5 @@ class TestMixedNestedRecovery:
             est_mean = result.coefficients[name]
             # Random mean recovery is noisy — check sign and rough magnitude
             assert abs(est_mean - true_mean) < 0.5, (
-                f"Mixed nested failed to recover {name}: "
-                f"got {est_mean:.4f}, true {true_mean:.4f}"
+                f"Mixed nested failed to recover {name}: got {est_mean:.4f}, true {true_mean:.4f}"
             )

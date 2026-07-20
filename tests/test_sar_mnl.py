@@ -255,36 +255,40 @@ class TestSARMNLRecovery:
             f"GMM failed to recover rho: got {est_rho:.4f}, true {dataset.true_rho}"
         )
 
-    def test_sar_mnl_cg_matches_dense(self):
-        """CG path should give similar results to dense path."""
+    def test_sar_mnl_sparse_backend_matches_dense(self):
+        """The JAX sparse solve (n_alts > 500) must match the dense solve.
+
+        Forces the dense path by disabling the sparse-backend factory, then
+        compares a full fit against the sparse-backend fit.
+        """
+        import locpick._jax.sparse_backends as sparse_backends
+
         dataset = simulate_sar_mnl(
-            n_obs=1000, n_alts=20, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
+            n_obs=1200, n_alts=550, rho=0.2, seed=42, interaction_params={"obs_x_alt_attr": 0.8}
         )
+        formula = "alt_attr + obs_x_alt_attr - 1"
 
-        model_dense = ChoiceModel(
-            dataset.choice_table,
-            formula="alt_attr + obs_x_alt_attr - 1",
-            graph=dataset.W,
-            lag=True,
-            estimator="pml",
+        model_sparse = ChoiceModel(
+            dataset.choice_table, formula=formula, graph=dataset.W, lag=True
         )
-        result_dense = model_dense.fit()
+        result_sparse = model_sparse.fit()
+        assert model_sparse._sparse_backend in ("cholgraph", "klujax")
 
-        model_cg = ChoiceModel(
-            dataset.choice_table,
-            formula="alt_attr + obs_x_alt_attr - 1",
-            graph=dataset.W,
-            lag=True,
-            estimator="pml_cg",
-        )
-        result_cg = model_cg.fit()
+        orig = sparse_backends.make_sparse_solve_fn
+        sparse_backends.make_sparse_solve_fn = lambda *a, **k: (None, None)
+        try:
+            model_dense = ChoiceModel(
+                dataset.choice_table, formula=formula, graph=dataset.W, lag=True
+            )
+            result_dense = model_dense.fit()
+        finally:
+            sparse_backends.make_sparse_solve_fn = orig
 
-        # CG and dense should agree closely
         npt.assert_allclose(
+            result_sparse.coefficients.values,
             result_dense.coefficients.values,
-            result_cg.coefficients.values,
-            rtol=0.05,
-            err_msg="CG and dense paths give different results",
+            rtol=1e-4,
+            err_msg="sparse and dense SAR solves disagree",
         )
 
 

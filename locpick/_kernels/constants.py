@@ -29,12 +29,3 @@ NEG_INF: float = -1e30
 
 #: NumPy scalar version for use in array operations.
 NEG_INF_NP: np.floating = np.float64(-1e30)
-
-# ---------------------------------------------------------------------------
-# Solver selection thresholds
-# ---------------------------------------------------------------------------
-
-#: Number of alternatives above which the SAR spatial filter switches from a
-#: dense factorisation to a conjugate-gradient solve.  Lives here rather than
-#: in the JAX kernels so the model layer can consult it without importing JAX.
-SAR_DENSE_CUTOFF: int = 2000

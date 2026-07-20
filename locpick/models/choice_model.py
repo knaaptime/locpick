@@ -24,7 +24,6 @@ import numpy as np
 import pandas as pd
 
 from .._jax.objective import Objective
-from .._kernels.constants import SAR_DENSE_CUTOFF
 from .._solvers import Solver, SolverResult
 from ..data.arrays import ChoiceArrays
 from ..results.fit_result import FitResult
@@ -176,10 +175,11 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Computation backend hint.
     estimator : str, optional
         SAR estimation method (only relevant when ``lag=True``).
-        ``"auto"`` (default) selects ``"pml"`` (dense solve) for
-        n_alts ≤ 2000 and ``"pml_cg"`` (conjugate gradient) for larger
-        alternative sets.  ``"linearized_gmm"`` uses the two-step GMM
-        estimator (Carrión-Flores et al. 2018) for very large J.
+        ``"auto"`` (default) and ``"pml"`` use Smirnov (2010) pseudo
+        maximum likelihood; the spatial filter uses a sparse solve
+        (cholgraph/klujax) when available and ``n_alts`` is large, else a
+        dense solve.  ``"linearized_gmm"`` uses the two-step GMM estimator
+        (Carrión-Flores et al. 2018) for very large J.
 
     Examples
     --------
@@ -226,7 +226,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         self._random_params = random_params
         self._graph_input = graph
         self._lag = lag  # True = SAR spatial lag, False = SCL (default)
-        self._estimator = estimator  # SAR estimator: auto, pml, pml_cg, linearized_gmm
+        self._estimator = estimator  # SAR estimator: auto, pml, linearized_gmm
         self._warmstart = warmstart  # Use GMM estimates as PML starting values
 
         # Mixed logit settings
@@ -719,19 +719,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
     # Objective construction
     # ------------------------------------------------------------------
 
-    def _resolve_use_cg(self, arrays: ChoiceArrays) -> bool:
-        """Whether the SAR objective should use the conjugate-gradient solve.
-
-        ``estimator="auto"`` picks CG once the alternative set is too large
-        for a dense factorisation.  Resolved fresh on every fit so the choice
-        tracks the data rather than a previous run.
-        """
-        if self._estimator == "pml_cg":
-            return True
-        if self._estimator == "auto":
-            return arrays.n_alts > SAR_DENSE_CUTOFF
-        return False
-
     def _build_objective(self, arrays: ChoiceArrays) -> Objective:
         """Build optimization objective based on active features."""
         # Pure MNL / SCL / SAR
@@ -742,11 +729,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 # Resolve "auto" locally: overwriting self._estimator would
                 # make a second fit() see the previous run's choice rather
                 # than re-deciding from the current data.
-                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mnl_objective(
                     arrays,
                     self._W_sparse,
-                    use_cg=use_cg,
                     diag_precompute=self._diag_precompute,
                     sparse_solve_fn=self._sparse_solve_fn,
                 )
@@ -765,13 +750,12 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_nested_objective
 
-                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_nested_objective(
                     arrays,
                     self._W_sparse,
                     self._nest_matrix,
-                    use_cg=use_cg,
                     diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_nested_scl_objective
@@ -786,15 +770,14 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_objective
 
-                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mixed_objective(
                     arrays,
                     self._W_sparse,
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
-                    use_cg=use_cg,
                     diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mscl_objective
@@ -822,7 +805,6 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             if self._is_spatial_lag:
                 from .._jax.sar_kernels import build_sar_mixed_nested_objective
 
-                use_cg = self._resolve_use_cg(arrays)
                 return build_sar_mixed_nested_objective(
                     arrays,
                     self._W_sparse,
@@ -830,8 +812,8 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._random_col_indices,
                     self._random_distributions,
                     self._draws,
-                    use_cg=use_cg,
                     diag_precompute=self._diag_precompute,
+                    sparse_solve_fn=self._sparse_solve_fn,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mnscl_objective
