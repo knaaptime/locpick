@@ -633,9 +633,7 @@ class TestReducedFormSAR:
         This is the dominant setup cost at large ``n_alts``, so skipping it is
         the main computational reason the specification exists.
         """
-        dataset = simulate_sar_mnl(
-            n_obs=500, n_alts=60, rho=0.3, seed=7, normalize=False
-        )
+        dataset = simulate_sar_mnl(n_obs=500, n_alts=60, rho=0.3, seed=7, normalize=False)
         common = dict(
             data=dataset.choice_table,
             formula="alt_attr - 1",
@@ -680,9 +678,7 @@ class TestReducedFormSAR:
 
         assert abs(spatial.coefficients["rho"]) < 0.15
         for name in dataset.true_params:
-            npt.assert_allclose(
-                spatial.coefficients[name], mnl.coefficients[name], rtol=0.15
-            )
+            npt.assert_allclose(spatial.coefficients[name], mnl.coefficients[name], rtol=0.15)
 
     def test_unknown_estimator_raises(self):
         dataset = simulate_sar_mnl(n_obs=200, n_alts=10, rho=0.2, seed=3)

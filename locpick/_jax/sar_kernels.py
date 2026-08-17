@@ -548,7 +548,9 @@ def _sar_mixed_ll_core(
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     # Apply SAR filter to fixed utility
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
+    v_fixed_star = _sar_filter(
+        rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize
+    )
 
     return mixed_logit_ll(
         V_fixed=v_fixed_star,
@@ -598,7 +600,9 @@ def _sar_mixed_ll_contribs_core(
     if data.inclusion_probs is not None:
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
+    v_fixed_star = _sar_filter(
+        rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize
+    )
 
     return mixed_logit_ll_contribs(
         V_fixed=v_fixed_star,
@@ -780,7 +784,9 @@ def _sar_mixed_nested_ll_core(
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     # Apply SAR filter to fixed utility
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
+    v_fixed_star = _sar_filter(
+        rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize
+    )
 
     return mixed_nested_logit_ll(
         V_fixed=v_fixed_star,
@@ -838,7 +844,9 @@ def _sar_mixed_nested_ll_contribs_core(
     if data.inclusion_probs is not None:
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
+    v_fixed_star = _sar_filter(
+        rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize
+    )
 
     return mixed_nested_logit_ll_contribs(
         V_fixed=v_fixed_star,

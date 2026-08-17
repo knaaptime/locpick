@@ -1609,7 +1609,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         prof[f">order_{max_order}"] = beyond / ns
         tot_indirect_abs = sum(prof.values())
         prof["share_beyond_order_1"] = (
-            (tot_indirect_abs - prof["order_1"]) / tot_indirect_abs if tot_indirect_abs > 0 else 0.0
+            (tot_indirect_abs - prof["order_1"]) / tot_indirect_abs
+            if tot_indirect_abs > 0
+            else 0.0
         )
 
         return {
