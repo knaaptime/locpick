@@ -690,11 +690,8 @@ def mixed_nested_logit_ll(
     means = beta_random_means[None, :]  # (1, k_random)
     spreads = beta_random_spreads[None, :]  # (1, k_random)
 
-    # Pre-compute nest membership for nested logit
-    long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0
-        long_lambda = jnp.where(mask_m, lambdas[m], long_lambda)
+    # Nest membership is resolved inside ``nested_log_probs``; ``n_nests`` is
+    # kept in the signature for call-site compatibility.
 
     def _ll_single_draw(r):
         """Log-likelihood contribution for a single draw."""
@@ -772,10 +769,9 @@ def mixed_nested_logit_ll_contribs(
     """
     means = beta_random_means[None, :]
     spreads = beta_random_spreads[None, :]
-    long_lambda = jnp.ones(n_alts, dtype=jnp.float64)
-    for m in range(n_nests):
-        mask_m = nest_matrix[:, m] > 0
-        long_lambda = jnp.where(mask_m, lambdas[m], long_lambda)
+
+    # Nest membership is resolved inside ``nested_log_probs``; ``n_nests`` is
+    # kept in the signature for call-site compatibility.
 
     def _ll_single_draw(r):
         z_r = draws[:, r, :]

@@ -272,7 +272,7 @@ class TestSARMNLRecovery:
             dataset.choice_table, formula=formula, graph=dataset.W, lag=True
         )
         result_sparse = model_sparse.fit()
-        assert model_sparse._sparse_backend in ("cholgraph", "klujax")
+        assert model_sparse._sparse_backend in ("sparsax", "sparsax_lu")
 
         orig = sparse_backends.make_sparse_solve_fn
         sparse_backends.make_sparse_solve_fn = lambda *a, **k: (None, None)
@@ -595,3 +595,157 @@ class TestSARMixedNested:
         assert np.isfinite(result.coefficients["rho"])
         # DGP doesn't have random coefficients, so wide tolerance
         assert abs(result.coefficients["rho"]) < 0.6
+
+
+class TestReducedFormSAR:
+    """The reduced-form SAR-MNL (``estimator="reduced"``).
+
+    ``ψ = (I - ρW)^{-1} Xβ`` with no variance normalisation, so the softmax is
+    the exact likelihood rather than a pseudo-likelihood.
+    """
+
+    def test_reduced_recovers_params_from_reduced_dgp(self):
+        """Fitting the reduced form to reduced-form data recovers the truth."""
+        dataset = simulate_sar_mnl(
+            n_obs=4000,
+            n_alts=40,
+            rho=0.5,
+            seed=1000,
+            interaction_params={"obs_x_alt_attr": 0.8},
+            normalize=False,
+        )
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt_attr - 1",
+            graph=dataset.W,
+            lag=True,
+            estimator="reduced",
+        )
+        result = model.fit()
+
+        npt.assert_allclose(result.coefficients["rho"], 0.5, rtol=0.30)
+        for name, true_val in dataset.true_params.items():
+            npt.assert_allclose(result.coefficients[name], true_val, rtol=0.20)
+
+    def test_reduced_skips_diagonal_precompute(self):
+        """The reduced form never divides by D, so it must not build the interpolant.
+
+        This is the dominant setup cost at large ``n_alts``, so skipping it is
+        the main computational reason the specification exists.
+        """
+        dataset = simulate_sar_mnl(
+            n_obs=500, n_alts=60, rho=0.3, seed=7, normalize=False
+        )
+        common = dict(
+            data=dataset.choice_table,
+            formula="alt_attr - 1",
+            graph=dataset.W,
+            lag=True,
+        )
+        reduced = ChoiceModel(**common, estimator="reduced")
+        reduced.fit()
+        assert reduced._diag_precompute is None
+
+        pml = ChoiceModel(**common, estimator="pml")
+        pml.fit()
+        assert pml._diag_precompute is not None
+
+    def test_rho_zero_matches_plain_mnl(self):
+        """At ρ = 0 the filter is the identity, so both specs collapse to MNL.
+
+        Uses the same design as the PML ρ=0 test (J=50 with a chooser×alt
+        interaction).  ρ is identified only through *differential* propagation
+        across alternatives, so a small choice set with a single
+        alternative-specific covariate leaves it weakly identified — ρ̂ then
+        wanders over ±0.4 with standard errors to match, which says nothing
+        about the estimator.
+        """
+        dataset = simulate_sar_mnl(
+            n_obs=5000,
+            n_alts=50,
+            rho=0.0,
+            seed=42,
+            interaction_params={"obs_x_alt_attr": 0.8},
+            normalize=False,
+        )
+        formula = "alt_attr + obs_x_alt_attr - 1"
+        spatial = ChoiceModel(
+            dataset.choice_table,
+            formula=formula,
+            graph=dataset.W,
+            lag=True,
+            estimator="reduced",
+        ).fit()
+        mnl = ChoiceModel(dataset.choice_table, formula=formula).fit()
+
+        assert abs(spatial.coefficients["rho"]) < 0.15
+        for name in dataset.true_params:
+            npt.assert_allclose(
+                spatial.coefficients[name], mnl.coefficients[name], rtol=0.15
+            )
+
+    def test_unknown_estimator_raises(self):
+        dataset = simulate_sar_mnl(n_obs=200, n_alts=10, rho=0.2, seed=3)
+        import pytest
+
+        with pytest.raises(ValueError, match="Unknown estimator"):
+            ChoiceModel(
+                dataset.choice_table,
+                formula="alt_attr - 1",
+                graph=dataset.W,
+                lag=True,
+                estimator="nonsense",
+            )
+
+
+class TestSpatialImpacts:
+    """LeSage-style impacts for SAR choice models."""
+
+    def _fit(self, estimator="reduced"):
+        dataset = simulate_sar_mnl(
+            n_obs=1500,
+            n_alts=40,
+            rho=0.5,
+            seed=11,
+            interaction_params={"obs_x_alt_attr": 0.8},
+            normalize=(estimator == "pml"),
+        )
+        model = ChoiceModel(
+            dataset.choice_table,
+            formula="alt_attr + obs_x_alt_attr - 1",
+            graph=dataset.W,
+            lag=True,
+            estimator=estimator,
+        )
+        model.fit()
+        return model
+
+    def test_impacts_redistribute_exactly(self):
+        """Probabilities sum to 1, so total impact is structurally zero.
+
+        ``indirect`` must equal ``-direct`` exactly — it is an identity of the
+        simplex, not an estimated quantity.
+        """
+        for estimator in ("reduced", "pml"):
+            model = self._fit(estimator)
+            imp = model.spatial_impacts("alt_attr")
+            npt.assert_allclose(imp["indirect"], -imp["direct"], rtol=1e-12, atol=1e-15)
+            npt.assert_allclose(imp["total"], 0.0, atol=1e-15)
+            assert np.isfinite(imp["direct"]) and imp["direct"] != 0.0
+
+    def test_spillover_reaches_beyond_first_order(self):
+        """A global SAR spillover puts weight past 1-hop; SLX cannot."""
+        model = self._fit("reduced")
+        imp = model.spatial_impacts("alt_attr", max_order=4)
+        profile = imp["profile"]
+        assert profile["share_beyond_order_1"] > 0.2
+        assert (profile.drop("share_beyond_order_1") >= 0).all()
+
+    def test_impacts_require_sar_model(self):
+        import pytest
+
+        dataset = simulate_sar_mnl(n_obs=300, n_alts=10, rho=0.2, seed=5)
+        mnl = ChoiceModel(dataset.choice_table, formula="alt_attr - 1")
+        mnl.fit()
+        with pytest.raises(RuntimeError, match="requires a SAR model"):
+            mnl.spatial_impacts("alt_attr")

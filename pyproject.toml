@@ -50,14 +50,13 @@ spatial = [
     "geopandas >= 0.13",
     "scikit-learn >= 1.2",
 ]
-# Sparse SAR spatial-filter solves.  cholgraph (CHOLMOD) and klujax (KLU)
+# Sparse SAR spatial-filter solves.  sparsax bundles CHOLMOD and KLU, which
 # give JIT-native, differentiable solves for the estimation kernels; scikit-
 # sparse provides the CHOLMOD/KLU factorisations used off the JAX path
 # (prediction/scoring).  All optional: the estimator falls back to a dense
 # solve and the numpy paths to SciPy SuperLU when these are absent.
 sparse = [
-    "cholgraph >= 0.6",
-    "klujax >= 0.5",
+    "sparsax >= 0.7",
     "scikit-sparse >= 0.4",
 ]
 test = [

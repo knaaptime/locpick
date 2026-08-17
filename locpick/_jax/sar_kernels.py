@@ -6,7 +6,7 @@ normalisation by ``diag((I - ρW)^{-1})``, then standard MNL softmax.
 
 The spatial filter ``(I - ρW)^{-1} V_base`` is applied by
 :func:`_sar_filter`, shared across all SAR families.  When the model
-supplies a ``sparse_solve_fn`` (cholgraph/klujax; see
+supplies a ``sparse_solve_fn`` (sparsax CHOLMOD/KLU; see
 :mod:`locpick._jax.sparse_backends`) the solve is sparse, differentiable
 and JIT-native; otherwise it is a dense LU solve.
 
@@ -51,6 +51,7 @@ def _sar_mnl_ll_core(
     n_alts,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-MNL PML log-likelihood — dense solve path (Smirnov 2010).
 
@@ -90,7 +91,7 @@ def _sar_mnl_ll_core(
         available=available,
     )
 
-    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     # MNL log-probabilities
     log_probs = mnl_log_probs(V_star, available)
@@ -109,6 +110,7 @@ def _sar_mnl_ll_contribs_core(
     n_alts,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """Per-observation SAR-MNL PML log-likelihood contributions — dense path."""
     k = design_matrix.shape[1]
@@ -125,7 +127,7 @@ def _sar_mnl_ll_contribs_core(
         available=available,
     )
 
-    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     log_probs = mnl_log_probs(V_star, available)
     return compute_ll_contribs(log_probs, chosen, weights)
@@ -143,23 +145,60 @@ def _diag_inv_exact_dense(rho, W_dense, n_alts):
     return jnp.diag(jnp.linalg.inv(A))
 
 
-def _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn=None, sparse_solve_fn=None):
-    """Apply the SAR spatial filter and variance normalisation.
+def _maybe_dense_W(W_sparse, sparse_solve_fn, diag_precompute, normalize=True):
+    """Densify ``W`` only when a dense path will actually read it.
 
-    Returns ``V_star = V_filtered / D`` where
-    ``V_filtered = (I - ρW)^{-1} V_base`` and ``D = diag((I - ρW)^{-1})``.
+    :func:`_sar_filter` touches ``W_dense`` in exactly two places: the LU
+    solve, when no ``sparse_solve_fn`` is supplied, and
+    :func:`_diag_inv_exact_dense`, when normalising without an interpolant.
+    When those are covered the dense matrix is never read, so materialising it
+    would pin ``n_alts**2`` float64 on device for nothing — and that is
+    precisely the large-``n_alts`` regime the sparse backends exist to serve
+    (3.2 GB at ``n_alts`` = 20k).  Returns None when it is not needed.
+    """
+    if sparse_solve_fn is None:
+        return jnp.array(W_sparse.toarray(), dtype=jnp.float64)
+    # Sparse solve covers the filter; the diagonal is the only other reader,
+    # and the reduced form never asks for it.
+    if not normalize or diag_precompute is not None:
+        return None
+    return jnp.array(W_sparse.toarray(), dtype=jnp.float64)
 
-    ``sparse_solve_fn`` (cholgraph/klujax, differentiable and JIT-native)
-    replaces the dense factorisation when supplied; otherwise the solve is
-    dense.  The diagonal comes from the precomputed interpolant when
-    ``diag_eval_fn`` is given, else an exact dense inverse.  Shared by every
-    SAR family so the solve path lives in one place.
+
+def _sar_filter(
+    rho, V_base, W_dense, n_alts, diag_eval_fn=None, sparse_solve_fn=None, normalize=True
+):
+    """Apply the SAR spatial filter, optionally with variance normalisation.
+
+    Two SAR specifications share this filter, differing only in ``normalize``:
+
+    ``normalize=True`` (Smirnov 2010 PML) returns ``V_star = V_filtered / D``
+    with ``D = diag((I - ρW)^{-1})``.  It is the pseudo-likelihood for the model
+    in which the *disturbances* are filtered too, so ``Var(u_j)`` varies by
+    alternative; dividing by ``D`` standardises that heteroskedasticity before
+    the softmax, which logit cannot otherwise accommodate.
+
+    ``normalize=False`` (reduced form) returns ``V_filtered`` directly.  This is
+    the model in which only *systematic* utility reaches a spatial equilibrium,
+    ``ψ = ρWψ + Xβ``, while the idiosyncratic errors stay iid EV1 — so the
+    softmax over ``(I - ρW)^{-1} Xβ`` is the *exact* likelihood, not a
+    pseudo-likelihood.  It needs no diagonal at all, which removes the
+    interpolant precompute from the critical path.
+
+    Both give the same score at ``ρ = 0`` (``∂ψ/∂ρ = Wψ₀``), because
+    ``d/dρ diag((I - ρW)^{-1})|₀ = diag(W) = 0``.
+
+    ``sparse_solve_fn`` (sparsax, differentiable and JIT-native) replaces the
+    dense factorisation when supplied; otherwise the solve is dense.  Shared by
+    every SAR family so the solve path lives in one place.
     """
     if sparse_solve_fn is not None:
         V_filtered = sparse_solve_fn(rho, V_base)
     else:
         A = jnp.eye(n_alts) - rho * W_dense
         V_filtered = jax.scipy.linalg.solve(A, V_base.T).T
+    if not normalize:
+        return V_filtered
     if diag_eval_fn is not None:
         D = diag_eval_fn(rho)
     else:
@@ -172,6 +211,7 @@ def build_sar_mnl_objective(
     W_sparse: sp.csr_array,
     diag_precompute=None,
     sparse_solve_fn=None,
+    normalize=True,
 ) -> Objective:
     """Build an Objective for SAR-MNL PML estimation (Smirnov 2010).
 
@@ -188,7 +228,7 @@ def build_sar_mnl_objective(
         If None, falls back to the 20-term power series.
     sparse_solve_fn : callable or None, default None
         Differentiable sparse solve ``(rho, V_base) -> V_filtered``
-        (cholgraph/klujax).  When None, a dense solve is used.
+        (sparsax CHOLMOD/KLU).  When None, a dense solve is used.
 
     Returns
     -------
@@ -197,7 +237,7 @@ def build_sar_mnl_objective(
         Includes a Tanh transform for the rho parameter.
     """
     data = ChoiceDataJAX.from_arrays(arrays)
-    W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
+    W_dense = _maybe_dense_W(W_sparse, sparse_solve_fn, diag_precompute, normalize)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
     k = arrays.design_matrix.shape[1]
@@ -227,6 +267,7 @@ def build_sar_mnl_objective(
             n_alts,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -243,6 +284,7 @@ def build_sar_mnl_objective(
             n_alts,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -259,6 +301,7 @@ def build_sar_mnl_objective(
             n_alts,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     param_names = list(arrays.param_names) + ["rho"]
@@ -293,6 +336,7 @@ def _sar_nested_ll_core(
     n_nests,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Nested PML log-likelihood — dense solve path."""
     beta = params[:k]
@@ -309,7 +353,7 @@ def _sar_nested_ll_core(
         inclusion_probs=inclusion_probs,
         available=available,
     )
-    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
     return compute_ll(log_probs, chosen, weights)
@@ -330,6 +374,7 @@ def _sar_nested_ll_contribs_core(
     n_nests,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Nested per-observation LL contributions — dense path."""
     beta = params[:k]
@@ -346,7 +391,7 @@ def _sar_nested_ll_contribs_core(
         inclusion_probs=inclusion_probs,
         available=available,
     )
-    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    V_star = _sar_filter(rho, V_base, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     log_probs = nested_log_probs(V_star, lambdas, nest_matrix, available)
     return compute_ll_contribs(log_probs, chosen, weights)
@@ -358,6 +403,7 @@ def build_sar_nested_objective(
     nest_matrix: np.ndarray,
     diag_precompute=None,
     sparse_solve_fn=None,
+    normalize=True,
 ) -> Objective:
     """Build an Objective for SAR-Nested PML estimation.
 
@@ -379,7 +425,7 @@ def build_sar_nested_objective(
     Objective
     """
     data = ChoiceDataJAX.from_arrays(arrays)
-    W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
+    W_dense = _maybe_dense_W(W_sparse, sparse_solve_fn, diag_precompute, normalize)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
     k = arrays.design_matrix.shape[1]
@@ -408,6 +454,7 @@ def build_sar_nested_objective(
             n_nests,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -427,6 +474,7 @@ def build_sar_nested_objective(
             n_nests,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -446,6 +494,7 @@ def build_sar_nested_objective(
             n_nests,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     param_names = list(arrays.param_names) + ["rho"] + [f"lambda_{i}" for i in range(n_nests)]
@@ -477,6 +526,7 @@ def _sar_mixed_ll_core(
     n_draws,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Mixed simulated PML log-likelihood."""
     from .kernels import mixed_logit_ll
@@ -498,7 +548,7 @@ def _sar_mixed_ll_core(
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     # Apply SAR filter to fixed utility
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     return mixed_logit_ll(
         V_fixed=v_fixed_star,
@@ -528,6 +578,7 @@ def _sar_mixed_ll_contribs_core(
     n_draws,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Mixed per-observation LL contributions."""
     from .kernels import mixed_logit_ll_contribs
@@ -547,7 +598,7 @@ def _sar_mixed_ll_contribs_core(
     if data.inclusion_probs is not None:
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     return mixed_logit_ll_contribs(
         V_fixed=v_fixed_star,
@@ -574,6 +625,7 @@ def build_sar_mixed_objective(
     draws,
     diag_precompute=None,
     sparse_solve_fn=None,
+    normalize=True,
 ) -> Objective:
     """Build an Objective for SAR-Mixed PML estimation.
 
@@ -599,7 +651,7 @@ def build_sar_mixed_objective(
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
     )
-    W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
+    W_dense = _maybe_dense_W(W_sparse, sparse_solve_fn, diag_precompute, normalize)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
     k_fixed = len(data.fixed_col_indices) if data.fixed_col_indices else 0
@@ -621,6 +673,7 @@ def build_sar_mixed_objective(
             n_draws,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -636,6 +689,7 @@ def build_sar_mixed_objective(
             n_draws,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -651,6 +705,7 @@ def build_sar_mixed_objective(
             n_draws,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     param_names_list = list(arrays.param_names)
@@ -701,6 +756,7 @@ def _sar_mixed_nested_ll_core(
     nest_alt_indices,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Mixed-Nested simulated PML log-likelihood."""
     from .kernels import mixed_nested_logit_ll
@@ -724,7 +780,7 @@ def _sar_mixed_nested_ll_core(
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
     # Apply SAR filter to fixed utility
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     return mixed_nested_logit_ll(
         V_fixed=v_fixed_star,
@@ -760,6 +816,7 @@ def _sar_mixed_nested_ll_contribs_core(
     nest_alt_indices,
     diag_eval_fn=None,
     sparse_solve_fn=None,
+    normalize=True,
 ):
     """SAR-Mixed-Nested per-observation LL contributions."""
     from .kernels import mixed_nested_logit_ll_contribs
@@ -781,7 +838,7 @@ def _sar_mixed_nested_ll_contribs_core(
     if data.inclusion_probs is not None:
         v_fixed = v_fixed + jnp.log(jnp.maximum(data.inclusion_probs, 1e-30))
 
-    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn)
+    v_fixed_star = _sar_filter(rho, v_fixed, W_dense, n_alts, diag_eval_fn, sparse_solve_fn, normalize)
 
     return mixed_nested_logit_ll_contribs(
         V_fixed=v_fixed_star,
@@ -812,6 +869,7 @@ def build_sar_mixed_nested_objective(
     draws,
     diag_precompute=None,
     sparse_solve_fn=None,
+    normalize=True,
 ) -> Objective:
     """Build an Objective for SAR-Mixed-Nested PML estimation.
 
@@ -838,7 +896,7 @@ def build_sar_mixed_nested_objective(
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
     )
-    W_dense = jnp.array(W_sparse.toarray(), dtype=jnp.float64)
+    W_dense = _maybe_dense_W(W_sparse, sparse_solve_fn, diag_precompute, normalize)
     n_obs = arrays.n_obs
     n_alts = arrays.n_alts
     nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
@@ -870,6 +928,7 @@ def build_sar_mixed_nested_objective(
             nest_alt_indices,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -888,6 +947,7 @@ def build_sar_mixed_nested_objective(
             nest_alt_indices,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     @jax.jit
@@ -906,6 +966,7 @@ def build_sar_mixed_nested_objective(
             nest_alt_indices,
             diag_eval_fn=diag_eval_fn,
             sparse_solve_fn=sparse_solve_fn,
+            normalize=normalize,
         )
 
     param_names_list = list(arrays.param_names)

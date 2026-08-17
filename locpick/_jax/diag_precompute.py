@@ -96,7 +96,7 @@ def chebyshev_diag_precompute(
     diag_at_nodes : callable or None, default None
         Optional ``rho_nodes -> (n_nodes, n_alts)`` evaluator for the exact
         node diagonals.  When supplied it overrides the scipy factorisation
-        path (e.g. cholgraph's selected inverse).
+        path (e.g. sparsax's selected inverse).
 
     Returns
     -------
@@ -486,7 +486,7 @@ def precompute_diagonal(
     diag_at_nodes : callable or None, default None
         Optional ``rho_nodes -> (n_nodes, n_alts)`` evaluator for the exact
         node diagonals, overriding the scipy factorisation path (e.g.
-        cholgraph's selected inverse for symmetrizable W).
+        sparsax's selected inverse for symmetrizable W).
 
     Returns
     -------

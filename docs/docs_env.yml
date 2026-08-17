@@ -24,10 +24,9 @@ dependencies:
   - nlopt
   - optax
   - scikit-sparse
+  - sparsax
   - pip
   - pip:
-    - klujax
-    - cholgraph
     - jax>=0.4
 
 

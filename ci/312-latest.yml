@@ -17,9 +17,8 @@ dependencies:
   - optax
   - scikit-sparse
   - pip
+  - sparsax
   - pip:
-    - klujax
-    - cholgraph
     - jax>=0.4
 
   # optional (spatial)

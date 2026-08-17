@@ -1,6 +1,6 @@
 """Tests for the sparse SAR spatial-filter backends.
 
-Covers the JIT/autodiff-native solves (cholgraph for symmetrizable W, klujax
+Covers the JIT/autodiff-native solves (sparsax CHOLMOD for symmetrizable W, KLU
 for asymmetric W) and the scipy sparse factorisations (CHOLMOD / KLU) used off
 the JAX path, all validated against a dense reference.
 """
@@ -24,10 +24,9 @@ if _HAS_JAX:
     import jax.numpy as jnp
 
 from locpick._jax.sparse_backends import (  # noqa: E402
-    cholgraph_available,
     is_symmetrizable,
-    klujax_available,
     make_sparse_solve_fn,
+    sparsax_available,
     symmetrize,
 )
 
@@ -90,11 +89,11 @@ def test_asymmetric_not_symmetrizable():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not cholgraph_available(), reason="cholgraph not installed")
-def test_cholgraph_backend_matches_dense_and_differentiates():
+@pytest.mark.skipif(not sparsax_available(), reason="sparsax not installed")
+def test_sparsax_backend_matches_dense_and_differentiates():
     W = _symmetric_W()
     solve_fn, backend = make_sparse_solve_fn(W)
-    assert backend == "cholgraph"
+    assert backend == "sparsax"
 
     n = W.shape[0]
     V = jnp.asarray(np.random.default_rng(0).standard_normal((80, n)))
@@ -108,11 +107,11 @@ def test_cholgraph_backend_matches_dense_and_differentiates():
     npt.assert_allclose(g, (obj(0.4 + eps) - obj(0.4 - eps)) / (2 * eps), rtol=1e-5)
 
 
-@pytest.mark.skipif(not klujax_available(), reason="klujax not installed")
-def test_klujax_backend_matches_dense_and_differentiates():
+@pytest.mark.skipif(not sparsax_available(), reason="sparsax not installed")
+def test_sparsax_lu_backend_matches_dense_and_differentiates():
     W = _asymmetric_W()
-    solve_fn, backend = make_sparse_solve_fn(W, prefer="klujax")
-    assert backend == "klujax"
+    solve_fn, backend = make_sparse_solve_fn(W)
+    assert backend == "sparsax_lu"
 
     n = W.shape[0]
     V = jnp.asarray(np.random.default_rng(1).standard_normal((80, n)))

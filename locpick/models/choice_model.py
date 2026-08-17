@@ -17,6 +17,7 @@ MixedNestedMNL.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -41,6 +42,11 @@ from .base import (
 )
 from .mixed import ParamDistribution, _resolve_draws
 from .nested import NestingTree
+
+#: Largest |rho| from the linearised GMM that is still trusted as a PML
+#: warm start.  Beyond this the ``rho = 0`` expansion has broken down and the
+#: estimate is discarded rather than clipped onto the boundary.
+_WARMSTART_RHO_MAX: float = 0.95
 
 
 def _lambda_to_alpha(lambda_vals) -> np.ndarray:
@@ -175,10 +181,23 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         Computation backend hint.
     estimator : str, optional
         SAR estimation method (only relevant when ``lag=True``).
-        ``"auto"`` (default) and ``"pml"`` use Smirnov (2010) pseudo
-        maximum likelihood; the spatial filter uses a sparse solve
-        (cholgraph/klujax) when available and ``n_alts`` is large, else a
-        dense solve.  ``"linearized_gmm"`` uses the two-step GMM estimator
+
+        ``"auto"`` (default) and ``"pml"`` use Smirnov (2010) pseudo maximum
+        likelihood: utilities are spatially filtered *and* divided by
+        ``diag((I - ρW)^{-1})`` to standardise the heteroskedasticity induced
+        by filtering the disturbances.  Because it is a pseudo-likelihood, the
+        information matrix equality does not hold — prefer
+        :meth:`std_errors_robust` over the default Hessian-based errors, and
+        treat likelihood-ratio comparisons with care.
+
+        ``"reduced"`` fits the reduced form ``ψ = (I - ρW)^{-1} Xβ`` with no
+        normalisation.  This is the model in which only *systematic* utility
+        reaches a spatial equilibrium while the errors stay iid EV1, so the
+        softmax is the **exact** likelihood: default standard errors and LR
+        tests are valid, and the diagonal interpolant precompute is skipped
+        entirely.  Both specifications share the same score at ``ρ = 0``.
+
+        ``"linearized_gmm"`` uses the two-step GMM estimator
         (Carrión-Flores et al. 2018) for very large J.
 
     Examples
@@ -226,7 +245,15 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
         self._random_params = random_params
         self._graph_input = graph
         self._lag = lag  # True = SAR spatial lag, False = SCL (default)
-        self._estimator = estimator  # SAR estimator: auto, pml, linearized_gmm
+        self._estimator = estimator  # SAR estimator: auto, pml, reduced, linearized_gmm
+        if estimator not in ("auto", "pml", "reduced", "linearized_gmm"):
+            raise ValueError(
+                f"Unknown estimator {estimator!r}; expected one of "
+                "'auto', 'pml', 'reduced', 'linearized_gmm'."
+            )
+        # "reduced" drops the variance normalisation, making the softmax over
+        # (I - ρW)^{-1} Xβ an exact likelihood rather than a pseudo-likelihood.
+        self._sar_normalize = estimator != "reduced"
         self._warmstart = warmstart  # Use GMM estimates as PML starting values
 
         # Mixed logit settings
@@ -399,9 +426,9 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
 
         The filter ``(I - ρW)^{-1} V_base`` and the normalisation diagonal
         ``diag((I - ρW)^{-1})`` are the per-iteration spatial cost.  When a
-        pure-JAX sparse backend is available (cholgraph for symmetrizable W,
-        klujax otherwise) the solve becomes a sparse, differentiable, JIT
-        kernel; the diagonal is interpolated from exact nodes (cholgraph's
+        pure-JAX sparse backend is available (sparsax for symmetrizable W,
+        KLU otherwise) the solve becomes a sparse, differentiable, JIT
+        kernel; the diagonal is interpolated from exact nodes (sparsax's
         selected inverse when symmetrizable).  Otherwise both fall back to
         the dense path.
         """
@@ -411,33 +438,37 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             self._graph_input, arrays.n_alts, row_standardize=True
         )[1]
 
-        # Prefer a pure-JAX sparse solve (cholgraph for symmetrizable W, klujax
-        # otherwise): differentiable and JIT-native.  When neither is installed,
-        # fall back to the scipy sparse custom-VJP path (CHOLMOD / KLU) — still
-        # sparse, never dense.  The dense solve is used only below the threshold.
+        # Prefer a pure-JAX sparse solve (sparsax: CHOLMOD for symmetrizable W,
+        # KLU otherwise): differentiable and JIT-native.  When it is not
+        # installed, fall back to the scipy sparse custom-VJP path (CHOLMOD /
+        # KLU) — still sparse, never dense.  The dense solve is used only below
+        # the threshold.
         self._sparse_solve_ctx = None
         self._sparse_solve_fn = None
         self._sparse_backend = None
         diag_at_nodes = None
         if arrays.n_alts > 500:
-            from .._jax.sparse_backends import cholgraph_node_diagonals, make_sparse_solve_fn
+            from .._jax.sparse_backends import make_sparse_solve_fn, sparsax_node_diagonals
 
             solve_fn, backend = make_sparse_solve_fn(self._W_sparse)
-            # solve_fn is None only when neither cholgraph nor klujax is
-            # installed; the estimation kernel is JIT-compiled, so the
-            # host-side scipy factorisation cannot run inside it and the dense
-            # solve is used instead.  (The numpy prediction path still uses the
-            # scipy sparse factorisation — see ``_sar_sparse_filter``.)
+            # solve_fn is None only when sparsax is not installed; the
+            # estimation kernel is JIT-compiled, so the host-side scipy
+            # factorisation cannot run inside it and the dense solve is used
+            # instead.  (The numpy prediction path still uses the scipy sparse
+            # factorisation — see ``_sar_sparse_filter``.)
             self._sparse_solve_fn = solve_fn
             self._sparse_backend = backend
-            if backend == "cholgraph":
-                diag_at_nodes = lambda nodes: cholgraph_node_diagonals(  # noqa: E731
+            if backend == "sparsax":
+                diag_at_nodes = lambda nodes: sparsax_node_diagonals(  # noqa: E731
                     self._W_sparse, nodes
                 )
 
         # Precompute the differentiable, JIT-compatible variance diagonal
-        # interpolant; D(ρ) depends only on ρ.
-        if arrays.n_alts > 50:
+        # interpolant; D(ρ) depends only on ρ.  The reduced form never divides
+        # by D, so it skips this entirely — the precompute is the dominant
+        # setup cost (≈9 s at n_alts = 3000, and it scales worse than linearly
+        # because it fits one rational approximant per alternative).
+        if self._sar_normalize and arrays.n_alts > 50:
             from .._jax.diag_precompute import precompute_diagonal
 
             self._diag_precompute = precompute_diagonal(
@@ -699,8 +730,20 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                         from .._kernels.sar_mnl_numpy import fit_linearized_gmm
 
                         gmm = fit_linearized_gmm(arrays, self._W_sparse)
-                        rho_gmm = float(np.clip(gmm["rho"], -0.99, 0.99))
-                        x0_parts.append(np.array([np.arctanh(rho_gmm)]))
+                        rho_gmm = float(gmm["rho"])
+                        # The linearised GMM expands around rho = 0, so under
+                        # strong dependence it routinely returns |rho| > 1 —
+                        # outside the stationary region and carrying no usable
+                        # location.  Clipping such a value onto the boundary is
+                        # actively harmful for the PML: as rho -> 1,
+                        # D = diag((I - rho W)^-1) diverges, filtered utilities
+                        # collapse toward zero and the likelihood approaches the
+                        # uniform-choice value, which is a local optimum the
+                        # optimiser cannot escape.  Discard instead of clipping.
+                        if np.isfinite(rho_gmm) and abs(rho_gmm) < _WARMSTART_RHO_MAX:
+                            x0_parts.append(np.array([np.arctanh(rho_gmm)]))
+                        else:
+                            x0_parts.append(np.zeros(1))
                     except Exception:
                         x0_parts.append(np.zeros(1))
                 else:
@@ -734,6 +777,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._W_sparse,
                     diag_precompute=self._diag_precompute,
                     sparse_solve_fn=self._sparse_solve_fn,
+                    normalize=self._sar_normalize,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_scl_objective
@@ -756,6 +800,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._nest_matrix,
                     diag_precompute=self._diag_precompute,
                     sparse_solve_fn=self._sparse_solve_fn,
+                    normalize=self._sar_normalize,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_nested_scl_objective
@@ -778,6 +823,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._draws,
                     diag_precompute=self._diag_precompute,
                     sparse_solve_fn=self._sparse_solve_fn,
+                    normalize=self._sar_normalize,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mscl_objective
@@ -814,6 +860,7 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                     self._draws,
                     diag_precompute=self._diag_precompute,
                     sparse_solve_fn=self._sparse_solve_fn,
+                    normalize=self._sar_normalize,
                 )
             elif self._is_spatial_scl:
                 from .._jax.builders import build_mnscl_objective
@@ -1060,7 +1107,10 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             V_base = apply_sampling_correction(V_base, arrays)
 
             V_filtered, D = self._sar_sparse_filter(rho, V_base)
-            V_star = V_filtered / D[None, :]
+            # Must mirror the estimation kernel: the reduced form never divides
+            # by D, so normalising here would score a different model than the
+            # one that was fitted.
+            V_star = V_filtered / D[None, :] if self._sar_normalize else V_filtered
 
             if arrays.available is not None:
                 available = np.asarray(arrays.available, dtype=np.float64).reshape(n_obs, n_alts)
@@ -1426,6 +1476,148 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
             names=[ct.obs_id_col, ct.alt_id_col],
         )
         return ct, probs, df, index
+
+    def spatial_impacts(
+        self,
+        variable: str,
+        data=None,
+        *,
+        max_order: int = 4,
+        n_sources: Optional[int] = None,
+        seed: int = 0,
+    ):
+        """LeSage-style spatial impacts for a SAR choice model (``lag=True``).
+
+        Decomposes how a change to ``variable`` at one alternative propagates to
+        the choice probabilities of *all* alternatives through the spatial
+        multiplier.  With ``T = diag(D)^{-1}(I - ρW)^{-1}`` (``D ≡ 1`` for the
+        reduced form), the effect on alternative ``j`` of perturbing source
+        alternative ``l`` is
+
+        .. math::
+            \\frac{\\partial P_{ij}}{\\partial x_{il}}
+              = \\beta_k\\, P_{ij}\\,\\big(T_{jl} - (P_i'T)_l\\big).
+
+        Interpretation differs from the linear SAR case in one essential way:
+        because :math:`\\sum_j P_{ij} = 1`, the column sums are identically
+        zero.  A perturbation cannot raise total probability, only
+        **redistribute** it, so the LeSage "total impact" is structurally 0 and
+        ``indirect = -direct`` by construction rather than by estimation.  The
+        informative quantity is therefore not the total but the *spatial
+        profile* of the redistribution — how much of the own-alternative effect
+        is absorbed by 1-hop, 2-hop, … neighbours.  That profile is what
+        separates a global SAR spillover from a first-order SLX one, which puts
+        everything at order 1 and nothing beyond.
+
+        Parameters
+        ----------
+        variable : str
+            Name of the coefficient whose perturbation is propagated.
+        data : ChoiceTable or None
+            Data to evaluate at; defaults to the estimation sample.
+        max_order : int, default 4
+            Highest neighbour order reported in the decay profile.  Alternatives
+            farther than this (or unreachable) are pooled into ``">max_order"``.
+        n_sources : int or None
+            Number of source alternatives to average over.  ``None`` uses all of
+            them when ``n_alts <= 500``, else a random sample of 200 — each
+            source costs one sparse solve, so this bounds the work at large J.
+        seed : int, default 0
+            Seed for source sampling.
+
+        Returns
+        -------
+        dict
+            ``direct``, ``indirect``, ``total``, and ``profile`` (a
+            ``pd.Series`` of mean absolute redistribution by neighbour order,
+            plus ``share_beyond_order_1``).
+
+        Raises
+        ------
+        RuntimeError
+            If the model is not a fitted SAR (``lag=True``) model.
+        """
+        import scipy.sparse as sp_
+
+        if not self._is_spatial_lag:
+            raise RuntimeError("spatial_impacts requires a SAR model (lag=True).")
+        if self._result is None:
+            raise RuntimeError("Model must be estimated before computing spatial impacts.")
+        if variable not in self._result.coefficients:
+            raise KeyError(f"Unknown variable {variable!r}.")
+
+        _, probs, _, _ = self._resolve_me_data(data)
+        probs = np.asarray(probs, dtype=np.float64)
+        n_obs, n_alts = probs.shape
+        beta_k = float(self._result.coefficients[variable])
+        rho = float(self._result.coefficients["rho"])
+
+        from scipy.sparse.csgraph import shortest_path
+
+        W = sp_.csr_matrix(self._W_sparse, dtype=np.float64)
+        A = (sp_.eye(n_alts, format="csc") - rho * W).tocsc()
+        lu = sp_.linalg.splu(A)
+
+        rng = np.random.default_rng(seed)
+        if n_sources is None:
+            n_sources = n_alts if n_alts <= 500 else 200
+        sources = (
+            np.arange(n_alts)
+            if n_sources >= n_alts
+            else np.sort(rng.choice(n_alts, size=n_sources, replace=False))
+        )
+
+        # Hop distances only from the sampled sources: (n_sources, n_alts),
+        # so the profile never materialises an all-pairs J x J matrix.
+        hops = shortest_path(
+            (W != 0).astype(np.int8), method="D", unweighted=True, indices=sources
+        )
+
+        # D depends only on rho, so factorise once rather than per source.
+        D = None
+        if self._sar_normalize:
+            _, D = self._sar_sparse_filter(rho, np.zeros((1, n_alts)))
+
+        Pbar = probs.mean(axis=0)  # average over choosers
+        direct = 0.0
+        by_order = {o: 0.0 for o in range(max_order + 1)}
+        beyond = 0.0
+
+        for s_idx, src in enumerate(sources):
+            e = np.zeros(n_alts)
+            e[src] = 1.0
+            t_col = lu.solve(e)  # column `src` of (I - rho W)^-1
+            if D is not None:
+                t_col = t_col / D  # -> column of T = diag(D)^-1 (I - rho W)^-1
+            # dP_j/dx_src, averaged over choosers via the mean probabilities
+            eff = beta_k * Pbar * (t_col - float(Pbar @ t_col))
+
+            direct += eff[src]
+            d = hops[s_idx]
+            mask = np.ones(n_alts, dtype=bool)
+            mask[src] = False
+            orders = d[mask]
+            mags = np.abs(eff[mask])
+            near = np.isfinite(orders) & (orders <= max_order)
+            for o in range(1, max_order + 1):
+                by_order[o] += float(mags[near & (orders == o)].sum())
+            beyond += float(mags[~near].sum())
+
+        ns = len(sources)
+        direct /= ns
+        prof = {f"order_{o}": by_order[o] / ns for o in range(1, max_order + 1)}
+        prof[f">order_{max_order}"] = beyond / ns
+        tot_indirect_abs = sum(prof.values())
+        prof["share_beyond_order_1"] = (
+            (tot_indirect_abs - prof["order_1"]) / tot_indirect_abs if tot_indirect_abs > 0 else 0.0
+        )
+
+        return {
+            "direct": direct,
+            "indirect": -direct,  # exact: column sums of dP/dx vanish
+            "total": 0.0,  # structural, not estimated
+            "profile": pd.Series(prof),
+        }
 
     def marginal_effects(self, data=None, variable: Optional[str] = None):
         """Compute average direct, indirect, and total marginal effects.
@@ -2036,8 +2228,20 @@ class ChoiceModel(BaseChoiceModel, SpatialMixin):
                 raise ValueError("raw parameters unavailable")
             scores = np.asarray(contribs_fn(jnp.asarray(raw, dtype=jnp.float64)))
             return scores
-        except (ValueError, AttributeError, TypeError):
-            pass
+        except (ValueError, AttributeError, TypeError) as exc:
+            # Every JAX builder supplies ``loglike_contribs_jax``, so reaching
+            # here means the exact-score path is genuinely unavailable (or
+            # broken).  Finite differences are materially less accurate, and
+            # these scores feed robust/clustered standard errors — so say so
+            # rather than degrading the inference silently.
+            warnings.warn(
+                "Exact observation scores unavailable "
+                f"({type(exc).__name__}: {exc}); falling back to finite "
+                "differences.  Robust and clustered standard errors will be "
+                "less accurate.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Fall back to finite differences
         return self._finite_diff_observation_scores(arrays)
