@@ -1904,6 +1904,7 @@ def simulate_sar_mnl(
     W=None,
     n_neighbors: int = 7,
     seed: int = 1234,
+    normalize: bool = True,
 ) -> SARMNLDataset:
     """Generate synthetic SAR-MNL choice data with known parameters.
 
@@ -1935,6 +1936,12 @@ def simulate_sar_mnl(
     interaction_params : dict, optional
         Mapping of interaction column name → true coefficient.
         Default: ``{"obs_x_alt": 0.8}``.
+    normalize : bool, default True
+        When True the DGP is the Smirnov (2010) PML form, dividing filtered
+        utilities by ``diag((I - ρW)^{-1})``.  When False it is the reduced
+        form ``ψ = (I - ρW)^{-1} Xβ``, for which the softmax is the exact
+        choice model.  Use it to generate data matching
+        ``ChoiceModel(..., estimator="reduced")``.
     rho : float, default 0.3
         True spatial autoregressive parameter.  Should be in (-1, 1).
         Smirnov 2010 MC evidence: good recovery for ρ ∈ [0, 0.5].
@@ -2010,10 +2017,15 @@ def simulate_sar_mnl(
     A = np.eye(n_alts) - rho * W_dense
     V_filtered = np.linalg.solve(A, V_base.T).T  # (n_obs, n_alts)
 
-    # --- Variance normalisation: D = diag((I - ρW)^{-1}) ---------------
-    Z_mat = np.linalg.inv(A)
-    D = np.diag(Z_mat)  # (n_alts,)
-    V_star = V_filtered / D[None, :]  # normalise each alternative by d_jj
+    if normalize:
+        # --- Variance normalisation: D = diag((I - ρW)^{-1}) ---------------
+        Z_mat = np.linalg.inv(A)
+        D = np.diag(Z_mat)  # (n_alts,)
+        V_star = V_filtered / D[None, :]  # normalise each alternative by d_jj
+    else:
+        # Reduced form: only systematic utility is filtered, so the softmax
+        # over (I - ρW)^{-1} V_base is the exact choice model.
+        V_star = V_filtered
 
     # --- Add Gumbel noise and simulate choices -------------------------
     gumbel = rng.gumbel(size=(n_obs, n_alts))

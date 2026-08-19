@@ -4,20 +4,21 @@ The SAR-family kernels apply the spatial filter ``V = (I - ρW)^{-1} V_base``
 at every optimiser step.  Done densely this is ``O(n_alts^3)`` per evaluation
 and the conjugate-gradient path still materialises ``I - ρW``.  This module
 provides sparse, JIT-compatible, autodiff-friendly replacements that scale
-with the number of nonzeros in ``W``:
+with the number of nonzeros in ``W``.
 
-- **cholgraph** (CHOLMOD): used when ``W`` is *symmetrizable* — that is, its
-  adjacency pattern is symmetric, as for contiguity/distance-band/KNN-made-
-  symmetric graphs.  ``I - ρW`` is then similar to the SPD matrix
-  ``I - ρW_sym`` (``W_sym = D^{1/2} W D^{-1/2}``), which CHOLMOD factorises.
-- **klujax** (KLU): used for genuinely asymmetric ``W`` (directed graphs,
-  raw KNN), a sparse LU that needs no symmetry.
+Both paths come from **sparsax**, which bundles CHOLMOD and KLU:
+
+- **CHOLMOD**: used when ``W`` is *symmetrizable* — that is, its adjacency
+  pattern is symmetric, as for contiguity/distance-band/KNN-made-symmetric
+  graphs.  ``I - ρW`` is then similar to the SPD matrix ``I - ρW_sym``
+  (``W_sym = D^{1/2} W D^{-1/2}``), which CHOLMOD factorises.
+- **KLU**: used for genuinely asymmetric ``W`` (directed graphs, raw KNN), a
+  sparse LU that needs no symmetry.
 
 Both back the differentiable ``(rho, V_base) -> V_filtered`` closure returned
 by :func:`make_sparse_solve_fn`, which slots into the ``sparse_solve_fn`` hook
-of the SAR kernels.  Neither dependency is required: when neither is present
-(or ``W`` is asymmetric and only cholgraph is installed) the factory returns
-``None`` and the caller falls back to the dense path.
+of the SAR kernels.  The dependency is optional: when sparsax is absent the
+factory returns ``None`` and the caller falls back to the dense path.
 
 Symmetrisation is recovered from ``W`` itself, so it is correct whether or not
 the caller has already row-standardised the weights (a row-standardised ``W``
@@ -33,17 +34,11 @@ from importlib.util import find_spec
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.csgraph import connected_components
 
 
-def cholgraph_available() -> bool:
-    """Whether the cholgraph (CHOLMOD) backend is importable."""
-    return find_spec("cholgraph") is not None
-
-
-def klujax_available() -> bool:
-    """Whether the klujax (KLU) backend is importable."""
-    return find_spec("klujax") is not None
+def sparsax_available() -> bool:
+    """Whether the sparsax (CHOLMOD) backend is importable."""
+    return find_spec("sparsax") is not None
 
 
 def is_symmetrizable(W_sparse: sp.spmatrix, tol: float = 1e-10) -> bool:
@@ -86,7 +81,8 @@ def symmetrize(W_row_std: sp.csr_matrix):
     # Recover log s over a spanning forest: log s_i - log s_j = ½ log(W_ji/W_ij).
     coo = W.tocoo()
     wji = {(r, c): v for r, c, v in zip(coo.row, coo.col, coo.data)}
-    _, labels = connected_components(W + W.T, directed=False)
+    # The DFS below walks each component from its own root, so no separate
+    # connected-components pass is needed.
     log_s = np.zeros(n, dtype=np.float64)
     seen = np.zeros(n, dtype=bool)
     indptr, indices, data = W.indptr, W.indices, W.data
@@ -127,15 +123,15 @@ def _fixed_coo_pattern(M: sp.csr_matrix, n: int):
     return row, col, i_vals, m_vals
 
 
-def cholgraph_node_diagonals(W_row_std: sp.csr_matrix, rho_nodes: np.ndarray) -> np.ndarray:
+def sparsax_node_diagonals(W_row_std: sp.csr_matrix, rho_nodes: np.ndarray) -> np.ndarray:
     """Exact ``diag((I - ρW)^{-1})`` at each ρ node via CHOLMOD selected inverse.
 
-    Uses ``diag((I - ρW)^{-1}) = diag((I - ρW_sym)^{-1})`` and cholgraph's
+    Uses ``diag((I - ρW)^{-1}) = diag((I - ρW_sym)^{-1})`` and sparsax's
     ``selinv`` (Takahashi recurrence on the Cholesky factor), which reads off
     the diagonal without forming a dense inverse.  Intended for the interpolant
     precompute, so it runs outside autodiff.
     """
-    import cholgraph
+    import sparsax
 
     n = W_row_std.shape[0]
     W_sym, _ = symmetrize(W_row_std)
@@ -144,7 +140,7 @@ def cholgraph_node_diagonals(W_row_std: sp.csr_matrix, rho_nodes: np.ndarray) ->
 
     out = np.zeros((len(rho_nodes), n), dtype=np.float64)
     for k, rho in enumerate(rho_nodes):
-        z = np.asarray(cholgraph.selinv(row, col, i_vals - float(rho) * m_vals, n))
+        z = np.asarray(sparsax.selinv(row, col, i_vals - float(rho) * m_vals, n))
         out[k, row[diag_mask]] = z[diag_mask]
     return out
 
@@ -156,37 +152,39 @@ def make_sparse_solve_fn(W_row_std: sp.csr_matrix, prefer: str = "auto"):
     ----------
     W_row_std : scipy.sparse matrix
         Row-standardised spatial weights (zero diagonal).
-    prefer : {"auto", "cholgraph", "klujax"}, default "auto"
-        Force a backend for testing.  ``"auto"`` picks cholgraph for
-        symmetrizable ``W`` and klujax otherwise.
+    prefer : {"auto", "sparsax", "sparsax_lu"}, default "auto"
+        Force a path for testing.  ``"auto"`` picks sparsax's CHOLMOD solve for
+        symmetrizable ``W`` and its KLU solve otherwise; ``"sparsax_lu"``
+        forces KLU even when ``W`` is symmetrizable.
 
     Returns
     -------
     (callable, str) or (None, None)
         A JIT/autodiff-compatible ``solve(rho, V_base) -> V_filtered`` (both
-        ``(n_obs, n_alts)``) and the backend name, or ``(None, None)`` when no
-        suitable backend is available.
+        ``(n_obs, n_alts)``) and the path name — ``"sparsax"`` (CHOLMOD) or
+        ``"sparsax_lu"`` (KLU) — or ``(None, None)`` when sparsax is absent.
+
+        The two paths are named separately because only CHOLMOD admits
+        :func:`sparsax_node_diagonals`: the selected inverse runs on the
+        D-symmetrisation, which does not exist for asymmetric ``W``.
     """
     W = sp.csr_matrix(W_row_std, dtype=np.float64)
     W.setdiag(0.0)
     W.eliminate_zeros()
     n = W.shape[0]
-    symmetrizable = is_symmetrizable(W)
 
-    use_cholgraph = symmetrizable and cholgraph_available() and prefer in ("auto", "cholgraph")
-    use_klujax = klujax_available() and prefer in ("auto", "klujax") and not use_cholgraph
+    if not sparsax_available():
+        return None, None
 
-    if use_cholgraph:
-        return _cholgraph_solve_fn(W, n), "cholgraph"
-    if use_klujax:
-        return _klujax_solve_fn(W, n), "klujax"
-    return None, None
+    if is_symmetrizable(W) and prefer in ("auto", "sparsax"):
+        return _sparsax_solve_fn(W, n), "sparsax"
+    return _sparsax_lu_solve_fn(W, n), "sparsax_lu"
 
 
-def _cholgraph_solve_fn(W_row_std: sp.csr_matrix, n: int):
+def _sparsax_solve_fn(W_row_std: sp.csr_matrix, n: int):
     """CHOLMOD-backed filter via the SPD D-symmetrisation of ``I - ρW``."""
-    import cholgraph
     import jax.numpy as jnp
+    import sparsax
 
     W_sym, s = symmetrize(W_row_std)
     row, col, i_vals, m_vals = _fixed_coo_pattern(W_sym, n)
@@ -202,16 +200,22 @@ def _cholgraph_solve_fn(W_row_std: sp.csr_matrix, n: int):
         # (I - ρW)^{-1} = diag(1/s) (I - ρW_sym)^{-1} diag(s); the filter acts on
         # the alternative axis, so solve with V_base transposed to (n_alts, n_obs).
         ax = iv - rho * wv
-        x = cholgraph.solve(ri, ci, ax, sj[:, None] * V_base.T)
+        x = sparsax.solve(ri, ci, ax, sj[:, None] * V_base.T)
         return (s_inv[:, None] * x).T
 
     return solve
 
 
-def _klujax_solve_fn(W_row_std: sp.csr_matrix, n: int):
-    """KLU-backed filter for asymmetric ``W`` (sparse LU, no symmetry needed)."""
+def _sparsax_lu_solve_fn(W_row_std: sp.csr_matrix, n: int):
+    """KLU-backed filter for asymmetric ``W``, via sparsax's LU path.
+
+    The non-symmetrizable counterpart of :func:`_sparsax_solve_fn`: no
+    D-symmetrisation exists, so ``I - ρW`` is solved directly by KLU rather
+    than CHOLMOD.  Keeping both paths in sparsax means one native library
+    serves every ``W``.
+    """
     import jax.numpy as jnp
-    import klujax
+    import sparsax
 
     row, col, i_vals, m_vals = _fixed_coo_pattern(W_row_std, n)
     ri = jnp.asarray(row)
@@ -220,7 +224,9 @@ def _klujax_solve_fn(W_row_std: sp.csr_matrix, n: int):
     wv = jnp.asarray(m_vals)
 
     def solve(rho, V_base):
+        # The filter acts on the alternative axis, so solve with V_base
+        # transposed to (n_alts, n_obs), matching the CHOLMOD path.
         ax = iv - rho * wv
-        return klujax.solve(ri, ci, ax, V_base.T).T
+        return sparsax.lu_solve(ri, ci, ax, V_base.T).T
 
     return solve

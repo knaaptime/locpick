@@ -15,9 +15,8 @@ dependencies:
   # optional (jax)
   - jax>=0.4
   - jaxlib>=0.4
-  # optional (optimagic – additional solver algorithms)
-  - optimagic>=0.5
-  # optional (spatial)
+  - sparsax
+
   - libpysal>=4.0
   - geopandas>=0.13
   - scikit-learn>=1.2
