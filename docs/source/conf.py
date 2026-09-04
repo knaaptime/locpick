@@ -13,8 +13,8 @@ from packaging.version import Version
 import locpick  # noqa: E402
 
 project = "locpick"
-copyright = "2024-, OTURNS developers"  # noqa: A001
-author = "OTURNS developers"
+copyright = "2024-, locpick developers"  # noqa: A001
+author = "locpick developers"
 
 version = Version(locpick.__version__).public  # remove commit hash
 release = version
@@ -87,10 +87,10 @@ html_theme_options = {
         "repo": "fontawesome/brands/github",
         "edit": "material/file-code",
     },
-    "site_url": "https://oturns.github.io/locpick",
-    "repo_url": "https://github.com/oturns/locpick/",
+    "site_url": "https://knaaptime.github.io/locpick",
+    "repo_url": "https://github.com/knaaptime/locpick/",
     "edit_uri": "blob/dev/docs",
-    "repo_name": "oturns/locpick",
+    "repo_name": "knaaptime/locpick",
     "features": [
         "navigation.sections",
         "navigation.top",
@@ -131,7 +131,7 @@ html_theme_options = {
         },
     ],
     "version_dropdown": True,
-    "version_json": "https://oturns.github.io/locpick/versions.json",
+    "version_json": "https://knaaptime.github.io/locpick/versions.json",
 }
 nb_execution_mode = "force"
 nb_execution_timeout = -1
@@ -161,4 +161,4 @@ def linkcode_resolve(domain, info):
     except Exception:
         filename = info["module"].replace(".", "/") + ".py"
     tag = "dev" if "dev" in release else ("v" + release)
-    return f"https://github.com/oturns/locpick/blob/{tag}/{filename}"
+    return f"https://github.com/knaaptime/locpick/blob/{tag}/{filename}"
