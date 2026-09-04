@@ -14,9 +14,6 @@ JAX is a core dependency and is always installed. Optional extras add
 alternative solvers, spatial utilities, and faster sparse solves:
 
 ```bash
-pip install locpick[optax]       # Optax solver backend
-pip install locpick[optimagic]   # optimagic solver backend
-pip install locpick[optimistix]  # Optimistix (pure-JAX) solver backend
 pip install locpick[spatial]     # Spatial graph / distance utilities
 pip install locpick[sparse]      # CHOLMOD-accelerated sparse SAR solves
 pip install locpick[all]         # All of the above
@@ -27,7 +24,7 @@ pip install locpick[all]         # All of the above
 For development, clone the repository and install in editable mode:
 
 ```bash
-git clone https://github.com/oturns/locpick.git
+git clone https://github.com/knaaptime/locpick.git
 cd locpick
 conda env create -f environment.yml
 conda activate locpick

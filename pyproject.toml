@@ -10,7 +10,7 @@ description = "Modern location and destination choice modeling"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {text = "BSD-3-Clause"}
 authors = [
-    {name = "OTURNS"}
+    {name = "eli knaap"}
 ]
 requires-python = ">=3.12"
 classifiers = [
@@ -96,11 +96,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://oturns.github.io/locpick"
-Documentation = "https://oturns.github.io/locpick"
-Source = "https://github.com/oturns/locpick"
-Tracker = "https://github.com/oturns/locpick/issues"
-Changelog = "https://github.com/oturns/locpick/releases"
+Homepage = "https://knaaptime.github.io/locpick"
+Documentation = "https://knaaptime.github.io/locpick"
+Source = "https://github.com/knaaptime/locpick"
+Tracker = "https://github.com/knaaptime/locpick/issues"
+Changelog = "https://github.com/knaaptime/locpick/releases"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -124,3 +124,8 @@ line-length = 99
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# ``jax.config.update("jax_enable_x64", True)`` must run before any module that
+# reads the flag at import time, so these imports deliberately follow it.
+"tests/test_sparse_solve_vjp.py" = ["E402"]
