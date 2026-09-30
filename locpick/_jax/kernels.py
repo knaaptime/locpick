@@ -22,6 +22,7 @@ Kernel design principles
 from __future__ import annotations
 
 import jax
+import numpy as np
 
 from .._kernels.constants import NEG_INF as _NEG_INF_FLOAT
 
@@ -448,6 +449,104 @@ def nested_log_probs(
 
 
 # ---------------------------------------------------------------------------
+# Shared mixed-logit building blocks
+# ---------------------------------------------------------------------------
+
+
+def realize_random_coefficients(means, spread, z, dist_codes):
+    """Random coefficients for one simulation draw.
+
+    Parameters
+    ----------
+    means : jnp.ndarray, shape (k,)
+        Location parameters.
+    spread : jnp.ndarray, shape (k,) or (k, k)
+        Per-coefficient spreads, or the lower-triangular Cholesky factor ``L``
+        of a correlated normal/lognormal mixing distribution
+        (``beta = mean + L z``).
+    z : jnp.ndarray, shape (n, k)
+        Standard normal draws.
+    dist_codes : jnp.ndarray, shape (k,)
+        0 = normal, 1 = lognormal, 2 = triangular, 3 = uniform.  Triangular
+        and uniform are defined only for independent coefficients.
+
+    Returns
+    -------
+    jnp.ndarray, shape (n, k)
+    """
+    if spread.ndim == 2:
+        scaled = z @ spread.T
+        scale = jnp.diagonal(spread)[None, :]
+    else:
+        scaled = spread[None, :] * z
+        scale = spread[None, :]
+    lin = means[None, :] + scaled
+    beta_lognormal = jnp.exp(jnp.clip(lin, -50.0, 50.0))
+    # Uniform and triangular on [mean - s, mean + s], via the normal CDF of z.
+    phi_z = _normal_cdf(z)
+    beta_uniform = means[None, :] + scale * (2.0 * phi_z - 1.0)
+    beta_triangular = jnp.where(
+        phi_z <= 0.5,
+        means[None, :] + scale * (jnp.sqrt(2.0 * phi_z) - 1.0),
+        means[None, :] + scale * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+    )
+    dist = dist_codes[None, :]
+    return jnp.where(
+        dist == 0,
+        lin,
+        jnp.where(dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)),
+    )
+
+
+def random_spread(raw, k_random):
+    """Mixing-distribution scale from the unconstrained spread parameters.
+
+    With ``k_random`` entries the coefficients are independent and the result
+    is the vector ``softplus(raw)``.  With ``k_random * (k_random + 1) / 2``
+    entries (``k_random > 1``) they are correlated, and ``raw`` packs the
+    lower-triangular Cholesky factor ``L`` row by row -- ``(0,0), (1,0), (1,1),
+    (2,0), ...`` -- with the diagonal through ``softplus`` so ``L L'`` is
+    positive definite.  The case is fixed by the (static) length of ``raw``.
+    """
+    if raw.shape[0] == k_random:
+        return jnp.log1p(jnp.exp(raw))
+    rows, cols = np.tril_indices(k_random)
+    on_diag = jnp.asarray(rows == cols)
+    values = jnp.where(on_diag, jnp.log1p(jnp.exp(raw)), raw)
+    return jnp.zeros((k_random, k_random), dtype=raw.dtype).at[rows, cols].set(values)
+
+
+def simulated_loglik_contribs(log_L_all, weights, n_draws, panel_codes=None, n_panels=None):
+    """Simulated log-likelihood contributions from per-draw chosen log-probabilities.
+
+    Parameters
+    ----------
+    log_L_all : jnp.ndarray, shape (n_draws, n_obs)
+        ``log P(chosen)`` for each draw and choice situation.
+    weights : jnp.ndarray, shape (n_obs,)
+    n_draws : int
+    panel_codes : jnp.ndarray of int, shape (n_obs,), optional
+        Decision-maker of each choice situation, coded ``0..n_panels-1``.
+        With panels a person's draw is shared across all their choices, so
+        the per-draw log-likelihoods are summed within a person *before*
+        averaging over draws: ``log mean_r prod_t P(y_t | beta_r)``.
+    n_panels : int, optional
+        Number of decision-makers (static).
+
+    Returns
+    -------
+    jnp.ndarray, shape (n_obs,) or (n_panels,)
+        Weighted contributions, one per choice situation or per person.
+        Weights must be constant within a person; the person's weight is used.
+    """
+    if panel_codes is not None:
+        log_L_all = jax.ops.segment_sum(log_L_all.T, panel_codes, num_segments=n_panels).T
+        weights = jax.ops.segment_max(weights, panel_codes, num_segments=n_panels)
+    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
+    return log_L_sim * weights
+
+
+# ---------------------------------------------------------------------------
 # Mixed logit kernel (non-spatial)
 # ---------------------------------------------------------------------------
 
@@ -466,6 +565,8 @@ def mixed_logit_ll(
     n_alts: int,
     k_random: int,
     n_draws: int,
+    panel_codes=None,
+    n_panels=None,
 ) -> jnp.ndarray:
     """Compute mixed logit simulated log-likelihood.
 
@@ -493,6 +594,8 @@ def mixed_logit_ll(
         Binary availability matrix.
     n_obs, n_alts, k_random, n_draws : int
         Problem dimensions.
+    panel_codes, n_panels : optional
+        Panel structure; see :func:`simulated_loglik_contribs`.
 
     Returns
     -------
@@ -500,42 +603,14 @@ def mixed_logit_ll(
         Simulated log-likelihood.
     """
     # Vectorised random coefficient generation
-    means = beta_random_means[None, :]  # (1, k_random)
-    spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     def _ll_single_draw(r):
         """Log-likelihood contribution for a single draw."""
         z_r = draws[:, r, :]  # (n_obs, k_random)
 
-        # Normal: β = μ + σ * z
-        beta_normal = means + spreads * z_r
-        # Lognormal: β = exp(μ + σ * z)
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        # Transform standard normal draws to uniform via CDF
-        phi_z = _normal_cdf(z_r)
-        # Uniform on [μ - σ, μ + σ]
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        # Symmetric triangular on [μ - σ, μ + σ]
-        # F^{-1}(u) = μ - σ + σ*sqrt(2u)   for u ≤ 0.5
-        # F^{-1}(u) = μ + σ - σ*sqrt(2(1-u)) for u > 0.5
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, dist_codes
         )
-
-        # Select distribution per parameter — vectorised
-        dist = dist_codes[None, :]  # (1, k_random)
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1,
-                beta_lognormal,
-                jnp.where(dist == 2, beta_triangular, beta_uniform),
-            ),
-        )  # (n_obs, k_random)
 
         # Random utility component
         v_random = jnp.sum(
@@ -556,9 +631,7 @@ def mixed_logit_ll(
     # vmap over draws
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
-    # Simulated log-likelihood
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return jnp.sum(log_L_sim * weights)
+    return jnp.sum(simulated_loglik_contribs(log_L_all, weights, n_draws, panel_codes, n_panels))
 
 
 def mixed_logit_ll_contribs(
@@ -575,6 +648,8 @@ def mixed_logit_ll_contribs(
     n_alts: int,
     k_random: int,
     n_draws: int,
+    panel_codes=None,
+    n_panels=None,
 ) -> jnp.ndarray:
     """Compute mixed logit per-observation simulated log-likelihood contributions.
 
@@ -587,30 +662,11 @@ def mixed_logit_ll_contribs(
     jnp.ndarray, shape (n_obs,)
         Per-observation simulated log-likelihood contributions.
     """
-    means = beta_random_means[None, :]
-    spreads = beta_random_spreads[None, :]
 
     def _ll_single_draw(r):
         z_r = draws[:, r, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-        )
-        dist = dist_codes[None, :]
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1,
-                beta_lognormal,
-                jnp.where(dist == 2, beta_triangular, beta_uniform),
-            ),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, dist_codes
         )
         v_random = jnp.sum(
             dm_random.reshape(n_obs, n_alts, k_random) * beta_random_r[:, None, :],
@@ -622,8 +678,7 @@ def mixed_logit_ll_contribs(
         return log_L_n
 
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return log_L_sim * weights
+    return simulated_loglik_contribs(log_L_all, weights, n_draws, panel_codes, n_panels)
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +703,8 @@ def mixed_nested_logit_ll(
     k_random: int,
     n_draws: int,
     n_nests: int,
+    panel_codes=None,
+    n_panels=None,
 ) -> jnp.ndarray:
     """Compute mixed nested logit simulated log-likelihood.
 
@@ -687,8 +744,6 @@ def mixed_nested_logit_ll(
     jnp.ndarray, scalar
         Simulated log-likelihood.
     """
-    means = beta_random_means[None, :]  # (1, k_random)
-    spreads = beta_random_spreads[None, :]  # (1, k_random)
 
     # Nest membership is resolved inside ``nested_log_probs``; ``n_nests`` is
     # kept in the signature for call-site compatibility.
@@ -697,27 +752,8 @@ def mixed_nested_logit_ll(
         """Log-likelihood contribution for a single draw."""
         z_r = draws[:, r, :]  # (n_obs, k_random)
 
-        # Generate random coefficients (same as mixed_logit_ll)
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-        )
-
-        dist = dist_codes[None, :]
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1,
-                beta_lognormal,
-                jnp.where(dist == 2, beta_triangular, beta_uniform),
-            ),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, dist_codes
         )
 
         # Random utility component
@@ -739,9 +775,7 @@ def mixed_nested_logit_ll(
     # vmap over draws
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
-    # Simulated log-likelihood
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return jnp.sum(log_L_sim * weights)
+    return jnp.sum(simulated_loglik_contribs(log_L_all, weights, n_draws, panel_codes, n_panels))
 
 
 def mixed_nested_logit_ll_contribs(
@@ -761,39 +795,22 @@ def mixed_nested_logit_ll_contribs(
     k_random: int,
     n_draws: int,
     n_nests: int,
+    panel_codes=None,
+    n_panels=None,
 ) -> jnp.ndarray:
     """Compute mixed nested logit per-observation LL contributions.
 
     Same as :func:`mixed_nested_logit_ll` but returns per-observation
     ``(n_obs,)`` array.  Used for BHHH/robust standard errors.
     """
-    means = beta_random_means[None, :]
-    spreads = beta_random_spreads[None, :]
 
     # Nest membership is resolved inside ``nested_log_probs``; ``n_nests`` is
     # kept in the signature for call-site compatibility.
 
     def _ll_single_draw(r):
         z_r = draws[:, r, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-        )
-        dist = dist_codes[None, :]
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1,
-                beta_lognormal,
-                jnp.where(dist == 2, beta_triangular, beta_uniform),
-            ),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, dist_codes
         )
         v_random = jnp.sum(
             dm_random.reshape(n_obs, n_alts, k_random) * beta_random_r[:, None, :],
@@ -805,8 +822,7 @@ def mixed_nested_logit_ll_contribs(
         return log_L_n
 
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return log_L_sim * weights
+    return simulated_loglik_contribs(log_L_all, weights, n_draws, panel_codes, n_panels)
 
 
 # ---------------------------------------------------------------------------

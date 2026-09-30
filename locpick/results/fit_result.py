@@ -45,6 +45,12 @@ class FitResult:
     # delta method to the raw-space inverse Hessian.
     covariance_matrix: np.ndarray | None = None
 
+    # Optimizer outcome.  ``converged=False`` means the reported estimates
+    # are not a verified optimum and inference built on them is suspect.
+    converged: bool = True
+    n_iterations: int = 0
+    message: str = ""
+
     # Estimation metadata
     spec: object = None
     model_type: str = "Multinomial Logit"
@@ -85,6 +91,7 @@ class FitResult:
             "BIC": self.bic,
             "Rho-squared": self.rho_squared,
             "Adjusted rho-squared": self.rho_bar_squared,
+            "Converged": self.converged,
         }
         return pd.DataFrame(
             {"statistic": list(stats_map.keys()), "value": list(stats_map.values())}
@@ -122,6 +129,7 @@ class FitResult:
         lines.append(f"BIC:             {self.bic:>12.4f}")
         lines.append(f"Rho-squared:     {self.rho_squared:>12.4f}")
         lines.append(f"Adj. rho-sq:     {self.rho_bar_squared:>12.4f}")
+        lines.append(f"Converged:       {('yes' if self.converged else 'NO'):>12}")
         lines.append("-" * 60)
         lines.append(f"{'Parameter':<20} {'Coef':>10} {'Std.Err':>10} {'t':>8} {'P>|t|':>8}")
         lines.append("-" * 60)
@@ -258,6 +266,9 @@ class FitResult:
             "rho_squared": self.rho_squared,
             "rho_bar_squared": self.rho_bar_squared,
             "solver_name": self.solver_name,
+            "converged": self.converged,
+            "n_iterations": self.n_iterations,
+            "message": self.message,
             "timestamp": self.timestamp.isoformat(),
         }
 

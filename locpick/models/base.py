@@ -7,6 +7,7 @@ This module defines the :class:`ChoiceModelProtocol` protocol and the
 models configured with ``graph=``.
 """
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Protocol, Union, runtime_checkable
 
@@ -45,6 +46,11 @@ def _safe_inv(A: np.ndarray) -> np.ndarray:
             return np.linalg.inv(A)
         except np.linalg.LinAlgError:
             return np.full_like(A, np.nan)
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically stable logistic function, the derivative of softplus."""
+    return float(np.exp(-np.logaddexp(0.0, -x)))
 
 
 def _sandwich_inv(H_inv: np.ndarray, B: np.ndarray) -> np.ndarray:
@@ -318,6 +324,8 @@ class BaseChoiceModel(ABC):
         self._raw_params: Optional[np.ndarray] = None
         self._transform_spec: Optional[list[dict]] = None
         self._solver_result: Optional[SolverResult] = None
+        # Parameters held at their starting values; excluded from inference.
+        self._fixed_mask: Optional[np.ndarray] = None
 
         # Caches (cleared on re-estimation)
         self._hessian_inverse: Optional[np.ndarray] = None
@@ -372,6 +380,7 @@ class BaseChoiceModel(ABC):
         objective = self._build_objective(arrays)
         self._objective = objective
         x0, param_names, bounds, fixed_mask = self._get_solver_inputs(arrays)
+        self._fixed_mask = fixed_mask
         # Trigger compilation by calling fn and grad once
         if objective.fn is not None:
             objective.fn(x0)
@@ -399,6 +408,7 @@ class BaseChoiceModel(ABC):
         objective = self._build_objective(arrays)
         self._objective = objective
         x0, param_names, bounds, fixed_mask = self._get_solver_inputs(arrays)
+        self._fixed_mask = fixed_mask
 
         solver_result = self._solver.solve(
             objective=objective,
@@ -409,6 +419,15 @@ class BaseChoiceModel(ABC):
         )
 
         self._solver_result = solver_result
+        if not solver_result.converged:
+            warnings.warn(
+                f"The optimizer did not converge ({solver_result.solver_name}: "
+                f"{solver_result.message}).  Estimates and standard errors may not "
+                "be at a maximum; check result.converged, raise the iteration "
+                "limit, or try another solver.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Drop caches from any previous fit *before* building the result:
         # _build_fit_result derives standard errors and covariance from the
@@ -534,45 +553,41 @@ class BaseChoiceModel(ABC):
         # Fallback: should not normally reach here
         return self._finite_diff_hessian(beta)
 
-    def _compute_std_errors_from_hessian(self, hess: np.ndarray) -> np.ndarray:
-        """Compute standard errors from a log-likelihood Hessian.
+    def _free_mask(self, n: int) -> np.ndarray:
+        """Boolean mask of the estimated (not held-fixed) parameters."""
+        if self._fixed_mask is None or len(self._fixed_mask) != n:
+            return np.ones(n, dtype=bool)
+        return ~np.asarray(self._fixed_mask, dtype=bool)
 
-        The Hessian of the log-likelihood is negative definite (since we
-        maximize).  Standard errors are the square root of the diagonal
-        of the inverse of the *negative* Hessian:
+    def _invert_neg_hessian(self, hess: np.ndarray) -> np.ndarray:
+        """Covariance ``inv(-H)`` over the free parameters.
 
-            SE = sqrt(diag(inv(-H)))
+        Parameters held fixed carry no sampling variance: their rows and
+        columns are zero, and the free block is inverted on its own, so the
+        fixed values do not distort the free parameters' covariance.
 
-        Parameters
-        ----------
-        hess : np.ndarray, shape (n_params, n_params)
-            Hessian matrix of the log-likelihood (negative definite).
-
-        Returns
-        -------
-        np.ndarray, shape (n_params,)
-            Standard errors for each parameter.
+        Raises
+        ------
+        np.linalg.LinAlgError
+            If the free block is singular.
         """
+        n = hess.shape[0]
+        free = self._free_mask(n)
+        neg_hess = -hess[np.ix_(free, free)]
         try:
-            neg_hess = -hess
-            cov = cho_solve(cho_factor(neg_hess), np.eye(neg_hess.shape[0]))
-            diag_cov = np.diag(cov)
-            # Clamp tiny negative values (numerical noise) to zero,
-            # but treat zero-variance parameters as unidentified (SE=0
-            # is never meaningful) and mark them NaN instead.
-            se = np.sqrt(np.maximum(diag_cov, 0))
-            se[se == 0] = np.nan
-            return se
+            block = cho_solve(cho_factor(neg_hess), np.eye(neg_hess.shape[0]))
         except np.linalg.LinAlgError:
-            # Not PD — fall back to general inverse
-            try:
-                cov = np.linalg.inv(-hess)
-                diag_cov = np.diag(cov)
-                se = np.sqrt(np.maximum(diag_cov, 0))
-                se[se == 0] = np.nan
-                return se
-            except np.linalg.LinAlgError:
-                return np.full(hess.shape[0], np.nan)
+            warnings.warn(
+                "The negative Hessian is not positive definite at the solution, so "
+                "the estimate may not be a maximum or some parameters may not be "
+                "identified.  Standard errors are unreliable.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            block = np.linalg.inv(neg_hess)
+        cov = np.zeros((n, n))
+        cov[np.ix_(free, free)] = block
+        return cov
 
     def _finite_diff_hessian(self, beta: np.ndarray) -> np.ndarray:
         """Compute Hessian via central finite differences (fallback)."""
@@ -628,9 +643,9 @@ class BaseChoiceModel(ABC):
             elif ttype == "tanh":
                 val = spec["value"]
                 jac[i, r] = 1.0 - val**2
-            elif ttype == "abs":
-                # natural = |raw|; derivative is sign(raw), magnitude exactly 1
-                jac[i, r] = np.sign(raw[r]) or 1.0
+            elif ttype == "softplus":
+                # natural = softplus(raw); derivative is sigmoid(raw)
+                jac[i, r] = _sigmoid(raw[r])
             else:
                 jac[i, r] = 1.0
         return jac
@@ -666,28 +681,28 @@ class BaseChoiceModel(ABC):
         if self._hessian_inverse is not None:
             return self._hessian_inverse
 
-        # Try HVP-based Hessian first (exact, via JAX autodiff)
+        # Exact Hessian via JAX autodiff
+        reason = "the exact Hessian could not be computed"
         if self._objective is not None and self._raw_params is not None:
             try:
                 hess = self._compute_hessian(self._raw_params)
-                # hess is the Hessian of the log-likelihood (negative definite).
-                # The covariance matrix is inv(-hess).
-                neg_hess = -hess
-                self._hessian_inverse = cho_solve(cho_factor(neg_hess), np.eye(neg_hess.shape[0]))
-                return self._hessian_inverse
-            except np.linalg.LinAlgError:
-                # Not PD — fall back to general inverse
-                try:
-                    self._hessian_inverse = np.linalg.inv(-hess)
-                    return self._hessian_inverse
-                except Exception:
-                    pass
             except Exception:
-                pass
+                hess = None
+            if hess is not None:
+                try:
+                    self._hessian_inverse = self._invert_neg_hessian(hess)
+                    return self._hessian_inverse
+                except (np.linalg.LinAlgError, ValueError):
+                    # Singular, or non-finite entries.
+                    reason = (
+                        "the Hessian is singular or non-finite at the solution, so some "
+                        "parameters are not identified"
+                    )
 
-        # Fallback: solver's approximate inverse Hessian (e.g. L-BFGS-B).
-        # Read from the live solver result so this is usable while the
-        # FitResult is still being constructed.
+        # Fallback: the solver's approximate inverse Hessian (e.g. L-BFGS-B).
+        # A quasi-Newton approximation built from a few gradient pairs is a
+        # poor basis for inference, so say so.  Read from the live solver
+        # result so this is usable while the FitResult is being constructed.
         raw_solver = None
         if self._solver_result is not None:
             raw_solver = self._solver_result.raw
@@ -698,12 +713,25 @@ class BaseChoiceModel(ABC):
             scipy_result = raw_solver["scipy_result"]
             if hasattr(scipy_result, "hess_inv"):
                 try:
-                    self._hessian_inverse = np.asarray(
+                    approx = np.asarray(
                         scipy_result.hess_inv.todense()
                         if hasattr(scipy_result.hess_inv, "todense")
                         else scipy_result.hess_inv
                     )
-                    return self._hessian_inverse
+                    n = len(self._raw_params) if self._raw_params is not None else len(approx)
+                    free = self._free_mask(n)
+                    if approx.shape == (free.sum(), free.sum()):
+                        warnings.warn(
+                            f"Covariance comes from the optimizer's quasi-Newton "
+                            f"approximation because {reason}; standard errors may be "
+                            "badly wrong.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        cov = np.zeros((n, n))
+                        cov[np.ix_(free, free)] = approx
+                        self._hessian_inverse = cov
+                        return self._hessian_inverse
                 except Exception:
                     pass
 

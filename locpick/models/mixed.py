@@ -361,7 +361,10 @@ def realize_random_coefficients(
     ----------
     draws : np.ndarray, shape (n_obs, n_draws, k_random)
         Standard normal draws.
-    beta_random_means, beta_random_spreads : np.ndarray, shape (k_random,)
+    beta_random_means : np.ndarray, shape (k_random,)
+    beta_random_spreads : np.ndarray, shape (k_random,) or (k_random, k_random)
+        Independent spreads, or the lower-triangular Cholesky factor of a
+        correlated normal/lognormal mixing distribution.
     random_distributions : list of str
         One distribution name per random parameter.
 
@@ -371,6 +374,19 @@ def realize_random_coefficients(
         Realised coefficient values.
     """
     n_obs, n_draws, k_random = draws.shape
+    if np.ndim(beta_random_spreads) == 2:
+        # Correlated: beta = mean + L z (normal), exp(mean + L z) (lognormal).
+        L = np.asarray(beta_random_spreads, dtype=np.float64)
+        lin = np.asarray(beta_random_means, dtype=np.float64) + np.einsum("nrk,jk->nrj", draws, L)
+        out = np.empty_like(lin)
+        for p, dist in enumerate(random_distributions):
+            if dist == "normal":
+                out[:, :, p] = lin[:, :, p]
+            elif dist == "lognormal":
+                out[:, :, p] = np.exp(np.clip(lin[:, :, p], -50, 50))
+            else:
+                raise ValueError("correlated random parameters must be normal or lognormal.")
+        return out
     out = np.zeros((n_obs, n_draws, k_random), dtype=np.float64)
     for p in range(k_random):
         mean_p = np.full(n_obs, beta_random_means[p], dtype=np.float64)

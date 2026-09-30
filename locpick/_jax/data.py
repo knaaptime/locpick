@@ -199,6 +199,9 @@ class ChoiceDataJAX:
     dm_fixed: Optional["jnp.ndarray"] = None
     dm_random: Optional["jnp.ndarray"] = None
     design_matrix_sparse: Optional[object] = None  # BCOO when sparsity > threshold
+    # Panel mixed logit: decision-maker of each choice situation (0..n_panels-1).
+    panel_codes: Optional["jnp.ndarray"] = None
+    n_panels: Optional[int] = None
 
     @property
     def effective_design_matrix(self):
@@ -217,6 +220,7 @@ class ChoiceDataJAX:
         draws=None,
         random_col_indices=None,
         random_distributions=None,
+        panel=None,
     ):
         """Build from a :class:`~locpick.data.arrays.ChoiceArrays`.
 
@@ -232,6 +236,9 @@ class ChoiceDataJAX:
             Column indices of random parameters.
         random_distributions : list[str] or None
             Distribution names for random parameters.
+        panel : tuple of (np.ndarray, int) or None
+            ``(panel_codes, n_panels)`` for panel mixed logit: the
+            decision-maker (``0..n_panels-1``) of each choice situation.
 
         Returns
         -------
@@ -318,6 +325,8 @@ class ChoiceDataJAX:
             dm_fixed=dm_fixed,
             dm_random=dm_random,
             design_matrix_sparse=design_matrix_sparse,
+            panel_codes=None if panel is None else jnp.asarray(panel[0], dtype=jnp.int32),
+            n_panels=None if panel is None else int(panel[1]),
         )
 
     # --- JAX pytree methods ---
@@ -335,13 +344,20 @@ class ChoiceDataJAX:
             self.dm_fixed,
             self.dm_random,
             self.design_matrix_sparse,
+            self.panel_codes,
         )
-        aux_data = (self.n_obs, self.n_alts, self.random_col_indices, self.fixed_col_indices)
+        aux_data = (
+            self.n_obs,
+            self.n_alts,
+            self.random_col_indices,
+            self.fixed_col_indices,
+            self.n_panels,
+        )
         return children, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        n_obs, n_alts, random_col_indices, fixed_col_indices = aux_data
+        n_obs, n_alts, random_col_indices, fixed_col_indices, n_panels = aux_data
         return cls(
             design_matrix=children[0],
             chosen=children[1],
@@ -358,4 +374,6 @@ class ChoiceDataJAX:
             dm_fixed=children[8],
             dm_random=children[9],
             design_matrix_sparse=children[10],
+            panel_codes=children[11],
+            n_panels=n_panels,
         )

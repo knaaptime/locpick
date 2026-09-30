@@ -15,6 +15,7 @@ The model classes call these builders instead of building closures inline.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 
 import jax
@@ -25,17 +26,35 @@ from jax.scipy.special import logsumexp as jax_logsumexp
 from .data import ChoiceDataJAX
 from .kernels import (
     _NEG_INF,
-    _normal_cdf,
     compute_ll,
     compute_ll_contribs,
     compute_utilities,
     mixed_logit_ll,
     mnl_log_probs,
     nested_log_probs,
+    random_spread,
+    realize_random_coefficients,
     scl_log_probs,
+    simulated_loglik_contribs,
 )
-from .objective import Objective
+from .objective import Objective, make_log_probs_fn
 from .transforms import Identity, ParamTransform, Sigmoid, SoftPlus
+
+
+def _with_choices(data, chosen, weights, available=None):
+    """Copy ``data`` with ``chosen``, ``weights`` and optionally ``available`` replaced.
+
+    Used to read probabilities off a contributions kernel (see
+    :func:`~locpick._jax.objective.make_log_probs_fn`); ``available`` restricts
+    the choice set, e.g. to alternatives with remaining capacity.
+    """
+    # Probabilities are per choice situation (marginal over the mixing
+    # distribution), so any panel aggregation is dropped.
+    changes = {"chosen": chosen, "weights": weights, "panel_codes": None, "n_panels": None}
+    if available is not None:
+        changes["available"] = available
+    return dataclasses.replace(data, **changes)
+
 
 # ---------------------------------------------------------------------------
 # MNL objective
@@ -234,7 +253,6 @@ def build_scl_objective(arrays, edge_struct, allocation, edge_list) -> Objective
 @functools.partial(jax.jit, static_argnums=(2, 3, 4))
 def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
     """Pure JAX MSCL simulated log-likelihood (top-level for JIT caching)."""
-    from jax.scipy.special import logsumexp as jax_logsumexp
 
     beta_fixed = params[:k_fixed]
     alpha_rho = params[k_fixed]
@@ -242,8 +260,7 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
     beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
 
     rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
-    # Enforce non-negative spreads via softplus
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     # Fixed utility component
     if data.dm_fixed is not None and k_fixed > 0:
@@ -261,34 +278,10 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
         z_r = data.draws[:, r, :]  # (n_obs, k_random)
 
         # Vectorised random coefficient generation
-        means = beta_random_means[None, :]  # (1, k_random)
-        spreads = beta_random_spreads[None, :]  # (1, k_random)
 
-        # Normal: β = μ + σ * z
-        beta_normal = means + spreads * z_r
-        # Lognormal: β = exp(μ + σ * z)
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        phi_z = _normal_cdf(z_r)
-        # Uniform on [μ - σ, μ + σ]
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        # Symmetric triangular on [μ - σ, μ + σ]
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, data.dist_codes
         )
-
-        # Select distribution per parameter — vectorised via jnp.where
-        dist = data.dist_codes[None, :]  # (1, k_random)
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
-            ),
-        )  # (n_obs, k_random)
 
         # Random utility component
         v_random = jnp.sum(
@@ -309,9 +302,11 @@ def _mscl_ll_kernel(params, data, k_fixed, k_random, n_draws):
     # vmap over draws
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
-    # Simulated log-likelihood
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return jnp.sum(log_L_sim * data.weights)
+    return jnp.sum(
+        simulated_loglik_contribs(
+            log_L_all, data.weights, n_draws, data.panel_codes, data.n_panels
+        )
+    )
 
 
 # Pre-compute gradient of the kernel (also cached)
@@ -328,7 +323,6 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
     Identical to ``_mscl_ll_kernel`` but returns per-observation ``(n_obs,)``
     array instead of a scalar sum.
     """
-    from jax.scipy.special import logsumexp as jax_logsumexp
 
     beta_fixed = params[:k_fixed]
     alpha_rho = params[k_fixed]
@@ -336,7 +330,7 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
     beta_random_spreads_raw = params[k_fixed + 1 + k_random :]
 
     rho = 1.0 / (1.0 + jnp.exp(-alpha_rho))
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     if data.dm_fixed is not None and k_fixed > 0:
         v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
@@ -348,25 +342,8 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
 
     def _ll_single_draw(r):
         z_r = data.draws[:, r, :]
-        means = beta_random_means[None, :]
-        spreads = beta_random_spreads[None, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-        )
-        dist = data.dist_codes[None, :]
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
-            ),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, data.dist_codes
         )
         v_random = jnp.sum(
             data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
@@ -378,8 +355,9 @@ def _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         return log_L_n
 
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return log_L_sim * data.weights
+    return simulated_loglik_contribs(
+        log_L_all, data.weights, n_draws, data.panel_codes, data.n_panels
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +411,7 @@ def _mnscl_ll_kernel(
 
     rhos = 1.0 / (1.0 + jnp.exp(-alpha_rhos))
     lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     # Fixed utility component
     if data.dm_fixed is not None and k_fixed > 0:
@@ -449,31 +427,9 @@ def _mnscl_ll_kernel(
         """Log-likelihood contribution for a single draw."""
         z_r = data.draws[:, r, :]  # (n_obs, k_random)
 
-        means = beta_random_means[None, :]  # (1, k_random)
-        spreads = beta_random_spreads[None, :]  # (1, k_random)
-
-        # Normal: β = μ + σ * z
-        beta_normal = means + spreads * z_r
-        # Lognormal: β = exp(μ + σ * z)
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        # Uniform on [μ - σ, μ + σ]: transform standard normal CDF to U(-1,1)
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, data.dist_codes
         )
-
-        dist = data.dist_codes[None, :]  # (1, k_random)
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
-            ),
-        )  # (n_obs, k_random)
 
         v_random = jnp.sum(
             data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
@@ -529,9 +485,11 @@ def _mnscl_ll_kernel(
     # vmap over draws
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
 
-    # Simulated log-likelihood
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return jnp.sum(log_L_sim * data.weights)
+    return jnp.sum(
+        simulated_loglik_contribs(
+            log_L_all, data.weights, n_draws, data.panel_codes, data.n_panels
+        )
+    )
 
 
 # Pre-compute gradient of the kernel (also cached)
@@ -581,7 +539,7 @@ def _mnscl_ll_contribs_kernel(
 
     rhos = 1.0 / (1.0 + jnp.exp(-alpha_rhos))
     lambdas = 1.0 / (1.0 + jnp.exp(-alpha_lambdas))
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     if data.dm_fixed is not None and k_fixed > 0:
         v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
@@ -593,25 +551,8 @@ def _mnscl_ll_contribs_kernel(
 
     def _ll_single_draw(r):
         z_r = data.draws[:, r, :]
-        means = beta_random_means[None, :]
-        spreads = beta_random_spreads[None, :]
-        beta_normal = means + spreads * z_r
-        beta_lognormal = jnp.exp(jnp.clip(means + spreads * z_r, -50.0, 50.0))
-        phi_z = _normal_cdf(z_r)
-        beta_uniform = means + spreads * (2.0 * phi_z - 1.0)
-        mask = phi_z <= 0.5
-        beta_triangular = jnp.where(
-            mask,
-            means + spreads * (jnp.sqrt(2.0 * phi_z) - 1.0),
-            means + spreads * (1.0 - jnp.sqrt(2.0 * (1.0 - phi_z))),
-        )
-        dist = data.dist_codes[None, :]
-        beta_random_r = jnp.where(
-            dist == 0,
-            beta_normal,
-            jnp.where(
-                dist == 1, beta_lognormal, jnp.where(dist == 2, beta_triangular, beta_uniform)
-            ),
+        beta_random_r = realize_random_coefficients(
+            beta_random_means, beta_random_spreads, z_r, data.dist_codes
         )
         v_random = jnp.sum(
             data.dm_random.reshape(data.n_obs, data.n_alts, k_random) * beta_random_r[:, None, :],
@@ -656,8 +597,9 @@ def _mnscl_ll_contribs_kernel(
         return log_L_n
 
     log_L_all = jax.vmap(jax.checkpoint(_ll_single_draw), in_axes=0)(jnp.arange(n_draws))
-    log_L_sim = jax_logsumexp(log_L_all, axis=0) - jnp.log(float(n_draws))
-    return log_L_sim * data.weights
+    return simulated_loglik_contribs(
+        log_L_all, data.weights, n_draws, data.panel_codes, data.n_panels
+    )
 
 
 def build_mnscl_objective(
@@ -667,6 +609,7 @@ def build_mnscl_objective(
     random_col_indices,
     random_distributions,
     draws,
+    panel=None,
 ) -> Objective:
     """Build an Objective for MNSCL estimation using JAX.
 
@@ -697,6 +640,7 @@ def build_mnscl_objective(
         draws=draws,
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
+        panel=panel,
     )
 
     nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
@@ -753,6 +697,20 @@ def build_mnscl_objective(
             nest_alt_indices,
         )
 
+    def _contribs_cw(params, chosen, weights, available=None):
+        return _mnscl_ll_contribs_kernel(
+            params,
+            _with_choices(data, chosen, weights, available),
+            nest_matrix_jax,
+            edge_data_list,
+            k,
+            n_nests,
+            k_fixed,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
         name
@@ -784,6 +742,7 @@ def build_mnscl_objective(
         loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
+        log_probs_jax=make_log_probs_fn(_contribs_cw, data.n_obs, data.n_alts, mixed=True),
     )
 
 
@@ -800,6 +759,7 @@ def build_mscl_objective(
     random_col_indices,
     random_distributions,
     draws,
+    panel=None,
 ) -> Objective:
     """Build an Objective for MSCL estimation using JAX.
 
@@ -832,6 +792,7 @@ def build_mscl_objective(
         draws=draws,
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
+        panel=panel,
     )
 
     k_fixed = len(data.fixed_col_indices) if data.fixed_col_indices else 0
@@ -847,6 +808,11 @@ def build_mscl_objective(
 
     def _ll_contribs_jax(params):
         return _mscl_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws)
+
+    def _contribs_cw(params, chosen, weights, available=None):
+        return _mscl_ll_contribs_kernel(
+            params, _with_choices(data, chosen, weights, available), k_fixed, k_random, n_draws
+        )
 
     # Parameter names
     param_names_list = list(arrays.param_names)
@@ -871,6 +837,7 @@ def build_mscl_objective(
         loglike_contribs_jax=_ll_contribs_jax,
         param_names=display_param_names,
         transform=transform,
+        log_probs_jax=make_log_probs_fn(_contribs_cw, data.n_obs, data.n_alts, mixed=True),
     )
 
 
@@ -1170,6 +1137,16 @@ def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective
             params, data, nest_matrix_jax, edge_data_list, k, nest_alt_indices
         )
 
+    def _contribs_cw(params, chosen, weights, available=None):
+        return _nested_scl_ll_contribs_kernel(
+            params,
+            _with_choices(data, chosen, weights, available),
+            nest_matrix_jax,
+            edge_data_list,
+            k,
+            nest_alt_indices,
+        )
+
     param_names = (
         list(arrays.param_names)
         + [f"rho_{i}" for i in range(n_nests)]
@@ -1190,6 +1167,7 @@ def build_nested_scl_objective(arrays, nest_matrix, edge_data_list) -> Objective
         loglike_contribs_jax=_ll_contribs_jax,
         param_names=param_names,
         transform=transform,
+        log_probs_jax=make_log_probs_fn(_contribs_cw, data.n_obs, data.n_alts, mixed=False),
     )
 
 
@@ -1206,8 +1184,7 @@ def _mixed_ll_kernel(params, data, k_fixed, k_random, n_draws):
     beta_random_means = params[k_fixed : k_fixed + k_random]
     beta_random_spreads_raw = params[k_fixed + k_random :]
 
-    # Enforce non-negative spreads via softplus
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     # Fixed utility component
     if data.dm_fixed is not None and k_fixed > 0:
@@ -1233,6 +1210,8 @@ def _mixed_ll_kernel(params, data, k_fixed, k_random, n_draws):
         n_alts=data.n_alts,
         k_random=k_random,
         n_draws=n_draws,
+        panel_codes=data.panel_codes,
+        n_panels=data.n_panels,
     )
 
 
@@ -1251,7 +1230,7 @@ def _mixed_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
     beta_fixed = params[:k_fixed]
     beta_random_means = params[k_fixed : k_fixed + k_random]
     beta_random_spreads_raw = params[k_fixed + k_random :]
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     if data.dm_fixed is not None and k_fixed > 0:
         v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
@@ -1275,6 +1254,8 @@ def _mixed_ll_contribs_kernel(params, data, k_fixed, k_random, n_draws):
         n_alts=data.n_alts,
         k_random=k_random,
         n_draws=n_draws,
+        panel_codes=data.panel_codes,
+        n_panels=data.n_panels,
     )
 
 
@@ -1283,6 +1264,7 @@ def build_mixed_logit_objective(
     random_col_indices,
     random_distributions,
     draws,
+    panel=None,
 ) -> Objective:
     """Build an Objective for mixed logit estimation using JAX.
 
@@ -1309,6 +1291,7 @@ def build_mixed_logit_objective(
         draws=draws,
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
+        panel=panel,
     )
 
     k_fixed = len(data.fixed_col_indices) if data.fixed_col_indices else 0
@@ -1400,8 +1383,7 @@ def _mixed_nested_ll_kernel(
     # Naturalize nest parameters: alpha -> lambda
     lambdas = 1.0 / (1.0 + jnp.exp(-alpha_nest))
 
-    # Enforce non-negative spreads via softplus
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     # Fixed utility component
     if data.dm_fixed is not None and k_fixed > 0:
@@ -1430,6 +1412,8 @@ def _mixed_nested_ll_kernel(
         k_random=k_random,
         n_draws=n_draws,
         n_nests=n_nests,
+        panel_codes=data.panel_codes,
+        n_panels=data.n_panels,
     )
 
 
@@ -1460,7 +1444,7 @@ def _mixed_nested_ll_contribs_kernel(
     beta_random_spreads_raw = params[k_fixed + n_nests + k_random :]
 
     lambdas = 1.0 / (1.0 + jnp.exp(-alpha_nest))
-    beta_random_spreads = jnp.log1p(jnp.exp(beta_random_spreads_raw))
+    beta_random_spreads = random_spread(beta_random_spreads_raw, k_random)
 
     if data.dm_fixed is not None and k_fixed > 0:
         v_fixed = (data.dm_fixed @ beta_fixed).reshape(data.n_obs, data.n_alts)
@@ -1487,6 +1471,8 @@ def _mixed_nested_ll_contribs_kernel(
         k_random=k_random,
         n_draws=n_draws,
         n_nests=n_nests,
+        panel_codes=data.panel_codes,
+        n_panels=data.n_panels,
     )
 
 
@@ -1496,6 +1482,7 @@ def build_mixed_nested_objective(
     random_col_indices,
     random_distributions,
     draws,
+    panel=None,
 ) -> Objective:
     """Build an Objective for mixed nested logit estimation using JAX.
 
@@ -1525,6 +1512,7 @@ def build_mixed_nested_objective(
         draws=draws,
         random_col_indices=random_col_indices,
         random_distributions=random_distributions,
+        panel=panel,
     )
 
     nest_matrix_jax = jnp.asarray(nest_matrix, dtype=jnp.float64)
@@ -1575,6 +1563,18 @@ def build_mixed_nested_objective(
             nest_alt_indices,
         )
 
+    def _contribs_cw(params, chosen, weights, available=None):
+        return _mixed_nested_ll_contribs_kernel(
+            params,
+            _with_choices(data, chosen, weights, available),
+            nest_matrix_jax,
+            k_fixed,
+            n_nests,
+            k_random,
+            n_draws,
+            nest_alt_indices,
+        )
+
     param_names_list = list(arrays.param_names)
     fixed_param_names = [
         name
@@ -1604,4 +1604,5 @@ def build_mixed_nested_objective(
         loglike_contribs_jax=_ll_contribs_jax,
         param_names=display_param_names,
         transform=transform,
+        log_probs_jax=make_log_probs_fn(_contribs_cw, data.n_obs, data.n_alts, mixed=True),
     )

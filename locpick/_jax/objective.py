@@ -22,6 +22,13 @@ import numpy as np
 
 from .transforms import ParamTransform
 
+#: Relative step for central differences of the gradient (eps ** (1/3)).
+_FD_STEP: float = float(np.finfo(np.float64).eps ** (1.0 / 3.0))
+
+#: Errors JAX raises when a kernel cannot be differentiated a second time
+#: (e.g. a foreign-function call wrapped in a first-order custom VJP).
+_AD_FAILURES = (ValueError, TypeError, NotImplementedError)
+
 
 @dataclass
 class Objective:
@@ -68,6 +75,13 @@ class Objective:
     transform: Optional[ParamTransform] = None
     param_names: Optional[list[str]] = None
     bounds: Optional[list[tuple[float, float]]] = None
+    log_probs_jax: Optional[Callable] = None
+    """Choice log-probabilities on the estimation data (JAX).
+
+    Callable: params (jnp) → jnp array of shape (n_obs, n_alts).  Built by
+    :func:`make_log_probs_fn` from the same kernel as the likelihood, so the
+    probabilities agree with the fitted model by construction.
+    """
 
     # ------------------------------------------------------------------
     # Convenience methods
@@ -110,9 +124,24 @@ class Objective:
         """
         if self.loglike_contribs_jax is None:
             raise ValueError("score_contribs requires loglike_contribs_jax to be set.")
-        # Cache the JIT'd score function to avoid recompilation on every call
+        # The score matrix is (n_units, n_params) with n_params small, so
+        # forward mode (one pass per parameter) is the cheap direction;
+        # reverse mode runs one pass per observation and its memory grows with
+        # n_obs squared for simulated likelihoods.  Kernels without
+        # forward-mode rules fall back to reverse mode.
         if not hasattr(self, "_score_fn_cache"):
-            self._score_fn_cache = jax.jit(jax.jacrev(self.loglike_contribs_jax))
+            forward = jax.jit(jax.jacfwd(self.loglike_contribs_jax))
+            reverse = jax.jit(jax.jacrev(self.loglike_contribs_jax))
+
+            def score_fn(x):
+                if not getattr(self, "_score_forward_unavailable", False):
+                    try:
+                        return forward(x)
+                    except _AD_FAILURES:
+                        self._score_forward_unavailable = True
+                return reverse(x)
+
+            self._score_fn_cache = score_fn
         return self._score_fn_cache
 
     def hvp(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -135,14 +164,33 @@ class Objective:
         """
         if self.jax_fn is None:
             raise RuntimeError("hvp requires a JAX-native log-likelihood (jax_fn).")
-        x_jax = jnp.array(x, dtype=jnp.float64)
-        v_jax = jnp.array(v, dtype=jnp.float64)
-        grad_fn = self._hvp_grad_fn()
-        _, hvp = jax.jvp(grad_fn, (x_jax,), (v_jax,))
-        return np.asarray(hvp)
+        if not getattr(self, "_second_order_ad_unavailable", False):
+            x_jax = jnp.array(x, dtype=jnp.float64)
+            v_jax = jnp.array(v, dtype=jnp.float64)
+            try:
+                _, hvp = jax.jvp(self._hvp_grad_fn(), (x_jax,), (v_jax,))
+                return np.asarray(hvp)
+            except _AD_FAILURES:
+                self._second_order_ad_unavailable = True
+        # Central difference of the exact gradient along v.
+        x = np.asarray(x, dtype=np.float64)
+        v = np.asarray(v, dtype=np.float64)
+        v_norm = np.linalg.norm(v)
+        if v_norm == 0.0:
+            return np.zeros_like(x)
+        h = _FD_STEP * max(1.0, np.linalg.norm(x)) / v_norm
+        return (self.grad(x + h * v) - self.grad(x - h * v)) / (2.0 * h)
 
     def hessian(self, x: np.ndarray) -> np.ndarray:
-        """Compute the Hessian at ``x`` via HVPs.
+        """Compute the Hessian at ``x``.
+
+        Uses exact forward-over-reverse autodiff (:meth:`hessian_hvp`) when the
+        kernel supports second derivatives.  Some do not: the sparsax sparse
+        solves define a first-order VJP around a foreign-function call, so no
+        mode of JAX autodiff can differentiate them twice.  The Hessian is
+        then taken by central differences of the *exact* gradient
+        (:meth:`hessian_fd`), accurate to roughly ``1e-8`` relative, which is
+        ample for standard errors.
 
         Parameters
         ----------
@@ -154,7 +202,38 @@ class Objective:
         np.ndarray, shape (n_params, n_params)
             Hessian matrix of the log-likelihood.
         """
-        return self.hessian_hvp(x)
+        if not getattr(self, "_second_order_ad_unavailable", False):
+            try:
+                return self.hessian_hvp(x)
+            except _AD_FAILURES:
+                self._second_order_ad_unavailable = True
+        return self.hessian_fd(x)
+
+    def hessian_fd(self, x: np.ndarray) -> np.ndarray:
+        """Hessian by central differences of the exact gradient.
+
+        Costs ``2 * n_params`` gradient evaluations.  The step for each
+        coordinate is ``eps**(1/3) * max(1, |x_i|)``, which balances
+        truncation against rounding error for a central difference.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            Parameter vector (natural scale).
+
+        Returns
+        -------
+        np.ndarray, shape (n_params, n_params)
+            Symmetrised Hessian of the log-likelihood.
+        """
+        x = np.asarray(x, dtype=np.float64)
+        n = x.size
+        hess = np.empty((n, n))
+        for i in range(n):
+            step = np.zeros(n)
+            step[i] = _FD_STEP * max(1.0, abs(x[i]))
+            hess[:, i] = (self.grad(x + step) - self.grad(x - step)) / (2.0 * step[i])
+        return 0.5 * (hess + hess.T)
 
     def hessian_hvp(self, x: np.ndarray) -> np.ndarray:
         """Compute Hessian via Hessian-vector products (HVP).
@@ -211,6 +290,7 @@ class Objective:
         param_names: Optional[list[str]] = None,
         transform: Optional[ParamTransform] = None,
         bounds: Optional[list[tuple[float, float]]] = None,
+        log_probs_jax=None,
     ) -> "Objective":
         """Create an Objective from JIT-compiled JAX functions.
 
@@ -234,6 +314,9 @@ class Objective:
             Parameter transformation.
         bounds : list[tuple] or None
             Per-parameter bounds.
+        log_probs_jax : callable or None
+            Log-probabilities on the estimation data: jnp array → jnp array
+            of shape (n_obs, n_alts).  See :func:`make_log_probs_fn`.
 
         Returns
         -------
@@ -258,6 +341,7 @@ class Objective:
             transform=transform,
             param_names=param_names,
             bounds=bounds,
+            log_probs_jax=log_probs_jax,
         )
 
     @classmethod
@@ -294,3 +378,56 @@ class Objective:
             param_names=param_names,
             bounds=bounds,
         )
+
+
+def make_log_probs_fn(contribs_fn: Callable, n_obs: int, n_alts: int, *, mixed: bool) -> Callable:
+    """Build ``params -> log P`` of shape (n_obs, n_alts) from a contributions kernel.
+
+    ``contribs_fn(params, chosen, weights, available)`` returns per-observation
+    log-likelihood contributions.  Every kernel lets ``chosen`` enter only
+    through the final ``(log_probs * chosen).sum(axis=1)`` reduction, which
+    makes the full probability matrix recoverable without a second kernel:
+
+    - Without mixing the contributions are linear in ``chosen``, so their
+      gradient with respect to it is the log-probability matrix itself — one
+      backward pass.
+    - With mixing a contribution is ``log mean_r exp(sum_j chosen_j log P_rj)``,
+      so setting ``chosen`` to the indicator of alternative ``j`` yields the
+      simulated ``log P_j`` exactly — one evaluation per alternative.
+
+    Parameters
+    ----------
+    contribs_fn : callable
+        ``(params, chosen, weights, available) -> (n_obs,)`` contributions;
+        ``available=None`` keeps the data's own availability.
+    n_obs, n_alts : int
+        Problem dimensions.
+    mixed : bool
+        Whether the kernel integrates over mixing draws.
+
+    Returns
+    -------
+    callable
+        JIT-compiled ``(params, available=None) -> (n_obs, n_alts)``
+        log-probabilities; ``available`` optionally restricts the choice set.
+    """
+    ones = jnp.ones(n_obs, dtype=jnp.float64)
+
+    if not mixed:
+
+        def log_probs(params, available=None):
+            zeros = jnp.zeros((n_obs, n_alts), dtype=jnp.float64)
+            return jax.grad(lambda chosen: contribs_fn(params, chosen, ones, available).sum())(
+                zeros
+            )
+
+    else:
+
+        def log_probs(params, available=None):
+            def one_alt(j):
+                chosen = jnp.zeros((n_obs, n_alts), dtype=jnp.float64).at[:, j].set(1.0)
+                return contribs_fn(params, chosen, ones, available)
+
+            return jax.lax.map(one_alt, jnp.arange(n_alts)).T
+
+    return jax.jit(log_probs)
