@@ -55,8 +55,11 @@ spatial = [
 # sparse provides the CHOLMOD/KLU factorisations used off the JAX path
 # (prediction/scoring).  All optional: the estimator falls back to a dense
 # solve and the numpy paths to SciPy SuperLU when these are absent.
+# sparsax >= 0.11: exact second derivatives (earlier releases are first-order
+# only, forcing a finite-difference Hessian) and macOS wheels without a bundled
+# OpenMP runtime (earlier ones abort alongside conda's).
 sparse = [
-    "sparsax >= 0.7",
+    "sparsax >= 0.11",
     "scikit-sparse >= 0.4",
 ]
 test = [

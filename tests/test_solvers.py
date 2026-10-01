@@ -141,12 +141,23 @@ def test_trust_ncg_matches_lbfgs_on_mnl(mnl_table, solver_cls):
     model.fit()
     ll = model._result.log_likelihood
 
+    # Unscaled rent makes this ill-conditioned; the solver must not report
+    # failure when it stalls only on rounding noise at the optimum.
+    assert model._result.converged
     assert np.isclose(ll, ll_base, atol=1e-3)
     assert np.allclose(
         model._result.coefficients,
         baseline._result.coefficients,
         atol=5e-3,
     )
+
+
+def test_trust_ncg_iteration_limit_is_not_converged(mnl_table):
+    """Only the noise-floor stall is excused; running out of iterations is not."""
+    model = ChoiceModel(mnl_table, formula="rent + jobs", solver=TrustNCGSolver(maxiter=1))
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        model.fit()
+    assert not model._result.converged
 
 
 def test_trust_ncg_matches_lbfgs_on_scl():

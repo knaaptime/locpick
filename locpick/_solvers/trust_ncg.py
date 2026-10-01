@@ -19,6 +19,31 @@ import numpy as np
 from .protocol import SolverResult
 
 
+def _assess_convergence(result) -> tuple[bool, str]:
+    """Convergence verdict for a SciPy trust-region result.
+
+    SciPy's gradient test ``|g| < gtol`` is absolute, while a summed
+    log-likelihood's gradient carries rounding noise proportional to the
+    objective's magnitude.  Near the optimum of an ill-conditioned problem
+    the trust region then collapses on that noise and SciPy exits with
+    status 2 ("bad approximation") although the point is optimal.  That exit
+    is accepted when first-order optimality holds relative to the objective's
+    scale, ``|g|_inf <= sqrt(eps) * max(1, |f|)``; any other failure stands.
+    """
+    message = str(result.message)
+    if result.success:
+        return True, message
+    jac = getattr(result, "jac", None)
+    if getattr(result, "status", None) == 2 and jac is not None:
+        g_inf = float(np.max(np.abs(jac))) if np.size(jac) else 0.0
+        if g_inf <= np.sqrt(np.finfo(float).eps) * max(1.0, abs(float(result.fun))):
+            return True, (
+                f"{message} Accepted as converged: the gradient (|g|_inf = {g_inf:.2e}) "
+                "is at the floating-point noise floor for this objective."
+            )
+    return False, message
+
+
 class TrustNCGSolver:
     """Newton-CG trust-region solver (``scipy.optimize`` + JAX HVP).
 
@@ -129,13 +154,15 @@ class TrustNCGSolver:
             )
             coefficients = result.x
 
+        converged, message = _assess_convergence(result)
+
         return SolverResult(
             coefficients=coefficients,
             hessian=None,  # SEs flow through Objective.hessian at the fit layer
             log_likelihood=-result.fun,
             n_iterations=result.nit if hasattr(result, "nit") else 0,
-            converged=result.success,
-            message=str(result.message),
+            converged=converged,
+            message=message,
             solver_name=self.method,
             raw={"scipy_result": result},
         )

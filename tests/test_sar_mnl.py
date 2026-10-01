@@ -290,6 +290,16 @@ class TestSARMNLRecovery:
             rtol=1e-4,
             err_msg="sparse and dense SAR solves disagree",
         )
+        # The sparse solve cannot be differentiated twice, so its Hessian is a
+        # finite difference of the exact gradient; it must still match the
+        # dense path's exact Hessian rather than fall back to L-BFGS's
+        # quasi-Newton approximation.
+        npt.assert_allclose(
+            result_sparse.std_errors.values,
+            result_dense.std_errors.values,
+            rtol=1e-3,
+            err_msg="sparse and dense SAR standard errors disagree",
+        )
 
 
 # ---------------------------------------------------------------------------

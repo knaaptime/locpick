@@ -3,6 +3,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.13
+  - setuptools_scm
+
   # core
   - numpy
   - pandas
